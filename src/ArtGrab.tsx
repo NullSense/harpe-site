@@ -1,23 +1,17 @@
 /**
- * ArtGrab — frontend-only museum art search & high-res download.
+ * ArtGrab — museum art search & high-res download via server proxy.
  *
- * Why no backend? A public "download anything" proxy would be an open
- * invitation for abuse (bandwidth farming, ToS violations, DMCA exposure).
- * Arbitrary video/gallery downloading needs the Harpe CLI or browser extension.
- * This component is intentionally limited to CORS-open museum APIs and IIIF
- * tile servers that explicitly permit public access without a proxy.
+ * Uses two Vercel serverless functions:
+ *   GET /api/art?q=<query>           → { items: ArtworkResult[], warnings: string[] }
+ *   GET /api/fetch?url=<img>          → streams image bytes as a download
  *
- * Sources (all send permissive CORS headers on their API responses):
- *   - Art Institute of Chicago  (artic.edu)
- *   - The Metropolitan Museum of Art (metmuseum.org)
- *   - Cleveland Museum of Art  (clevelandart.org)
+ * The /api/art endpoint federates AIC, Met, and Cleveland server-side and
+ * normalises all fields (including Cleveland's object-shaped `dimensions`) to
+ * strings, so no object-as-React-child error (#31) can occur.
  *
- * Downloads: attempted as blob (URL.createObjectURL + <a download>).
- * If the image host blocks CORS for a bare fetch() the promise rejects with a
- * TypeError; we catch it and fall back to window.open() with a hint.
- *
- * IIIF: pasted IIIF manifest / info.json URLs are detected and resolved to the
- * largest /full/full/0/default.jpg derivative, then offered for download.
+ * IIIF: pasted IIIF manifest / info.json URLs are still detected and resolved
+ * client-side (no auth needed, CORS-open servers) to the largest /full/full
+ * derivative, then offered for download through the server proxy.
  */
 
 import { useCallback, useId, useRef, useState } from 'react';
@@ -28,111 +22,11 @@ interface ArtworkResult {
   id: string;            // source:id
   title: string;
   artist: string;
-  dimensions?: string;
+  dimensions?: string;   // always a string from the server, or undefined
   thumbUrl: string;
   fullUrl: string;
   source: 'aic' | 'met' | 'cleveland' | 'iiif';
   isPublicDomain: boolean;
-  /** full URL may or may not be CORS-fetachable; determined at download time */
-}
-
-// ─── API helpers ─────────────────────────────────────────────────────────────
-
-const AIC_BASE = 'https://api.artic.edu/api/v1';
-const AIC_IIIF = 'https://www.artic.edu/iiif/2';
-const MET_BASE = 'https://collectionapi.metmuseum.org/public/collection/v1';
-const CLEV_BASE = 'https://openaccess-api.clevelandart.org/api/artworks';
-
-async function searchAIC(q: string): Promise<ArtworkResult[]> {
-  const url =
-    `${AIC_BASE}/artworks/search?q=${encodeURIComponent(q)}` +
-    `&fields=id,title,artist_title,image_id,is_public_domain,thumbnail,dimensions` +
-    `&limit=12`;
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`AIC ${res.status}`);
-  const json = await res.json();
-  const iiifBase: string = json.config?.iiif_url ?? AIC_IIIF;
-  return (json.data ?? [])
-    .filter((d: Record<string, unknown>) => d.image_id)
-    .map(
-      (d: Record<string, unknown>): ArtworkResult => ({
-        id: `aic:${d.id}`,
-        title: (d.title as string) || 'Untitled',
-        artist: (d.artist_title as string) || 'Unknown',
-        dimensions: d.dimensions as string | undefined,
-        thumbUrl: `${iiifBase}/${d.image_id}/full/843,/0/default.jpg`,
-        fullUrl: `${iiifBase}/${d.image_id}/full/full/0/default.jpg`,
-        source: 'aic',
-        isPublicDomain: Boolean(d.is_public_domain),
-      }),
-    );
-}
-
-async function searchMet(q: string): Promise<ArtworkResult[]> {
-  const searchRes = await fetch(
-    `${MET_BASE}/search?q=${encodeURIComponent(q)}&hasImages=true`,
-  );
-  if (!searchRes.ok) throw new Error(`Met search ${searchRes.status}`);
-  const { objectIDs } = await searchRes.json();
-  if (!objectIDs?.length) return [];
-
-  // Fetch first 10 concurrently; ignore failures
-  const ids: number[] = objectIDs.slice(0, 10);
-  const results = await Promise.allSettled(
-    ids.map((id: number) => fetch(`${MET_BASE}/objects/${id}`).then((r) => r.json())),
-  );
-  return results
-    .filter(
-      (r): r is PromiseFulfilledResult<Record<string, unknown>> =>
-        r.status === 'fulfilled' && Boolean(r.value.primaryImage),
-    )
-    .map(
-      (r): ArtworkResult => ({
-        id: `met:${r.value.objectID}`,
-        title: (r.value.title as string) || 'Untitled',
-        artist:
-          (r.value.artistDisplayName as string) ||
-          (r.value.culture as string) ||
-          'Unknown',
-        dimensions: r.value.dimensions as string | undefined,
-        thumbUrl: (r.value.primaryImageSmall as string) || (r.value.primaryImage as string),
-        fullUrl: r.value.primaryImage as string,
-        source: 'met',
-        isPublicDomain: Boolean(r.value.isPublicDomain),
-      }),
-    );
-}
-
-async function searchCleveland(q: string): Promise<ArtworkResult[]> {
-  const res = await fetch(
-    `${CLEV_BASE}/?q=${encodeURIComponent(q)}&has_image=1&cc0=1&limit=10`,
-  );
-  if (!res.ok) throw new Error(`Cleveland ${res.status}`);
-  const json = await res.json();
-  return (json.data ?? [])
-    .filter(
-      (d: Record<string, unknown>) =>
-        (d.images as Record<string, unknown> | null)?.full ||
-        (d.images as Record<string, unknown> | null)?.web,
-    )
-    .map(
-      (d: Record<string, unknown>): ArtworkResult => {
-        const imgs = d.images as Record<string, Record<string, string>>;
-        const full = imgs.full?.url || imgs.web?.url || '';
-        const thumb = imgs.web?.url || full;
-        const creators = d.creators as Array<{ description: string }> | undefined;
-        return {
-          id: `clev:${d.id}`,
-          title: (d.title as string) || 'Untitled',
-          artist: creators?.[0]?.description || 'Unknown',
-          dimensions: d.dimensions as string | undefined,
-          thumbUrl: thumb,
-          fullUrl: full,
-          source: 'cleveland',
-          isPublicDomain: true, // Cleveland cc0=1 filter
-        };
-      },
-    );
 }
 
 // ─── IIIF detection & resolution ─────────────────────────────────────────────
@@ -170,7 +64,6 @@ async function resolveIIIF(rawUrl: string): Promise<ArtworkResult | null> {
     if (!infoRes.ok) return null;
     const info = await infoRes.json();
     const id: string = info['@id'] || info.id || infoUrl.replace('/info.json', '');
-    // Largest single-tile derivative
     const fullUrl = `${id.replace(/\/$/, '')}/full/full/0/default.jpg`;
     const thumbUrl = `${id.replace(/\/$/, '')}/full/400,/0/default.jpg`;
     const label = info.label;
@@ -180,7 +73,7 @@ async function resolveIIIF(rawUrl: string): Promise<ArtworkResult | null> {
         : label?.en?.[0] ?? label?.none?.[0] ?? 'IIIF image';
     return {
       id: `iiif:${id}`,
-      title,
+      title: typeof title === 'string' ? title : 'IIIF image',
       artist: '',
       thumbUrl,
       fullUrl,
@@ -195,32 +88,21 @@ async function resolveIIIF(rawUrl: string): Promise<ArtworkResult | null> {
 // ─── Download helper ──────────────────────────────────────────────────────────
 
 /**
- * Try to fetch the image as a blob and trigger a browser download.
- * Falls back to window.open() when the image host blocks CORS.
- * Returns 'blob' | 'tab' to indicate which path was taken.
+ * Fetch the image through the server proxy (/api/fetch) and trigger a download.
+ * This avoids CORS issues for museum image hosts.
  */
-async function downloadOrOpen(
-  url: string,
-  filename: string,
-): Promise<'blob' | 'tab'> {
-  try {
-    const res = await fetch(url, { mode: 'cors' });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const blob = await res.blob();
-    const blobUrl = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = blobUrl;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    setTimeout(() => URL.revokeObjectURL(blobUrl), 10_000);
-    return 'blob';
-  } catch {
-    // CORS or network error — open in new tab so the user can right-click save
-    window.open(url, '_blank', 'noopener,noreferrer');
-    return 'tab';
-  }
+async function downloadViaProxy(url: string, filename: string): Promise<void> {
+  const res = await fetch(`/api/fetch?url=${encodeURIComponent(url)}`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const blob = await res.blob();
+  const blobUrl = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = blobUrl;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(blobUrl), 15_000);
 }
 
 function safeName(title: string, artist: string, ext = 'jpg') {
@@ -235,7 +117,7 @@ function safeName(title: string, artist: string, ext = 'jpg') {
 
 const isURL = (s: string) => /^https?:\/\//i.test(s.trim());
 
-// ─── Component ───────────────────────────────────────────────────────────────
+// ─── Component pieces ─────────────────────────────────────────────────────────
 
 type State =
   | { phase: 'idle' }
@@ -243,7 +125,7 @@ type State =
   | { phase: 'results'; items: ArtworkResult[]; query: string; warnings: string[] }
   | { phase: 'error'; message: string };
 
-type DownloadState = 'idle' | 'fetching' | 'done-blob' | 'done-tab' | 'error';
+type DownloadState = 'idle' | 'fetching' | 'done' | 'error';
 
 function SourceBadge({ source }: { source: ArtworkResult['source'] }) {
   const labels: Record<ArtworkResult['source'], string> = {
@@ -271,17 +153,14 @@ function Spinner() {
 
 function ArtCard({ item }: { item: ArtworkResult }) {
   const [dl, setDl] = useState<DownloadState>('idle');
-  const [tabHint, setTabHint] = useState(false);
 
   const handleDownload = async () => {
     if (dl === 'fetching') return;
     setDl('fetching');
-    setTabHint(false);
     try {
       const filename = safeName(item.title, item.artist);
-      const result = await downloadOrOpen(item.fullUrl, filename);
-      setDl(result === 'blob' ? 'done-blob' : 'done-tab');
-      if (result === 'tab') setTabHint(true);
+      await downloadViaProxy(item.fullUrl, filename);
+      setDl('done');
       setTimeout(() => setDl('idle'), 3500);
     } catch {
       setDl('error');
@@ -292,13 +171,19 @@ function ArtCard({ item }: { item: ArtworkResult }) {
   const btnLabel =
     dl === 'fetching'
       ? 'Fetching…'
-      : dl === 'done-blob'
+      : dl === 'done'
         ? 'Saved ✓'
-        : dl === 'done-tab'
-          ? 'Opened ↗'
-          : dl === 'error'
-            ? 'Error'
-            : 'Download full res';
+        : dl === 'error'
+          ? 'Error — retry?'
+          : 'Download full res';
+
+  // Defensively coerce all rendered values to strings
+  const safeTitle = typeof item.title === 'string' ? item.title : String(item.title || 'Untitled');
+  const safeArtist = typeof item.artist === 'string' ? item.artist : String(item.artist || '');
+  const safeDimensions =
+    typeof item.dimensions === 'string' && item.dimensions
+      ? item.dimensions
+      : undefined;
 
   return (
     <article className="group flex flex-col overflow-hidden rounded-xl border border-line bg-[rgba(16,11,8,.6)] transition hover:-translate-y-0.5 hover:border-bronze/60 hover:shadow-[0_8px_32px_-12px_rgba(216,153,33,.18)]">
@@ -306,7 +191,7 @@ function ArtCard({ item }: { item: ArtworkResult }) {
       <div className="relative aspect-[4/3] overflow-hidden bg-[rgba(10,8,6,.8)]">
         <img
           src={item.thumbUrl}
-          alt={`${item.title}${item.artist ? `, by ${item.artist}` : ''}`}
+          alt={`${safeTitle}${safeArtist ? `, by ${safeArtist}` : ''}`}
           loading="lazy"
           decoding="async"
           className="h-full w-full object-contain transition-transform duration-500 group-hover:scale-[1.03]"
@@ -325,37 +210,28 @@ function ArtCard({ item }: { item: ArtworkResult }) {
       <div className="flex flex-1 flex-col gap-1.5 p-3.5">
         <div className="flex items-start justify-between gap-2">
           <h3 className="flex-1 font-display text-[.9rem] font-medium leading-snug text-ink">
-            {item.title}
+            {safeTitle}
           </h3>
           <SourceBadge source={item.source} />
         </div>
-        {item.artist && (
-          <p className="text-[.82rem] text-muted">{item.artist}</p>
+        {safeArtist && (
+          <p className="text-[.82rem] text-muted">{safeArtist}</p>
         )}
-        {item.dimensions && (
+        {safeDimensions && (
           <p className="font-mono text-[.72rem] text-muted/70">
-            {item.dimensions}
+            {safeDimensions}
           </p>
         )}
 
         <button
           onClick={handleDownload}
           disabled={dl === 'fetching'}
-          aria-label={`${btnLabel} — ${item.title}`}
+          aria-label={`${btnLabel} — ${safeTitle}`}
           className="mt-auto flex items-center justify-center gap-2 rounded-md border border-line px-3 py-1.5 font-mono text-[.75rem] text-muted transition hover:border-bronze/60 hover:text-bronze-bright disabled:cursor-not-allowed disabled:opacity-50"
         >
           {dl === 'fetching' && <Spinner />}
           {btnLabel}
         </button>
-
-        {tabHint && (
-          <p
-            role="status"
-            className="mt-1 text-center font-mono text-[.7rem] text-amber"
-          >
-            CORS blocked — right-click → Save image in the new tab
-          </p>
-        )}
       </div>
     </article>
   );
@@ -376,6 +252,8 @@ function SkeletonCard() {
     </div>
   );
 }
+
+// ─── Main component ───────────────────────────────────────────────────────────
 
 export default function ArtGrab() {
   const [query, setQuery] = useState('');
@@ -410,36 +288,49 @@ export default function ArtGrab() {
       return;
     }
 
-    // ── Text search across three museum APIs ──────────────────────────────
-    const [aicRes, metRes, clevRes] = await Promise.allSettled([
-      searchAIC(q),
-      searchMet(q),
-      searchCleveland(q),
-    ]);
+    // ── Text search via server proxy ──────────────────────────────────────
+    try {
+      const res = await fetch(`/api/art?q=${encodeURIComponent(q)}`);
+      const json: { items?: unknown[]; warnings?: string[]; error?: string } = await res.json();
 
-    const items: ArtworkResult[] = [];
-    const warnings: string[] = [];
+      if (!res.ok) {
+        setState({
+          phase: 'error',
+          message: json.error ?? `Server error ${res.status}`,
+        });
+        return;
+      }
 
-    if (aicRes.status === 'fulfilled') items.push(...aicRes.value);
-    else warnings.push(`Art Institute of Chicago: ${aicRes.reason}`);
+      const warnings: string[] = Array.isArray(json.warnings) ? json.warnings : [];
 
-    if (metRes.status === 'fulfilled') items.push(...metRes.value);
-    else warnings.push(`The Met: ${metRes.reason}`);
+      // Normalise each item defensively — the server should already return
+      // strings, but we guard every field so no object can ever crash render.
+      const items: ArtworkResult[] = (json.items ?? []).map((raw: unknown): ArtworkResult => {
+        const d = raw as Record<string, unknown>;
+        return {
+          id: typeof d.id === 'string' ? d.id : String(d.id ?? ''),
+          title: typeof d.title === 'string' ? d.title : String(d.title ?? 'Untitled'),
+          artist: typeof d.artist === 'string' ? d.artist : String(d.artist ?? ''),
+          dimensions: typeof d.dimensions === 'string' && d.dimensions
+            ? d.dimensions
+            : undefined,
+          thumbUrl: typeof d.thumbUrl === 'string' ? d.thumbUrl : String(d.thumbUrl ?? ''),
+          fullUrl: typeof d.fullUrl === 'string' ? d.fullUrl : String(d.fullUrl ?? ''),
+          source: (d.source as ArtworkResult['source']) || 'aic',
+          isPublicDomain: Boolean(d.isPublicDomain),
+        };
+      });
 
-    if (clevRes.status === 'fulfilled') items.push(...clevRes.value);
-    else warnings.push(`Cleveland Museum: ${clevRes.reason}`);
-
-    // Sort: public domain first, then by source diversity
-    items.sort((a, b) => {
-      if (a.isPublicDomain && !b.isPublicDomain) return -1;
-      if (!a.isPublicDomain && b.isPublicDomain) return 1;
-      return 0;
-    });
-
-    if (items.length === 0 && warnings.length > 0) {
-      setState({ phase: 'error', message: warnings.join(' · ') });
-    } else {
-      setState({ phase: 'results', items, query: q, warnings });
+      if (items.length === 0 && warnings.length > 0) {
+        setState({ phase: 'error', message: warnings.join(' · ') });
+      } else {
+        setState({ phase: 'results', items, query: q, warnings });
+      }
+    } catch (e) {
+      setState({
+        phase: 'error',
+        message: e instanceof Error ? e.message : 'Network error',
+      });
     }
   }, []);
 
@@ -465,7 +356,7 @@ export default function ArtGrab() {
     <section
       id="try-it"
       aria-label="Try museum art search"
-      className="py-20"
+      className="py-10"
     >
       {/* heading */}
       <div className="mb-10 text-center">
@@ -557,7 +448,7 @@ export default function ArtGrab() {
               href="https://github.com/NullSense/harpe"
               className="text-bronze hover:text-bronze-bright"
             >
-              harpe -s "{query}"
+              harpe -s &ldquo;{query}&rdquo;
             </a>{' '}
             searches V&amp;A, Wikidata &amp; more.
           </p>
@@ -584,7 +475,7 @@ export default function ArtGrab() {
                   href="https://github.com/NullSense/harpe"
                   className="text-bronze hover:text-bronze-bright"
                 >
-                  harpe -s "{state.query}"
+                  harpe -s &ldquo;{state.query}&rdquo;
                 </a>{' '}
                 for broader coverage.
               </p>
