@@ -63,12 +63,10 @@ export default function App() {
       <main className="relative z-10 mx-auto max-w-3xl px-5">
         <section className="flex min-h-[100svh] flex-col items-center justify-center py-[7vh] text-center">
           <img
-            src="/logo-bronze.png"
-            width={200}
-            height={200}
+            src="/logo.png"
             alt="Harpe — a bronze hooked sickle-blade with a Greek meander on the hilt"
-            className="animate-rise w-[200px] max-sm:w-[150px]"
-            style={{ filter: 'drop-shadow(0 6px 40px rgba(216,153,33,.22))' }}
+            className="animate-rise h-[210px] w-auto max-sm:h-[160px]"
+            style={{ filter: 'drop-shadow(0 8px 50px rgba(216,153,33,.18))' }}
           />
           <h1 className="sr-only">Harpe</h1>
           <p className="mt-1.5 font-display text-[clamp(1.05rem,2.6vw,1.5rem)] font-medium tracking-[0.04em]">
@@ -83,7 +81,7 @@ export default function App() {
           </p>
 
           {/* terminal */}
-          <div className="relative mt-8 w-[min(640px,100%)] overflow-hidden rounded-2xl border border-line bg-[rgba(16,11,8,.72)] text-left backdrop-blur-md shadow-[0_24px_70px_-30px_rgba(216,153,33,.35)]">
+          <div className="relative mt-8 w-[min(640px,100%)] overflow-hidden rounded-xl border border-line bg-[rgba(14,10,7,.78)] text-left backdrop-blur-md shadow-[0_30px_80px_-50px_rgba(216,153,33,.22)]">
             <div className="flex items-center gap-2 border-b border-line px-3.5 py-2.5">
               <span className="h-2.5 w-2.5 rounded-full border border-line" />
               <span className="h-2.5 w-2.5 rounded-full border border-line" />
@@ -106,16 +104,16 @@ export default function App() {
             </button>
           </div>
 
-          <div className="mt-8 flex flex-wrap justify-center gap-3.5">
+          <div className="mt-8 flex flex-wrap justify-center gap-3">
             <a
               href="https://github.com/NullSense/harpe"
-              className="rounded-[10px] bg-gradient-to-b from-bronze-bright to-amber px-5 py-2.5 font-semibold text-[#1a1206] shadow-[0_12px_36px_-16px_rgba(216,153,33,.5)] transition hover:-translate-y-0.5"
+              className="rounded-md border border-bronze/45 bg-bronze/10 px-5 py-2.5 text-[.95rem] font-medium text-bronze-bright transition hover:border-bronze hover:bg-bronze/20"
             >
               View on GitHub →
             </a>
             <a
               href="https://github.com/NullSense/harpe#readme"
-              className="rounded-[10px] border border-line px-5 py-2.5 font-semibold transition hover:border-bronze hover:text-bronze-bright"
+              className="rounded-md border border-line px-5 py-2.5 text-[.95rem] font-medium text-muted transition hover:border-bronze/60 hover:text-ink"
             >
               Read the docs
             </a>
@@ -145,7 +143,7 @@ export default function App() {
             <a href="https://github.com/NullSense/harpe" className="text-bronze hover:text-bronze-bright">
               NullSense/harpe
             </a>{' '}
-            · hero: John Martin, <em>The Great Day of His Wrath</em> (1851–53), rendered in ASCII
+            · hero: Antonio Canova, <em>Perseus Triumphant</em> — Perseus with the harpe &amp; the head of Medusa, rendered in ASCII
           </p>
         </footer>
       </main>

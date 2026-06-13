@@ -1,22 +1,24 @@
 import { useEffect, useRef } from 'react';
 
 /**
- * Live ASCII hero — the Prometheus technique, confirmed by probing their page:
- * Canvas 2D (not WebGL), an image rendered once as ASCII via a luminance→character
- * ramp, then kept "alive" by a *sparse* per-frame twinkle (only a small % of cells
- * re-jitter each frame — their page changes ~0.2–0.5% of pixels per 350ms).
+ * Live ASCII hero — the Prometheus technique, confirmed by de-minifying their page:
+ * Canvas 2D (not WebGL, no library), an image rendered once as ASCII via a
+ * luminance→character ramp, kept alive by a *sparse* per-frame twinkle (only a
+ * small % of cells re-jitter each frame — their page changes ~0.2–0.5% / 350ms).
  *
- * Source image: a public-domain John Martin apocalypse (The Great Day of His Wrath),
- * rendered in bronze on obsidian. Dark cells are left empty so the figure emerges
- * from the void. Respects prefers-reduced-motion (renders one static frame).
+ * Source: Antonio Canova, "Perseus Triumphant" — Perseus holding the harpe and the
+ * head of Medusa. A brightly-lit marble subject on a dark ground reads cleanly as
+ * ASCII (the way Prometheus's lit face does). Rendered in bronze on obsidian with a
+ * per-image contrast stretch so the figure is legible. Respects reduced-motion.
  */
-const RAMP = ' .·:-=+*о#%@'; // dark → dense
-const FONT_PX = 11;          // CSS px per cell row
-const CELL_ASPECT = 0.58;    // monospace glyph width / height
-const TWINKLE = 0.006;       // fraction of cells re-jittered per frame
+const RAMP = ' .:-=+*#%@';
+const FONT_PX = 12;
+const CELL_H = 10;          // < FONT_PX so rows overlap into a dense field (no scanlines)
+const CELL_W = 7;
+const TWINKLE = 0.006;      // fraction of cells re-jittered per frame
 const FPS = 14;
 
-type Cell = { col: number; row: number; b: number }; // base brightness 0..1
+type Cell = { col: number; row: number; b: number };
 
 export default function AsciiHero() {
   const ref = useRef<HTMLCanvasElement>(null);
@@ -29,75 +31,73 @@ export default function AsciiHero() {
 
     const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
     const img = new Image();
-    img.src = '/martin.jpg';
+    img.src = '/perseus.jpg';
 
     let cells: Cell[] = [];
-    let cols = 0, rows = 0, cellW = 0, cellH = 0, dpr = 1;
-    let raf = 0, last = 0, ready = false;
+    let cols = 0, rows = 0, dpr = 1, raf = 0, last = 0, ready = false;
 
-    // bronze gradient by brightness: dim oxidized bronze → bright amber/ivory
-    const color = (b: number, jitter = 0) => {
-      const t = Math.min(1, Math.max(0, b + jitter));
-      const r = Math.round(120 + t * 120);
-      const g = Math.round(70 + t * 115);
-      const bl = Math.round(28 + t * 78);
-      const a = 0.28 + t * 0.72;
-      return `rgba(${r},${g},${bl},${a})`;
+    const color = (b: number) => {
+      const t = Math.min(1, Math.max(0, b));
+      return `rgba(${Math.round(130 + t * 125)},${Math.round(75 + t * 115)},${Math.round(30 + t * 80)},${0.3 + t * 0.7})`;
     };
-    const charFor = (b: number) =>
-      RAMP[Math.min(RAMP.length - 1, Math.floor(b * RAMP.length))];
+    const charFor = (b: number) => RAMP[Math.min(RAMP.length - 1, Math.floor(b * RAMP.length))];
 
-    const paintCell = (c: Cell, jitter = 0) => {
-      const x = c.col * cellW;
-      const y = c.row * cellH;
+    const paint = (c: Cell, jitter = 0) => {
+      const x = c.col * CELL_W, y = c.row * CELL_H;
       ctx.fillStyle = '#0a0806';
-      ctx.fillRect(x, y, cellW + 1, cellH + 1);
+      ctx.fillRect(x, y, CELL_W + 1, CELL_H + 1);
       const b = c.b + jitter;
-      if (b <= 0.12) return; // leave the void empty
-      ctx.fillStyle = color(b, 0);
+      if (b <= 0.06) return;          // leave the void empty
+      ctx.fillStyle = color(b);
       ctx.fillText(charFor(b), x, y);
     };
 
     const build = () => {
-      const w = (canvas.clientWidth || innerWidth);
-      const h = (canvas.clientHeight || innerHeight);
+      const w = canvas.clientWidth || innerWidth;
+      const h = canvas.clientHeight || innerHeight;
       dpr = Math.min(devicePixelRatio || 1, 2);
       canvas.width = Math.round(w * dpr);
       canvas.height = Math.round(h * dpr);
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-      cellH = FONT_PX;
-      cellW = Math.max(4, Math.round(FONT_PX * CELL_ASPECT));
-      cols = Math.ceil(w / cellW);
-      rows = Math.ceil(h / cellH);
+      cols = Math.ceil(w / CELL_W);
+      rows = Math.ceil(h / CELL_H);
 
-      // sample the image at grid resolution (cover-fit), read luminance per cell
+      // contain-fit the whole figure, centered (Prometheus puts the subject behind
+      // the content, sides empty) — NOT cover, which would zoom/crop into the torso.
       const off = document.createElement('canvas');
       off.width = cols; off.height = rows;
       const octx = off.getContext('2d')!;
-      const ir = img.width / img.height, gr = cols / rows;
-      let dw = cols, dh = rows, dx = 0, dy = 0;
-      if (ir > gr) { dw = rows * ir; dx = (cols - dw) / 2; }
-      else { dh = cols / ir; dy = (rows - dh) / 2; }
       octx.fillStyle = '#000'; octx.fillRect(0, 0, cols, rows);
-      octx.drawImage(img, dx, dy, dw, dh);
+      const ir = img.width / img.height, gr = cols / rows;
+      let dw = cols, dh = rows;
+      if (ir > gr) { dh = cols / ir; } else { dw = rows * ir; }
+      octx.drawImage(img, (cols - dw) / 2, (rows - dh) / 2, dw, dh);
       const data = octx.getImageData(0, 0, cols, rows).data;
 
+      const lum = new Float32Array(cols * rows);
+      for (let i = 0; i < lum.length; i++)
+        lum[i] = (0.299 * data[i * 4] + 0.587 * data[i * 4 + 1] + 0.114 * data[i * 4 + 2]) / 255;
+
+      // per-image contrast stretch (2nd–98th percentile) so the marble pops
+      const sorted = Float32Array.from(lum).sort();
+      const lo = sorted[(sorted.length * 0.02) | 0];
+      const hi = sorted[(sorted.length * 0.98) | 0] || 1;
+      const span = Math.max(0.001, hi - lo);
+
       cells = [];
-      for (let row = 0; row < rows; row++) {
+      for (let row = 0; row < rows; row++)
         for (let col = 0; col < cols; col++) {
-          const i = (row * cols + col) * 4;
-          let b = (0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2]) / 255;
-          b = Math.pow(b, 0.85);            // gentle contrast lift
+          let b = (lum[row * cols + col] - lo) / span;
+          b = Math.min(1, Math.max(0, b));
           cells.push({ col, row, b });
         }
-      }
 
       ctx.font = `${FONT_PX}px "IBM Plex Mono", monospace`;
       ctx.textBaseline = 'top';
       ctx.fillStyle = '#0a0806';
       ctx.fillRect(0, 0, w, h);
-      for (const c of cells) paintCell(c);
+      for (const c of cells) paint(c);
       ready = true;
     };
 
@@ -108,13 +108,12 @@ export default function AsciiHero() {
       const n = Math.max(1, Math.floor(cells.length * TWINKLE));
       for (let k = 0; k < n; k++) {
         const c = cells[(Math.random() * cells.length) | 0];
-        paintCell(c, (Math.random() - 0.4) * 0.5); // brief brighten/dim
+        paint(c, (Math.random() - 0.4) * 0.5);
       }
     };
 
     let rt = 0;
     const onResize = () => { clearTimeout(rt); rt = window.setTimeout(build, 160); };
-
     img.onload = () => {
       build();
       if (!reduce) raf = requestAnimationFrame(frame);
@@ -132,7 +131,7 @@ export default function AsciiHero() {
     <canvas
       ref={ref}
       aria-hidden="true"
-      className="pointer-events-none fixed inset-0 -z-10 h-screen w-screen opacity-55"
+      className="pointer-events-none fixed inset-0 -z-20 h-screen w-screen opacity-70"
     />
   );
 }
