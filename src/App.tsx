@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import AsciiHero from './AsciiHero.tsx';
+import ArtGrab from './ArtGrab.tsx';
 
 const EXAMPLES = [
   '-p https://any.site/with/images',
@@ -119,6 +120,8 @@ export default function App() {
             </a>
           </div>
         </section>
+
+        <ArtGrab />
 
         <section className="grid grid-cols-[repeat(auto-fit,minmax(210px,1fr))] gap-3.5 pb-20">
           {MODES.map(([g, title, body]) => (
