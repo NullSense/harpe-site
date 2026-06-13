@@ -4,3 +4,4 @@ dist/
 *.local
 .DS_Store
 .vercel
+pnpm-lock.yaml
