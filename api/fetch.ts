@@ -17,7 +17,8 @@
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { GuardError, guardUrl, checkRateLimit, clientIp } from './_guard.js';
+import { fetch } from 'undici';
+import { GuardError, guardUrl, pinnedAgent, checkRateLimit, clientIp } from './_guard.js';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -47,10 +48,12 @@ async function safeFetchImage(
 
   try {
     for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
-      // Re-validate on each hop (prevents open-redirect SSRF)
-      await guardUrl(currentUrl);
+      // Re-validate on each hop (prevents open-redirect SSRF) and pin the
+      // connection to the validated IP (closes DNS-rebinding TOCTOU).
+      const { url, ip, family } = await guardUrl(currentUrl);
 
-      const res = await fetch(currentUrl, {
+      const res = await fetch(url, {
+        dispatcher: pinnedAgent(ip, family),
         redirect: 'manual',
         signal: controller.signal,
         headers,

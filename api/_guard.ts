@@ -20,6 +20,7 @@
  */
 
 import dns from 'node:dns/promises';
+import { Agent } from 'undici';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -126,9 +127,12 @@ const ALLOWED_PORTS = new Set(['', '80', '443']);
 /**
  * Validate a URL for safe outbound fetching.
  * Throws GuardError on any violation.
- * Returns the validated URL string on success.
+ * Returns the validated URL plus the resolved IP to PIN the connection to —
+ * pass it to pinnedAgent() so the socket connects to the exact IP we validated,
+ * closing the DNS-rebinding TOCTOU window between this check and fetch()'s own
+ * (otherwise separate) DNS resolution.
  */
-export async function guardUrl(raw: string): Promise<string> {
+export async function guardUrl(raw: string): Promise<{ url: string; ip: string; family: 4 | 6 }> {
   let parsed: URL;
   try {
     parsed = new URL(raw);
@@ -169,7 +173,25 @@ export async function guardUrl(raw: string): Promise<string> {
     }
   }
 
-  return parsed.toString();
+  // Pin to the first validated address (every address was checked above).
+  const first = addresses[0];
+  if (!first) throw new GuardError(400, 'Could not resolve host');
+  return { url: parsed.toString(), ip: first.address, family: first.family as 4 | 6 };
+}
+
+/**
+ * An undici Agent that connects ONLY to the given pre-validated IP, regardless
+ * of what the hostname would resolve to at connect time (TLS SNI/cert validation
+ * still uses the URL hostname). Build one per request/redirect hop from the IP
+ * that guardUrl() returned, and pass it as fetch's `dispatcher`.
+ */
+export function pinnedAgent(ip: string, family: 4 | 6): Agent {
+  const lookup = (
+    _hostname: string,
+    _options: unknown,
+    cb: (err: null, address: string, family: number) => void,
+  ) => cb(null, ip, family);
+  return new Agent({ connect: { lookup: lookup as never } });
 }
 
 // ─── Rate limiter ─────────────────────────────────────────────────────────────
