@@ -186,11 +186,17 @@ export async function guardUrl(raw: string): Promise<{ url: string; ip: string; 
  * that guardUrl() returned, and pass it as fetch's `dispatcher`.
  */
 export function pinnedAgent(ip: string, family: 4 | 6): Agent {
+  // Node/undici may call lookup in scalar form (err, address, family) or, when
+  // options.all is set, array form (err, [{address, family}]). Honor both so the
+  // connection actually dials the pinned IP instead of erroring.
   const lookup = (
     _hostname: string,
-    _options: unknown,
-    cb: (err: null, address: string, family: number) => void,
-  ) => cb(null, ip, family);
+    options: { all?: boolean } | undefined,
+    cb: (err: null, address: string | Array<{ address: string; family: number }>, family?: number) => void,
+  ) => {
+    if (options && options.all) cb(null, [{ address: ip, family }]);
+    else cb(null, ip, family);
+  };
   return new Agent({ connect: { lookup: lookup as never } });
 }
 
