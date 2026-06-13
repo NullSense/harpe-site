@@ -56,7 +56,7 @@ export default function App() {
         className="pointer-events-none fixed inset-0 -z-10"
         style={{
           background:
-            'radial-gradient(120% 90% at 50% 38%, transparent 0%, rgba(10,8,6,.55) 46%, rgba(10,8,6,.92) 78%, #0a0806 100%), linear-gradient(180deg, rgba(10,8,6,.5), transparent 18% 70%, #0a0806)',
+            'radial-gradient(ellipse 60% 52% at 50% 44%, rgba(10,8,6,.82) 0%, rgba(10,8,6,.45) 52%, transparent 78%), radial-gradient(120% 90% at 50% 38%, transparent 0%, rgba(10,8,6,.5) 46%, rgba(10,8,6,.92) 78%, #0a0806 100%), linear-gradient(180deg, rgba(10,8,6,.55), transparent 20% 68%, #0a0806)',
         }}
       />
 
@@ -72,7 +72,7 @@ export default function App() {
           <p className="mt-1.5 font-display text-[clamp(1.05rem,2.6vw,1.5rem)] font-medium tracking-[0.04em]">
             A hooked blade for the web — <em className="not-italic text-bronze-bright">enter, catch, retrieve.</em>
           </p>
-          <p className="mx-auto mt-4 max-w-[620px] text-[clamp(.96rem,1.7vw,1.08rem)] text-muted">
+          <p className="mx-auto mt-4 max-w-[620px] text-[clamp(.96rem,1.7vw,1.08rem)] text-ink/75">
             One command to pull <strong className="font-semibold text-ink">video</strong>,{' '}
             <strong className="font-semibold text-ink">image galleries</strong>, a whole{' '}
             <strong className="font-semibold text-ink">page of images</strong>, or{' '}

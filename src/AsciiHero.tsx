@@ -131,7 +131,7 @@ export default function AsciiHero() {
     <canvas
       ref={ref}
       aria-hidden="true"
-      className="pointer-events-none fixed inset-0 -z-20 h-screen w-screen opacity-70"
+      className="pointer-events-none fixed inset-0 -z-20 h-screen w-screen opacity-[0.55]"
     />
   );
 }
