@@ -1,0 +1,40 @@
+# Deployment Setup
+
+## Caching (automatic — no setup required)
+
+CDN caching is handled automatically by Vercel's Edge Network via `Cache-Control` headers set by the API functions. No configuration needed.
+
+| Endpoint | s-maxage | stale-while-revalidate |
+|---|---|---|
+| `GET /api/art` | 1 hour | 24 hours |
+| `GET /api/scan` | 30 minutes | 24 hours |
+| `GET /api/fetch` (image proxy) | 24 hours | 7 days |
+
+Error responses (4xx/5xx) always return `Cache-Control: no-store` so failures are never cached at the edge.
+
+## Rate Limiting
+
+### Default (no setup): in-memory limiter
+
+Without any configuration, each serverless function instance enforces 30 requests/minute per IP using an in-memory window. Because Vercel may run multiple instances in parallel, this is a best-effort limit — it works well under normal traffic but is not globally strict.
+
+### Optional: Durable cross-instance rate limiting via Upstash Redis
+
+For stricter enforcement across all instances (recommended for production), configure a free Upstash Redis database:
+
+1. Create a free database at [upstash.com](https://upstash.com) (free tier: 10,000 commands/day — plenty for this use case).
+2. In the Upstash console, copy the two values from the **REST API** section:
+   - `UPSTASH_REDIS_REST_URL`
+   - `UPSTASH_REDIS_REST_TOKEN`
+3. Add them as Vercel environment variables:
+   ```
+   vercel env add UPSTASH_REDIS_REST_URL production
+   vercel env add UPSTASH_REDIS_REST_TOKEN production
+   ```
+   Or add them in the Vercel dashboard under **Settings → Environment Variables**.
+4. Redeploy for the new env vars to take effect:
+   ```
+   vercel --prod
+   ```
+
+The limit is generous: **60 requests per 60 seconds per IP** (sliding window), so real users are never blocked. Only abusive scripts hitting the API repeatedly will be rate-limited. The fallback in-memory limiter remains active if env vars are missing or the Redis connection fails.

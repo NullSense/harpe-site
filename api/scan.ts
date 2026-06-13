@@ -17,7 +17,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { fetch } from 'undici';
 import { parse as parseHtml } from 'node-html-parser';
-import { GuardError, guardUrl, pinnedAgent, checkRateLimit, clientIp } from './_guard.js';
+import { GuardError, guardUrl, pinnedAgent, rateLimit, clientIp } from './_guard.js';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -290,9 +290,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   // Rate limit
   const ip = clientIp(req.headers as Record<string, string | string[] | undefined>);
   try {
-    checkRateLimit(ip);
+    await rateLimit(ip);
   } catch (e) {
     if (e instanceof GuardError) {
+      res.setHeader('Cache-Control', 'no-store');
       return res.status(e.status).json({ error: e.message });
     }
     throw e;
@@ -303,6 +304,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     await guardUrl(rawUrl);
   } catch (e) {
     if (e instanceof GuardError) {
+      res.setHeader('Cache-Control', 'no-store');
       return res.status(e.status).json({ error: e.message });
     }
     throw e;
@@ -311,16 +313,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     const { finalUrl, html } = await safeFetch(rawUrl);
     const images = extractImages(html, finalUrl);
+    res.setHeader('Cache-Control', 'public, s-maxage=1800, stale-while-revalidate=86400');
     return res.status(200).json({ images });
   } catch (e) {
     if (e instanceof GuardError) {
+      res.setHeader('Cache-Control', 'no-store');
       return res.status(e.status).json({ error: e.message });
     }
     // AbortError from timeout
     if (e instanceof Error && e.name === 'AbortError') {
+      res.setHeader('Cache-Control', 'no-store');
       return res.status(502).json({ error: 'Page fetch timed out (8s)' });
     }
     console.error('[scan] unexpected error', e);
+    res.setHeader('Cache-Control', 'no-store');
     return res.status(502).json({ error: 'Failed to fetch page' });
   }
 }

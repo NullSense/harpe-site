@@ -18,7 +18,7 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { fetch } from 'undici';
-import { GuardError, guardUrl, pinnedAgent, checkRateLimit, clientIp } from './_guard.js';
+import { GuardError, guardUrl, pinnedAgent, rateLimit, clientIp } from './_guard.js';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -161,12 +161,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(400).json({ error: 'Missing ?url= parameter' });
   }
 
-  // Rate limit (shared in-memory store with scan.ts via module singleton)
+  // Rate limit (Upstash Redis when configured, in-memory fallback otherwise)
   const ip = clientIp(req.headers as Record<string, string | string[] | undefined>);
   try {
-    checkRateLimit(ip);
+    await rateLimit(ip);
   } catch (e) {
     if (e instanceof GuardError) {
+      res.setHeader('Cache-Control', 'no-store');
       return res.status(e.status).json({ error: e.message });
     }
     throw e;
@@ -177,6 +178,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     await guardUrl(rawUrl);
   } catch (e) {
     if (e instanceof GuardError) {
+      res.setHeader('Cache-Control', 'no-store');
       return res.status(e.status).json({ error: e.message });
     }
     throw e;
@@ -204,16 +206,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       `attachment; filename="${filename.replace(/"/g, '_')}"`,
     );
     res.setHeader('Content-Length', data.byteLength);
-    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('Cache-Control', 'public, s-maxage=86400, stale-while-revalidate=604800');
     return res.status(200).send(Buffer.from(data));
   } catch (e) {
     if (e instanceof GuardError) {
+      res.setHeader('Cache-Control', 'no-store');
       return res.status(e.status).json({ error: e.message });
     }
     if (e instanceof Error && e.name === 'AbortError') {
+      res.setHeader('Cache-Control', 'no-store');
       return res.status(502).json({ error: 'Image fetch timed out (10s)' });
     }
     console.error('[fetch] unexpected error', e);
+    res.setHeader('Cache-Control', 'no-store');
     return res.status(502).json({ error: 'Failed to fetch image' });
   }
 }

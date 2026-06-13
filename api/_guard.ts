@@ -201,15 +201,12 @@ export function pinnedAgent(ip: string, family: 4 | 6): Agent {
 }
 
 // ─── Rate limiter ─────────────────────────────────────────────────────────────
-// Best-effort in-memory limiter keyed by client IP.
-// NOTE: This is per-instance — Vercel may spin up multiple instances, so it
-// is NOT a strict global limit. For robust rate-limiting across instances,
-// use Vercel KV or Upstash Redis.
-// TODO: replace with Upstash Redis (UPSTASH_REDIS_REST_URL + TOKEN env vars)
-//       when this endpoint needs cross-instance enforcement.
+// Two-tier: Upstash Redis sliding-window (cross-instance, durable) when env
+// vars are set; falls back to best-effort in-memory limiter otherwise.
 
+// ── In-memory fallback ──────────────────────────────────────────────────────
 const WINDOW_MS = 60_000; // 1 minute
-const MAX_REQUESTS = 30;  // per IP per window
+const MAX_REQUESTS = 30;  // per IP per window (in-memory fallback)
 
 interface Bucket {
   count: number;
@@ -231,6 +228,65 @@ export function checkRateLimit(ip: string): void {
   if (bucket.count > MAX_REQUESTS) {
     throw new GuardError(429, 'Rate limit exceeded — try again in a minute');
   }
+}
+
+// ── Upstash Redis sliding-window (optional, cross-instance) ─────────────────
+// Lazy singleton — created once on first call when env vars are present.
+// Importing dynamically keeps the module loadable even when the packages are
+// absent from node_modules (they are always present after `npm install`, but
+// this pattern prevents startup crashes if env vars are missing).
+
+let _upstashRatelimit: { limit: (key: string) => Promise<{ success: boolean }> } | null | undefined;
+// undefined = not yet initialised; null = no env vars (fallback mode)
+
+async function getUpstashRatelimit() {
+  if (_upstashRatelimit !== undefined) return _upstashRatelimit;
+
+  const url = process.env.UPSTASH_REDIS_REST_URL;
+  const token = process.env.UPSTASH_REDIS_REST_TOKEN;
+
+  if (!url || !token) {
+    _upstashRatelimit = null;
+    return null;
+  }
+
+  try {
+    // Dynamic imports so the module still loads when the packages are absent
+    const { Ratelimit } = await import('@upstash/ratelimit');
+    const { Redis } = await import('@upstash/redis');
+
+    const redis = new Redis({ url, token });
+    _upstashRatelimit = new Ratelimit({
+      redis,
+      limiter: Ratelimit.slidingWindow(60, '60 s'),
+      analytics: false,
+    });
+  } catch {
+    // Package missing or misconfigured — degrade to in-memory
+    _upstashRatelimit = null;
+  }
+
+  return _upstashRatelimit;
+}
+
+/**
+ * Async rate limiter that uses Upstash Redis when configured (cross-instance,
+ * durable) and falls back to the in-memory checkRateLimit otherwise.
+ * Throws GuardError(429) when the limit is exceeded.
+ */
+export async function rateLimit(ip: string): Promise<void> {
+  const limiter = await getUpstashRatelimit();
+
+  if (limiter) {
+    const { success } = await limiter.limit(ip);
+    if (!success) {
+      throw new GuardError(429, 'Rate limit exceeded — try again in a minute');
+    }
+    return;
+  }
+
+  // Fallback: synchronous in-memory limiter
+  checkRateLimit(ip);
 }
 
 /** Extract best-effort client IP from Vercel request headers. */
