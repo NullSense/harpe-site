@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import AsciiHero from './AsciiHero.tsx';
 import ArtGrab from './ArtGrab.tsx';
+import WebGrab from './WebGrab.tsx';
 
 const EXAMPLES = [
   '-p https://any.site/with/images',
@@ -120,6 +121,15 @@ export default function App() {
             </a>
           </div>
         </section>
+
+        <WebGrab />
+
+        {/* divider */}
+        <div className="mb-4 text-center">
+          <span className="font-mono text-[.75rem] tracking-[0.12em] text-muted/50">
+            ─────  also  ─────
+          </span>
+        </div>
 
         <ArtGrab />
 
