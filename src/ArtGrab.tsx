@@ -25,7 +25,7 @@ interface ArtworkResult {
   dimensions?: string;   // always a string from the server, or undefined
   thumbUrl: string;
   fullUrl: string;
-  source: 'aic' | 'met' | 'cleveland' | 'commons' | 'iiif';
+  source: 'aic' | 'met' | 'cleveland' | 'commons' | 'wikiart' | 'iiif';
   isPublicDomain: boolean;
 }
 
@@ -133,6 +133,7 @@ function SourceBadge({ source }: { source: ArtworkResult['source'] }) {
     met: 'Met',
     cleveland: 'Cleveland',
     commons: 'Commons',
+    wikiart: 'WikiArt',
     iiif: 'IIIF',
   };
   return (

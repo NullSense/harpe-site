@@ -47,7 +47,7 @@ interface ArtItem {
   dimensions: string;
   thumbUrl: string;
   fullUrl: string;
-  source: 'aic' | 'met' | 'cleveland' | 'commons';
+  source: 'aic' | 'met' | 'cleveland' | 'commons' | 'wikiart';
   isPublicDomain: boolean;
 }
 
@@ -326,6 +326,50 @@ async function fetchCommons(q: string): Promise<ArtItem[]> {
   }
 }
 
+// ─── WikiArt (paintings-focused; keyless v2 API) ──────────────────────────────
+
+async function fetchWikiArt(q: string): Promise<ArtItem[]> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+
+  try {
+    const url = `https://www.wikiart.org/en/api/2/PaintingSearch?term=${encodeURIComponent(q)}`;
+    const res = await timedFetch(url, controller.signal);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+    const json = await res.json() as {
+      data?: Array<{
+        id?: unknown; title?: unknown; artistName?: unknown;
+        completitionYear?: unknown; image?: unknown;
+        width?: unknown; height?: unknown;
+      }>;
+    };
+
+    const items: ArtItem[] = [];
+    for (const d of json.data ?? []) {
+      const image = str(d.image);
+      if (!image) continue;
+      const year = d.completitionYear ? ` (${str(d.completitionYear)})` : '';
+      const w = Number(d.width) || 0;
+      const h = Number(d.height) || 0;
+      items.push({
+        id: `wikiart-${str(d.id)}`,
+        title: (str(d.title) || 'Untitled') + year,
+        artist: str(d.artistName),
+        dimensions: w && h ? `${w} × ${h} px` : '',
+        thumbUrl: image, // the "!Large.jpg" variant
+        fullUrl: image.replace(/!.*$/, ''), // strip variant suffix → original
+        source: 'wikiart',
+        isPublicDomain: false, // WikiArt is mixed-rights; badge a rights caution
+      });
+    }
+
+    return items;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // ─── Handler ─────────────────────────────────────────────────────────────────
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -361,6 +405,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     ['Met', fetchMet(q)],
     ['Cleveland', fetchCleveland(q)],
     ['Commons', fetchCommons(q)],
+    ['WikiArt', fetchWikiArt(q)],
   ];
   const settled = await Promise.allSettled(sources.map(([, p]) => p));
 
@@ -381,7 +426,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   // then public-domain, then source order. This is the fix for "Rodin Thinker"
   // returning other Rodin works instead of The Thinker.
   const toks = queryTokens(q);
-  const SOURCE_ORDER: Record<string, number> = { aic: 0, met: 1, cleveland: 2, commons: 3 };
+  const SOURCE_ORDER: Record<string, number> = { aic: 0, met: 1, cleveland: 2, wikiart: 3, commons: 4 };
   items.sort((a, b) => {
     const ra = relevance(a, toks);
     const rb = relevance(b, toks);
