@@ -927,7 +927,7 @@ async function fetchParisMusees(q: string): Promise<ArtItem[]> {
     const query =
       `{ nodeQuery(filter: {conditions: [` +
       `{field: "type", value: "oeuvre"}, ` +
-      `{field: "title", operator: CONTAINS, value: ${JSON.stringify(q)}}` +
+      `{field: "title", operator: LIKE, value: ${JSON.stringify('%' + q + '%')}}` +
       `]}, limit: 15) { entities { entityLabel ... on NodeOeuvre {` +
       ` title fieldVisuels { entity { publicUrl vignette } } } } } }`;
     const res = await fetch('https://apicollections.parismusees.paris.fr/graphql', {
@@ -942,7 +942,10 @@ async function fetchParisMusees(q: string): Promise<ArtItem[]> {
         entityLabel?: unknown; title?: unknown;
         fieldVisuels?: Array<{ entity?: { publicUrl?: unknown; vignette?: unknown } }>;
       }> } };
+      errors?: Array<{ message?: unknown }>;
     };
+    // Surface GraphQL errors instead of silently returning nothing.
+    if (json.errors?.length) throw new Error(`GraphQL: ${str(json.errors[0].message).slice(0, 120)}`);
     const items: ArtItem[] = [];
     for (const e of json.data?.nodeQuery?.entities ?? []) {
       const v = e.fieldVisuels?.[0]?.entity;
@@ -1016,7 +1019,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (process.env.EUROPEANA_API_KEY) sources.push(['Europeana', fetchEuropeana(q)]);
   if (process.env.HARVARD_API_KEY) sources.push(['Harvard', fetchHarvard(q)]);
   if (process.env.SMITHSONIAN_API_KEY) sources.push(['Smithsonian', fetchSmithsonian(q)]);
-  if (process.env.PARIS_MUSEES_TOKEN) sources.push(['ParisMusées', fetchParisMusees(q)]);
+  // Paris Musées is DISABLED: its Drupal GraphQL has no fast fulltext search —
+  // LIKE on `title` is an unindexed scan over ~280k rows that returns nothing or
+  // times out. All 14 Paris museums are already covered by Europeana, so this is
+  // redundant. The fetcher is kept (see fetchParisMusees) for reference only.
+  void fetchParisMusees;
   const settled = await Promise.allSettled(sources.map(([, p]) => p));
 
   const items: ArtItem[] = [];
