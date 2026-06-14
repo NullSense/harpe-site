@@ -65,6 +65,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const out = res as unknown as NodeWritable;
 
   const analyzeEnabled = Boolean(
+    process.env.GEMINI_API_KEY || process.env.GROQ_API_KEY ||
     process.env.OPENROUTER_API_KEY || process.env.ANTHROPIC_API_KEY,
   );
 

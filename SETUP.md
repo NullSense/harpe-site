@@ -113,14 +113,18 @@ UNION-ing another SELECT in `build_parquet()` (each must yield the same columns)
 `POST /api/analyze` merges every source's metadata + descriptions for one artwork
 and asks an LLM to synthesize a single account. **Dormant until you set a key:**
 
-Set **either** provider (OpenRouter is checked first):
+Set **any one** provider. They're checked in this order (first key found wins):
 
-| Env var | Purpose |
-|---|---|
-| `OPENROUTER_API_KEY` | **free** inference via OpenRouter `:free` models (default `google/gemini-2.0-flash-exp:free`) |
-| `ANTHROPIC_API_KEY` | Claude (used if no OpenRouter key); default `claude-haiku-4-5-20251001` |
-| `HARPE_ANALYZE_MODEL` | optional model override for whichever provider is active |
-| `HARPE_ANALYZE_WEB` | set to `1` to let OpenRouter's Exa-powered web plugin add live context (OpenRouter only) |
+| Env var | Purpose | Free tier |
+|---|---|---|
+| `GEMINI_API_KEY` | **Recommended.** Google AI Studio (Gemini), default `gemini-2.0-flash`. | ~1500 req/day free — reliable. Key: https://aistudio.google.com/apikey |
+| `GROQ_API_KEY` | Groq (very fast), default `llama-3.3-70b-versatile`. | Generous free tier. Key: https://console.groq.com/keys |
+| `OPENROUTER_API_KEY` | OpenRouter `:free` models. | Free but the shared free pool is often rate-limited (429). |
+| `ANTHROPIC_API_KEY` | Claude, default `claude-haiku-4-5-20251001`. | Paid. |
+| `HARPE_ANALYZE_MODEL` | optional model override for whichever provider is active | — |
+| `HARPE_ANALYZE_WEB` | `1` → OpenRouter's Exa web plugin adds live context (OpenRouter only) | — |
+
+> The earlier OpenRouter-only setup kept hitting `429` because free `:free` models share a tiny global pool. **Use `GEMINI_API_KEY`** (or `GROQ_API_KEY`) for reliable free synthesis.
 
 OpenRouter requests send a `models` fallback list (the chosen model + two free
 models), so a rate-limited free model auto-falls-through to the next.

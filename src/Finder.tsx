@@ -418,9 +418,10 @@ function ArtDetail({
   const open = index >= 0 && index < items.length;
   const [z, setZ] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [nat, setNat] = useState<{ w: number; h: number } | null>(null); // measured pixels
   const drag = useRef<null | { sx: number; sy: number; px: number; py: number }>(null);
 
-  useEffect(() => { setZ(1); setPan({ x: 0, y: 0 }); }, [index]);
+  useEffect(() => { setZ(1); setPan({ x: 0, y: 0 }); setNat(null); }, [index]);
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
@@ -434,7 +435,12 @@ function ArtDetail({
 
   if (!open) return null;
   const item = items[index];
-  const facts = [item.date, item.medium, item.culture, item.dimensions].filter(Boolean) as string[];
+  // Resolution for ALL images: prefer source-reported pixels, else what we measured
+  // from the loaded image (so every work shows a resolution, not just some sources).
+  const resolution =
+    item.width && item.height ? `${item.width} × ${item.height} px`
+    : nat ? `${nat.w} × ${nat.h} px`
+    : '';
   const similar = similarFor(item);
   const onWheel = (e: React.WheelEvent) => {
     const next = Math.min(6, Math.max(1, z * (e.deltaY < 0 ? 1.15 : 1 / 1.15)));
@@ -458,6 +464,7 @@ function ArtDetail({
           src={displaySrc(item.previewUrl || item.fullUrl)}
           alt={item.title}
           draggable={false}
+          onLoad={(e) => setNat({ w: e.currentTarget.naturalWidth, h: e.currentTarget.naturalHeight })}
           className="max-h-full max-w-full select-none object-contain transition-transform duration-100"
           style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${z})` }}
         />
@@ -494,14 +501,14 @@ function ArtDetail({
           </span>
           {item.lossless && <span className="rounded-sm border border-bronze/40 bg-bronze/10 px-1.5 py-0.5 font-mono text-[.62rem] text-bronze-bright">◆ lossless</span>}
         </div>
-        {facts.length > 0 && (
-          <dl className="space-y-1 text-[.82rem]">
-            {item.date && <div className="flex gap-2"><dt className="w-20 shrink-0 text-muted/60">Date</dt><dd className="text-ink/85">{item.date}</dd></div>}
-            {item.medium && <div className="flex gap-2"><dt className="w-20 shrink-0 text-muted/60">Medium</dt><dd className="text-ink/85">{item.medium}</dd></div>}
-            {item.culture && <div className="flex gap-2"><dt className="w-20 shrink-0 text-muted/60">Origin</dt><dd className="text-ink/85">{item.culture}</dd></div>}
-            {item.dimensions && <div className="flex gap-2"><dt className="w-20 shrink-0 text-muted/60">Size</dt><dd className="text-ink/85">{item.dimensions}</dd></div>}
-          </dl>
-        )}
+        <dl className="space-y-1 text-[.82rem]">
+          {item.date && <div className="flex gap-2"><dt className="w-24 shrink-0 text-muted/60">Date</dt><dd className="text-ink/85">{item.date}</dd></div>}
+          {item.medium && <div className="flex gap-2"><dt className="w-24 shrink-0 text-muted/60">Medium</dt><dd className="text-ink/85">{item.medium}</dd></div>}
+          {item.culture && <div className="flex gap-2"><dt className="w-24 shrink-0 text-muted/60">Origin / genre</dt><dd className="text-ink/85">{item.culture}</dd></div>}
+          {item.dimensions && <div className="flex gap-2"><dt className="w-24 shrink-0 text-muted/60">Dimensions</dt><dd className="text-ink/85">{item.dimensions}</dd></div>}
+          {resolution && <div className="flex gap-2"><dt className="w-24 shrink-0 text-muted/60">Resolution</dt><dd className="font-mono text-ink/85">{resolution}</dd></div>}
+          <div className="flex gap-2"><dt className="w-24 shrink-0 text-muted/60">Format</dt><dd className="font-mono uppercase text-ink/85">{item.format}</dd></div>
+        </dl>
         {item.description && <p className="text-[.86rem] leading-relaxed text-muted">{item.description}</p>}
         {item.creditLine && <p className="text-[.76rem] italic leading-snug text-muted/60">{item.creditLine}</p>}
 
@@ -1188,7 +1195,7 @@ export default function Finder() {
           aria-modal="true"
           aria-label="Reverse-image search"
           onClick={() => setSauce(null)}
-          className="fixed inset-0 z-[60] flex items-center justify-center bg-[rgba(8,6,4,.8)] p-4 backdrop-blur-sm"
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-[rgba(8,6,4,.8)] p-4 backdrop-blur-sm"
         >
           <div
             onClick={(e) => e.stopPropagation()}
@@ -1248,7 +1255,7 @@ export default function Finder() {
           aria-modal="true"
           aria-label="Synthesized analysis"
           onClick={() => setAnalysis(null)}
-          className="fixed inset-0 z-[60] flex items-center justify-center bg-[rgba(8,6,4,.8)] p-4 backdrop-blur-sm"
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-[rgba(8,6,4,.8)] p-4 backdrop-blur-sm"
         >
           <div
             onClick={(e) => e.stopPropagation()}

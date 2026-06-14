@@ -776,7 +776,7 @@ async function fetchWikidata(q: string): Promise<ArtItem[]> {
   try {
     const safe = q.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/[\n\r]/g, ' ');
     const sparql =
-      `SELECT ?item ?itemLabel ?itemDescription ?image ?creatorLabel ?collectionLabel ?inception WHERE {` +
+      `SELECT ?item ?itemLabel ?itemDescription ?image ?creatorLabel ?collectionLabel ?inception ?materialLabel ?genreLabel WHERE {` +
       ` SERVICE wikibase:mwapi { bd:serviceParam wikibase:endpoint "www.wikidata.org";` +
       ` wikibase:api "EntitySearch"; mwapi:search "${safe}"; mwapi:language "en".` +
       ` ?item wikibase:apiOutputItem mwapi:item. }` +
@@ -784,6 +784,8 @@ async function fetchWikidata(q: string): Promise<ArtItem[]> {
       ` OPTIONAL { ?item wdt:P170 ?creator. }` +
       ` OPTIONAL { ?item wdt:P195 ?collection. }` +
       ` OPTIONAL { ?item wdt:P571 ?inception. }` +
+      ` OPTIONAL { ?item wdt:P186 ?material. }` +
+      ` OPTIONAL { ?item wdt:P136 ?genre. }` +
       ` SERVICE wikibase:label { bd:serviceParam wikibase:language "en". } } LIMIT 25`;
     const url = `https://query.wikidata.org/sparql?format=json&query=${encodeURIComponent(sparql)}`;
     const res = await timedFetch(url, controller.signal);
@@ -804,11 +806,12 @@ async function fetchWikidata(q: string): Promise<ArtItem[]> {
       const fileBase = rawImage.replace(/^http:/, 'https:');
       const collection = str(b.collectionLabel?.value);
       const sep = fileBase.includes('?') ? '&' : '?';
+      const genre = str(b.genreLabel?.value);
       items.push({
         id: `wikidata-${itemUri.split('/').pop()}`,
         title: str(b.itemLabel?.value) || 'Untitled',
         artist: str(b.creatorLabel?.value),
-        dimensions: collection, // show the holding museum in the metadata line
+        dimensions: '', // no pixel dims from P18 — the UI derives resolution from the image
         thumbUrl: `${fileBase}${sep}width=843`,
         previewUrl: `${fileBase}${sep}width=1600`,
         fullUrl: fileBase,
@@ -818,7 +821,9 @@ async function fetchWikidata(q: string): Promise<ArtItem[]> {
         source: 'wikidata',
         isPublicDomain: true, // P18 images live on Commons (freely licensed)
         date: str(b.inception?.value).slice(0, 4),
-        culture: collection,
+        medium: str(b.materialLabel?.value), // P186 material/technique
+        culture: genre,                       // P136 genre (e.g. "history painting")
+        creditLine: collection,               // P195 holding collection
         description: str(b.itemDescription?.value),
         sourceUrl: itemUri,
       });
@@ -1365,6 +1370,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   res.setHeader('Cache-Control', 'public, s-maxage=3600, stale-while-revalidate=86400');
   return res.status(200).json({
     items: capped, warnings,
-    analyzeEnabled: Boolean(process.env.OPENROUTER_API_KEY || process.env.ANTHROPIC_API_KEY),
+    analyzeEnabled: Boolean(process.env.GEMINI_API_KEY || process.env.GROQ_API_KEY || process.env.OPENROUTER_API_KEY || process.env.ANTHROPIC_API_KEY),
   });
 }

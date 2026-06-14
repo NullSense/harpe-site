@@ -47,6 +47,33 @@ interface Provider {
 }
 
 function pickProvider(): Provider | null {
+  // Google AI Studio (Gemini) — the most generous reliable FREE tier
+  // (~1500 req/day on gemini-2.0-flash). Preferred when configured.
+  const gem = process.env.GEMINI_API_KEY;
+  if (gem) {
+    const model = process.env.HARPE_ANALYZE_MODEL || 'gemini-2.0-flash';
+    return {
+      url: `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+      headers: { 'content-type': 'application/json', 'x-goog-api-key': gem },
+      body: (prompt) => ({
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: { maxOutputTokens: 900, temperature: 0.4 },
+      }),
+      extract: (d) => s((d as { candidates?: Array<{ content?: { parts?: Array<{ text?: unknown }> } }> })
+        ?.candidates?.[0]?.content?.parts?.map((p) => s(p.text)).join('') ?? ''),
+    };
+  }
+  // Groq — fast, free tier (OpenAI-compatible).
+  const groq = process.env.GROQ_API_KEY;
+  if (groq) {
+    const model = process.env.HARPE_ANALYZE_MODEL || 'llama-3.3-70b-versatile';
+    return {
+      url: 'https://api.groq.com/openai/v1/chat/completions',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${groq}` },
+      body: (prompt) => ({ model, max_tokens: 900, messages: [{ role: 'user', content: prompt }] }),
+      extract: (d) => s((d as { choices?: Array<{ message?: { content?: unknown } }> })?.choices?.[0]?.message?.content),
+    };
+  }
   const ork = process.env.OPENROUTER_API_KEY;
   if (ork) {
     // Primary model + free fallbacks: OpenRouter tries them in order, so a
@@ -162,7 +189,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const provider = pickProvider();
   if (!provider) {
     res.setHeader('Cache-Control', 'no-store');
-    return res.status(501).json({ error: 'Analysis is not enabled (set OPENROUTER_API_KEY or ANTHROPIC_API_KEY).' });
+    return res.status(501).json({ error: 'Analysis is not enabled (set GEMINI_API_KEY, GROQ_API_KEY, OPENROUTER_API_KEY, or ANTHROPIC_API_KEY).' });
   }
 
   const ip = clientIp(req.headers as Record<string, string | string[] | undefined>);
