@@ -63,7 +63,7 @@ interface ArtItem {
   format: string;       // format of the primary download
   lossless: boolean;    // true if ANY download variant is lossless
   downloads: Download[];
-  source: 'aic' | 'met' | 'cleveland' | 'commons' | 'wikiart' | 'vam' | 'wellcome' | 'smk' | 'nasjonalmuseet' | 'digitalnz' | 'europeana' | 'harvard' | 'si';
+  source: 'aic' | 'met' | 'cleveland' | 'commons' | 'wikiart' | 'vam' | 'wellcome' | 'smk' | 'nasjonalmuseet' | 'digitalnz' | 'wikidata' | 'europeana' | 'harvard' | 'si';
   isPublicDomain: boolean;
 }
 
@@ -707,6 +707,66 @@ async function fetchDigitalNZ(q: string): Promise<ArtItem[]> {
   }
 }
 
+// ─── Wikidata (keyless; covers museums with no API of their own) ──────────────
+// Full-text entity search (MWAPI) → keep items that have a P18 image, with the
+// creator (P170) and holding collection (P195). This is how works from the
+// Louvre, Prado, Rijksmuseum, Uffizi, etc. (no usable API) reach the search:
+// their pieces are modelled in Wikidata with Commons images.
+
+async function fetchWikidata(q: string): Promise<ArtItem[]> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  try {
+    const safe = q.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/[\n\r]/g, ' ');
+    const sparql =
+      `SELECT ?item ?itemLabel ?image ?creatorLabel ?collectionLabel WHERE {` +
+      ` SERVICE wikibase:mwapi { bd:serviceParam wikibase:endpoint "www.wikidata.org";` +
+      ` wikibase:api "EntitySearch"; mwapi:search "${safe}"; mwapi:language "en".` +
+      ` ?item wikibase:apiOutputItem mwapi:item. }` +
+      ` ?item wdt:P18 ?image.` +
+      ` OPTIONAL { ?item wdt:P170 ?creator. }` +
+      ` OPTIONAL { ?item wdt:P195 ?collection. }` +
+      ` SERVICE wikibase:label { bd:serviceParam wikibase:language "en". } } LIMIT 25`;
+    const url = `https://query.wikidata.org/sparql?format=json&query=${encodeURIComponent(sparql)}`;
+    const res = await timedFetch(url, controller.signal);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const json = await res.json() as {
+      results?: { bindings?: Array<Record<string, { value?: unknown }>> };
+    };
+
+    const items: ArtItem[] = [];
+    const seenItems = new Set<string>();
+    for (const b of json.results?.bindings ?? []) {
+      const itemUri = str(b.item?.value);
+      if (!itemUri || seenItems.has(itemUri)) continue; // dedupe item × creator × collection rows
+      const rawImage = str(b.image?.value);
+      if (!rawImage) continue;
+      seenItems.add(itemUri);
+      // Commons Special:FilePath URL — upgrade to https; size via ?width=
+      const fileBase = rawImage.replace(/^http:/, 'https:');
+      const collection = str(b.collectionLabel?.value);
+      const sep = fileBase.includes('?') ? '&' : '?';
+      items.push({
+        id: `wikidata-${itemUri.split('/').pop()}`,
+        title: str(b.itemLabel?.value) || 'Untitled',
+        artist: str(b.creatorLabel?.value),
+        dimensions: collection, // show the holding museum in the metadata line
+        thumbUrl: `${fileBase}${sep}width=843`,
+        previewUrl: `${fileBase}${sep}width=1600`,
+        fullUrl: fileBase,
+        format: fmtFromUrl(fileBase),
+        lossless: false,
+        downloads: [{ label: 'Full image', url: fileBase, format: fmtFromUrl(fileBase), lossless: false }],
+        source: 'wikidata',
+        isPublicDomain: true, // P18 images live on Commons (freely licensed)
+      });
+    }
+    return items;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // ─── Keyed sources (dormant until their env key is set) ───────────────────────
 // These read a free API key from a server-only env var. The key NEVER reaches
 // the browser (Vite only bundles VITE_-prefixed vars; these run in the
@@ -898,6 +958,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     ['SMK', fetchSmk(q)],
     ['Nasjonalmuseet', fetchNasjonalmuseet(q)],
     ['DigitalNZ', fetchDigitalNZ(q)],
+    ['Wikidata', fetchWikidata(q)],
   ];
   // Keyed sources: only queried when their (server-only) API key is configured.
   if (process.env.EUROPEANA_API_KEY) sources.push(['Europeana', fetchEuropeana(q)]);
@@ -924,7 +985,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const toks = queryTokens(q);
   const SOURCE_ORDER: Record<string, number> = {
     aic: 0, met: 1, cleveland: 2, vam: 3, wellcome: 4, smk: 5, nasjonalmuseet: 6,
-    harvard: 7, europeana: 8, si: 9, digitalnz: 10, wikiart: 11, commons: 12,
+    harvard: 7, europeana: 8, si: 9, wikidata: 10, digitalnz: 11, wikiart: 12, commons: 13,
   };
   // Round-robin rank: 0 = each source's top result, 1 = its second, etc.
   // (items arrive grouped by source, each in that API's own relevance order).
