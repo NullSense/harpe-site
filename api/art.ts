@@ -134,19 +134,23 @@ function relevance(item: ArtItem, toks: string[]): number {
   return r;
 }
 
-// Quality nudge (mirrors the client): paintings up; reproductions / photos-of-art
-// / book-pages / aggregator-junk down. Applied on top of relevance.
+// Quality nudge — MUST stay in sync with src/lib/ranking.ts (different build, so
+// duplicated). Query-aware: never penalise a medium the user explicitly searched.
 const PAINT_RE = /\b(oil|tempera|acrylic|gouache|fresco|distemper|encaustic|watercolou?r|panel|canvas)\b/;
 const REPRO_RE = /\b(photograph|photo|negative|gelatin silver|transparency|lantern|daguerreotype|photomechanical|collotype|halftone|photogravure|lithograph|etching|engraving|woodcut|mezzotint|serigraph|screen ?print|poster|postcard|reproduction|xerography)\b/;
-const BOOK_RE = /\b(book|bound volume|frontispiece|title page|folio|pamphlet|magazine|periodical|leaflet)\b/;
+const BOOK_RE = /\b(book|bound volume|frontispiece|title page|folio|pamphlet|magazine|periodical|leaflet|spine|binding|dust jacket)\b|\b\d{1,4}\s*p\.|leaves of plate|\bp\.\s*illus|\billus\./;
+const WANT_BOOK_RE = /\b(book|magazine|periodical|pamphlet|manuscript|illustration)\b/;
 const SRC_PRIOR: Record<string, number> = { digitalnz: -5, commons: -1, si: -1 };
-function qualityScore(item: ArtItem): number {
+function qualityScore(item: ArtItem, query = ''): number {
   let s = 0;
   const med = (item.medium || '').toLowerCase();
   const t = (item.title || '').toLowerCase();
-  if (PAINT_RE.test(med)) s += 4;
-  if (REPRO_RE.test(med)) s -= 3;
-  if (BOOK_RE.test(med) || BOOK_RE.test(t)) s -= 3;
+  const q = query.toLowerCase();
+  const wantsRepro = REPRO_RE.test(q);
+  const wantsBook = WANT_BOOK_RE.test(q);
+  if (PAINT_RE.test(med) && !wantsRepro) s += 4;
+  if (REPRO_RE.test(med) && !wantsRepro) s -= 3;
+  if ((BOOK_RE.test(med) || BOOK_RE.test(t)) && !wantsBook) s -= 4;
   if (/\bafter [a-z]|reproduction|postcard|photograph of\b/.test(t)) s -= 2;
   s += SRC_PRIOR[item.source] ?? 0;
   return s;
@@ -1374,7 +1378,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   // relevance tier (round-robin) so every contributing collection gets shown,
   // then public-domain, then a stable source order.
   // relevance dominates (×10); quality nudges order within each relevance tier.
-  const score = (it: ArtItem) => relevance(it, toks) * 10 + qualityScore(it);
+  const score = (it: ArtItem) => relevance(it, toks) * 10 + qualityScore(it, q);
   items.sort((a, b) => {
     const sa = score(a);
     const sb = score(b);

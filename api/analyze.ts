@@ -46,13 +46,15 @@ interface Provider {
   extract: (data: unknown) => string;
 }
 
-function pickProvider(): Provider | null {
-  // Google AI Studio (Gemini) — the most generous reliable FREE tier
-  // (~1500 req/day on gemini-2.0-flash). Preferred when configured.
+// All configured providers, in preference order. The handler tries them in turn,
+// so a quota-blocked/down provider (e.g. Gemini 429) falls through to the next.
+function pickProviders(): Provider[] {
+  const out: Provider[] = [];
+  // Google AI Studio (Gemini) — generous free tier when the project's quota is OK.
   const gem = process.env.GEMINI_API_KEY;
   if (gem) {
     const model = process.env.HARPE_ANALYZE_MODEL || 'gemini-2.0-flash';
-    return {
+    out.push({
       url: `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
       headers: { 'content-type': 'application/json', 'x-goog-api-key': gem },
       body: (prompt) => ({
@@ -61,18 +63,18 @@ function pickProvider(): Provider | null {
       }),
       extract: (d) => s((d as { candidates?: Array<{ content?: { parts?: Array<{ text?: unknown }> } }> })
         ?.candidates?.[0]?.content?.parts?.map((p) => s(p.text)).join('') ?? ''),
-    };
+    });
   }
   // Groq — fast, free tier (OpenAI-compatible).
   const groq = process.env.GROQ_API_KEY;
   if (groq) {
     const model = process.env.HARPE_ANALYZE_MODEL || 'llama-3.3-70b-versatile';
-    return {
+    out.push({
       url: 'https://api.groq.com/openai/v1/chat/completions',
       headers: { 'content-type': 'application/json', authorization: `Bearer ${groq}` },
       body: (prompt) => ({ model, max_tokens: 900, messages: [{ role: 'user', content: prompt }] }),
       extract: (d) => s((d as { choices?: Array<{ message?: { content?: unknown } }> })?.choices?.[0]?.message?.content),
-    };
+    });
   }
   const ork = process.env.OPENROUTER_API_KEY;
   if (ork) {
@@ -89,7 +91,7 @@ function pickProvider(): Provider | null {
     ])].slice(0, 3);
     // Opt-in Exa-powered web search to enrich the analysis with live context.
     const web = process.env.HARPE_ANALYZE_WEB === '1';
-    return {
+    out.push({
       url: 'https://openrouter.ai/api/v1/chat/completions',
       headers: {
         'content-type': 'application/json',
@@ -104,19 +106,19 @@ function pickProvider(): Provider | null {
         ...(web ? { plugins: [{ id: 'web', max_results: 3 }] } : {}),
       }),
       extract: (d) => s((d as { choices?: Array<{ message?: { content?: unknown } }> })?.choices?.[0]?.message?.content),
-    };
+    });
   }
   const ak = process.env.ANTHROPIC_API_KEY;
   if (ak) {
     const model = process.env.HARPE_ANALYZE_MODEL || 'claude-haiku-4-5-20251001';
-    return {
+    out.push({
       url: 'https://api.anthropic.com/v1/messages',
       headers: { 'content-type': 'application/json', 'x-api-key': ak, 'anthropic-version': '2023-06-01' },
       body: (prompt) => ({ model, max_tokens: 800, messages: [{ role: 'user', content: prompt }] }),
       extract: (d) => s((d as { content?: Array<{ text?: unknown }> })?.content?.[0]?.text),
-    };
+    });
   }
-  return null;
+  return out;
 }
 
 // ─── Optional Upstash cache (shares env with the rate limiter) ────────────────
@@ -186,8 +188,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(405).json({ error: 'POST only' });
   }
 
-  const provider = pickProvider();
-  if (!provider) {
+  const providers = pickProviders();
+  if (providers.length === 0) {
     res.setHeader('Cache-Control', 'no-store');
     return res.status(501).json({ error: 'Analysis is not enabled (set GEMINI_API_KEY, GROQ_API_KEY, OPENROUTER_API_KEY, or ANTHROPIC_API_KEY).' });
   }
@@ -238,34 +240,36 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     } catch { /* ignore cache errors */ }
   }
 
-  // ── LLM synthesis ──
+  // ── LLM synthesis — try each provider in turn; fall through on failure ──
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  const prompt = buildPrompt(title, artist, items);
+  let lastErr = 'no provider succeeded';
   try {
-    const prompt = buildPrompt(title, artist, items);
-    const r = await fetch(provider.url, {
-      method: 'POST',
-      signal: controller.signal,
-      headers: provider.headers,
-      body: JSON.stringify(provider.body(prompt)),
-    });
-    if (!r.ok) {
-      const detail = await r.text();
-      res.setHeader('Cache-Control', 'no-store');
-      return res.status(502).json({ error: `LLM error ${r.status}`, detail: detail.slice(0, 200) });
-    }
-    const data = await r.json();
-    const analysis = provider.extract(data).trim();
-    if (!analysis) {
-      res.setHeader('Cache-Control', 'no-store');
-      return res.status(502).json({ error: 'Empty analysis' });
-    }
+    for (const provider of providers) {
+      try {
+        const r = await fetch(provider.url, {
+          method: 'POST',
+          signal: controller.signal,
+          headers: provider.headers,
+          body: JSON.stringify(provider.body(prompt)),
+        });
+        if (!r.ok) { lastErr = `LLM error ${r.status}: ${(await r.text()).slice(0, 160)}`; continue; }
+        const analysis = provider.extract(await r.json()).trim();
+        if (!analysis) { lastErr = 'empty analysis'; continue; }
 
-    const payload = { analysis, contributors };
-    if (redis) { try { await redis.set(ck, JSON.stringify(payload), { ex: CACHE_TTL_S }); } catch { /* ignore */ } }
-
-    res.setHeader('Cache-Control', 'public, s-maxage=86400');
-    return res.status(200).json({ ...payload, cached: false });
+        const payload = { analysis, contributors };
+        if (redis) { try { await redis.set(ck, JSON.stringify(payload), { ex: CACHE_TTL_S }); } catch { /* ignore */ } }
+        res.setHeader('Cache-Control', 'public, s-maxage=86400');
+        return res.status(200).json({ ...payload, cached: false });
+      } catch (e) {
+        if (e instanceof Error && e.name === 'AbortError') throw e; // overall timeout → stop
+        lastErr = e instanceof Error ? e.message : 'request failed';
+      }
+    }
+    // every provider failed
+    res.setHeader('Cache-Control', 'no-store');
+    return res.status(502).json({ error: 'All AI providers are busy right now — please try again shortly.', detail: lastErr.slice(0, 200) });
   } catch (e) {
     res.setHeader('Cache-Control', 'no-store');
     if (e instanceof Error && e.name === 'AbortError') return res.status(504).json({ error: 'Analysis timed out' });

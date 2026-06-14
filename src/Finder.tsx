@@ -17,6 +17,7 @@ import { createPortal } from 'react-dom';
 import DownloadMenu from './components/DownloadMenu';
 import { streamArt } from './lib/useArtStream';
 import { fitsScreen } from './lib/resolutions';
+import { qualityScore, stripHtml } from './lib/ranking';
 import {
   type DownloadVariant,
   LOSSLESS_FORMATS,
@@ -95,26 +96,6 @@ function qTokens(q: string): string[] {
   return q.toLowerCase().split(/[^a-z0-9]+/).filter((t) => t.length >= 3 && !STOP.has(t));
 }
 
-// Quality heuristic (free, no model): nudge real paintings up and reproductions /
-// photos-of-art / book-pages / aggregator-junk down. Derived from sampling ~1200
-// live results. Applied as a SCORE on top of relevance (relevance still wins), so
-// it re-orders within a relevance tier rather than hiding anything.
-const PAINT_RE = /\b(oil|tempera|acrylic|gouache|fresco|distemper|encaustic|watercolou?r|panel|canvas)\b/;
-const REPRO_RE = /\b(photograph|photo|negative|gelatin silver|transparency|lantern|daguerreotype|photomechanical|collotype|halftone|photogravure|lithograph|etching|engraving|woodcut|mezzotint|serigraph|screen ?print|poster|postcard|reproduction|xerography)\b/;
-const BOOK_RE = /\b(book|bound volume|frontispiece|title page|folio|pamphlet|magazine|periodical|leaflet)\b/;
-const SRC_PRIOR: Record<string, number> = { digitalnz: -5, commons: -1, si: -1 };
-function qualityScore(it: ArtItem): number {
-  let s = 0;
-  const med = (it.medium || '').toLowerCase();
-  const t = (it.title || '').toLowerCase();
-  if (PAINT_RE.test(med)) s += 4;
-  if (REPRO_RE.test(med)) s -= 3;
-  if (BOOK_RE.test(med) || BOOK_RE.test(t)) s -= 3;
-  if (/\bafter [a-z]|reproduction|postcard|photograph of\b/.test(t)) s -= 2;
-  s += SRC_PRIOR[it.source] ?? 0;
-  return s;
-}
-
 function rankArt(items: ArtItem[], q: string): ArtItem[] {
   const toks = qTokens(q);
   const rel = (it: ArtItem) => {
@@ -125,7 +106,7 @@ function rankArt(items: ArtItem[], q: string): ArtItem[] {
   const seen: Record<string, number> = {};
   for (const it of items) { seen[it.source] = (seen[it.source] ?? -1) + 1; rr.set(it, seen[it.source]); }
   // relevance dominates (×10); quality nudges order within each relevance tier.
-  const score = (it: ArtItem) => rel(it) * 10 + qualityScore(it);
+  const score = (it: ArtItem) => rel(it) * 10 + qualityScore(it, q);
   return [...items].sort((a, b) => {
     const r = score(b) - score(a); if (r) return r;
     const d = (rr.get(a) ?? 0) - (rr.get(b) ?? 0); if (d) return d;
@@ -204,11 +185,15 @@ function normalizeArt(raw: unknown): ArtItem {
     .filter((v) => v.url);
   const thumbUrl = typeof d.thumbUrl === 'string' ? d.thumbUrl : String(d.thumbUrl ?? '');
   const fullUrl = typeof d.fullUrl === 'string' ? d.fullUrl : String(d.fullUrl ?? '');
+  const txt = (k: string) => {
+    const val = typeof d[k] === 'string' ? stripHtml(d[k] as string) : '';
+    return val || undefined;
+  };
   return {
     id: typeof d.id === 'string' ? d.id : String(d.id ?? ''),
-    title: typeof d.title === 'string' ? d.title : String(d.title ?? 'Untitled'),
-    artist: typeof d.artist === 'string' ? d.artist : String(d.artist ?? ''),
-    dimensions: typeof d.dimensions === 'string' && d.dimensions ? d.dimensions : undefined,
+    title: txt('title') ?? 'Untitled',
+    artist: txt('artist') ?? '',
+    dimensions: txt('dimensions'),
     thumbUrl,
     previewUrl: typeof d.previewUrl === 'string' && d.previewUrl ? d.previewUrl : fullUrl || thumbUrl,
     fullUrl,
@@ -219,11 +204,11 @@ function normalizeArt(raw: unknown): ArtItem {
     downloads: downloads.length ? downloads : [{ label: 'Download', url: fullUrl, format: fmt, lossless: false }],
     source: (d.source as ArtItem['source']) || 'aic',
     isPublicDomain: Boolean(d.isPublicDomain),
-    date: typeof d.date === 'string' && d.date ? d.date : undefined,
-    medium: typeof d.medium === 'string' && d.medium ? d.medium : undefined,
-    culture: typeof d.culture === 'string' && d.culture ? d.culture : undefined,
-    creditLine: typeof d.creditLine === 'string' && d.creditLine ? d.creditLine : undefined,
-    description: typeof d.description === 'string' && d.description ? d.description : undefined,
+    date: txt('date'),
+    medium: txt('medium'),
+    culture: txt('culture'),
+    creditLine: txt('creditLine'),
+    description: txt('description'),
     sourceUrl: typeof d.sourceUrl === 'string' && d.sourceUrl ? d.sourceUrl : undefined,
   };
 }
@@ -361,11 +346,18 @@ function ArtDetail({
 }) {
   const open = index >= 0 && index < items.length;
   const [z, setZ] = useState(1);
-  const [pan, setPan] = useState({ x: 0, y: 0 });
   const [nat, setNat] = useState<{ w: number; h: number } | null>(null); // measured pixels
+  // Pan is kept in a ref and applied to the <img> imperatively, so dragging does
+  // NOT re-render the whole overlay on every pointer-move (that was the lag).
+  const imgRef = useRef<HTMLImageElement>(null);
+  const panRef = useRef({ x: 0, y: 0 });
   const drag = useRef<null | { sx: number; sy: number; px: number; py: number }>(null);
+  const apply = useCallback((zoom: number) => {
+    if (imgRef.current) imgRef.current.style.transform = `translate(${panRef.current.x}px, ${panRef.current.y}px) scale(${zoom})`;
+  }, []);
 
-  useEffect(() => { setZ(1); setPan({ x: 0, y: 0 }); setNat(null); }, [index]);
+  useEffect(() => { panRef.current = { x: 0, y: 0 }; setZ(1); setNat(null); }, [index]);
+  useEffect(() => { apply(z); }, [z, apply]);
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
@@ -399,8 +391,9 @@ function ArtDetail({
   })();
   const onWheel = (e: React.WheelEvent) => {
     const next = Math.min(6, Math.max(1, z * (e.deltaY < 0 ? 1.15 : 1 / 1.15)));
+    if (next === 1) panRef.current = { x: 0, y: 0 };
+    apply(next);
     setZ(next);
-    if (next === 1) setPan({ x: 0, y: 0 });
   };
 
   return createPortal(
@@ -409,21 +402,21 @@ function ArtDetail({
       <div
         className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden"
         onWheel={onWheel}
-        onDoubleClick={() => { setZ((v) => (v > 1 ? 1 : 2.4)); setPan({ x: 0, y: 0 }); }}
-        onPointerDown={(e) => { if (z > 1) { drag.current = { sx: e.clientX, sy: e.clientY, px: pan.x, py: pan.y }; (e.target as HTMLElement).setPointerCapture?.(e.pointerId); } }}
-        onPointerMove={(e) => { if (drag.current) setPan({ x: drag.current.px + (e.clientX - drag.current.sx), y: drag.current.py + (e.clientY - drag.current.sy) }); }}
+        onDoubleClick={() => { const n = z > 1 ? 1 : 2.4; if (n === 1) panRef.current = { x: 0, y: 0 }; apply(n); setZ(n); }}
+        onPointerDown={(e) => { if (z > 1) { drag.current = { sx: e.clientX, sy: e.clientY, px: panRef.current.x, py: panRef.current.y }; (e.target as HTMLElement).setPointerCapture?.(e.pointerId); } }}
+        onPointerMove={(e) => { if (drag.current) { panRef.current = { x: drag.current.px + (e.clientX - drag.current.sx), y: drag.current.py + (e.clientY - drag.current.sy) }; apply(z); } }}
         onPointerUp={() => { drag.current = null; }}
-        style={{ cursor: z > 1 ? (drag.current ? 'grabbing' : 'grab') : 'zoom-in' }}
+        style={{ cursor: z > 1 ? 'grab' : 'zoom-in' }}
       >
         <img
+          ref={imgRef}
           /* zoomed in → load the full-resolution original (unless it's a TIFF the
              browser can't render) so deep zoom is sharp, not a blurry preview. */
           src={displaySrc(z > 1 && item.fullUrl && item.format !== 'tiff' ? item.fullUrl : (item.previewUrl || item.fullUrl))}
           alt={item.title}
           draggable={false}
-          onLoad={(e) => setNat({ w: e.currentTarget.naturalWidth, h: e.currentTarget.naturalHeight })}
-          className="max-h-full max-w-full select-none object-contain transition-transform duration-100"
-          style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${z})` }}
+          onLoad={(e) => { setNat({ w: e.currentTarget.naturalWidth, h: e.currentTarget.naturalHeight }); apply(z); }}
+          className="max-h-full max-w-full select-none object-contain transition-transform duration-75"
         />
         {/* prev / next */}
         {index > 0 && (
@@ -434,8 +427,8 @@ function ArtDetail({
         )}
         {/* zoom controls + counter */}
         <div className="absolute bottom-3 left-3 flex items-center gap-1 font-mono text-[.72rem]">
-          <button type="button" onClick={() => { const n = Math.max(1, z / 1.4); setZ(n); if (n === 1) setPan({ x: 0, y: 0 }); }} className="rounded border border-line bg-[rgba(10,8,6,.7)] px-2 py-1 text-muted hover:text-bronze-bright">−</button>
-          <button type="button" onClick={() => setZ((v) => Math.min(6, v * 1.4))} className="rounded border border-line bg-[rgba(10,8,6,.7)] px-2 py-1 text-muted hover:text-bronze-bright">+</button>
+          <button type="button" onClick={() => { const n = Math.max(1, z / 1.4); if (n === 1) panRef.current = { x: 0, y: 0 }; apply(n); setZ(n); }} className="rounded border border-line bg-[rgba(10,8,6,.7)] px-2 py-1 text-muted hover:text-bronze-bright">−</button>
+          <button type="button" onClick={() => { const n = Math.min(6, z * 1.4); apply(n); setZ(n); }} className="rounded border border-line bg-[rgba(10,8,6,.7)] px-2 py-1 text-muted hover:text-bronze-bright">+</button>
           <span className="ml-2 rounded bg-[rgba(10,8,6,.7)] px-2 py-1 text-muted/70">{index + 1} / {items.length}</span>
         </div>
       </div>
@@ -534,7 +527,9 @@ export default function Finder() {
   const sentinelRef = useRef<HTMLDivElement>(null);
 
   // shared lightbox (index into the currently-visible list)
-  const [detailIndex, setDetailIndex] = useState(-1);       // shared detail viewer (art + scan)
+  // The open detail is tracked by item ID (not index) so streaming re-ordering
+  // doesn't swap which artwork is shown — the index is derived from the id.
+  const [detailId, setDetailId] = useState<string | null>(null);
 
   // reverse-image search (SauceNAO) — scan mode
   const [sauceEnabled, setSauceEnabled] = useState(false);
@@ -556,7 +551,7 @@ export default function Finder() {
   const run = useCallback(async (raw: string) => {
     const q = raw.trim();
     if (!q) return;
-    setDetailIndex(-1);
+    setDetailId(null);
     setMode('loading');
     setError('');
 
@@ -620,7 +615,7 @@ export default function Finder() {
     // Plain text → museum search, STREAMED per-source (with /api/art fallback).
     streamCancelRef.current?.();         // abort any in-flight stream
     setQuery(q); setArtItems([]); setWarnings([]); setShown(SHOWN_STEP); setStreaming(true);
-    setSourceFilter(new Set()); setPdOnly(false); setLosslessOnly(false); setDetailIndex(-1);
+    setSourceFilter(new Set()); setPdOnly(false); setLosslessOnly(false); setDetailId(null);
     const acc: ArtItem[] = [];
     let gotBatch = false;
     const cancel = streamArt(q, {
@@ -784,6 +779,8 @@ export default function Finder() {
 
   // The active list for the shared detail viewer: scanned-page images or museum art.
   const detailItems = mode === 'scan' ? scanAsArt : visibleArt;
+  const detailIndex = detailId ? detailItems.findIndex((it) => it.id === detailId) : -1;
+  const openDetailAt = useCallback((i: number) => setDetailId(detailItems[i]?.id ?? null), [detailItems]);
 
   const analyzeWork = useCallback(async (item: ArtItem) => {
     const group = siblingsByKey.get(workKey(item)) ?? [item];
@@ -820,7 +817,6 @@ export default function Finder() {
   // The current search lives in the URL as ?q=<term>; an open slide adds &v=<id>.
   // Opening a shared link just re-runs the same search against the same endpoints,
   // so it costs exactly what a normal search does — nothing extra.
-  const pendingViewRef = useRef<string | null>(null);
   const [shareMsg, setShareMsg] = useState('');
 
   const buildShareUrl = useCallback(
@@ -828,10 +824,21 @@ export default function Finder() {
       const term = mode === 'scan' ? pageUrl : query;
       const params = new URLSearchParams();
       if (term) params.set('q', term);
-      if (viewId) params.set('v', viewId);
+      if (viewId) {
+        params.set('v', viewId);
+        // Embed preview data so social crawlers get a rich card with no refetch
+        // (read by middleware.ts). Only on the shared link, not the address bar.
+        const it = detailItems.find((i) => i.id === viewId);
+        if (it) {
+          params.set('t', it.title);
+          if (it.thumbUrl) params.set('img', it.thumbUrl);
+          const d = [it.artist, it.date, it.medium].filter(Boolean).join(' · ');
+          if (d) params.set('d', d);
+        }
+      }
       return `${window.location.origin}${window.location.pathname}?${params.toString()}`;
     },
-    [mode, pageUrl, query],
+    [mode, pageUrl, query, detailItems],
   );
 
   const copyShare = useCallback(
@@ -848,24 +855,16 @@ export default function Finder() {
     [buildShareUrl],
   );
 
-  // Hydrate from the URL on first load: ?q= runs the search, ?v= opens that slide.
+  // Hydrate from the URL on first load: ?q= runs the search, ?v= opens that item.
+  // detailId persists; the detailIndex memo opens it as soon as it streams in.
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const q = params.get('q');
     const v = params.get('v');
-    if (v) pendingViewRef.current = v;
+    if (v) setDetailId(v);
     if (q) { setInput(q); run(q); }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  // Once results are in, open the deep-linked item (works while streaming, too) —
-  // the SAME detail viewer for both scanned images and museum art.
-  useEffect(() => {
-    const v = pendingViewRef.current;
-    if (!v) return;
-    const idx = detailItems.findIndex((it) => it.id === v);
-    if (idx >= 0) { setDetailIndex(idx); pendingViewRef.current = null; }
-  }, [detailItems]);
 
   // Keep the address bar in sync (replaceState → no history spam during streaming).
   useEffect(() => {
@@ -873,12 +872,12 @@ export default function Finder() {
     const term = mode === 'scan' ? pageUrl : query;
     if (!term) return;
     const params = new URLSearchParams({ q: term });
-    if (detailIndex >= 0) {
-      const id = detailItems[detailIndex]?.id;
+    if (detailId && detailIndex >= 0) {
+      const id = detailId;
       if (id) params.set('v', id);
     }
     window.history.replaceState(null, '', `${window.location.pathname}?${params.toString()}`);
-  }, [mode, query, pageUrl, detailIndex, detailItems]);
+  }, [mode, query, pageUrl, detailId, detailIndex]);
 
   // Infinite scroll: reveal more cards as the sentinel nears the viewport.
   useEffect(() => {
@@ -1007,7 +1006,7 @@ export default function Finder() {
                 <ArtCard
                   key={originalIdx}
                   item={scanAsArt[i]}
-                  onOpen={() => setDetailIndex(i)}
+                  onOpen={() => openDetailAt(i)}
                   selected={selected.has(originalIdx)}
                   onToggleSelect={() => toggleSelect(originalIdx)}
                   dlStatus={dlMap.get(originalIdx)}
@@ -1089,7 +1088,7 @@ export default function Finder() {
                           <ArtCard
                             key={item.id}
                             item={item}
-                            onOpen={() => setDetailIndex(i)}
+                            onOpen={() => openDetailAt(i)}
                           />
                         ))}
                       </div>
@@ -1115,11 +1114,11 @@ export default function Finder() {
       <ArtDetail
         items={detailItems}
         index={detailIndex}
-        onClose={() => setDetailIndex(-1)}
-        onIndex={setDetailIndex}
+        onClose={() => setDetailId(null)}
+        onIndex={openDetailAt}
         onAnalyze={analyzeWork}
         onShare={copyShare}
-        onSearch={(qq) => { setInput(qq); setDetailIndex(-1); run(qq); }}
+        onSearch={(qq) => { setInput(qq); setDetailId(null); run(qq); }}
         onFindSource={sauceEnabled ? findSource : undefined}
         analyzeEnabled={analyzeEnabled}
       />

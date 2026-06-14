@@ -8,7 +8,9 @@
     "build": "vite build",
     "preview": "vite preview",
     "clean": "rm -rf dist",
-    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.api.json"
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.api.json",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@upstash/ratelimit": "^2.0.8",
@@ -28,7 +30,8 @@
     "@vitejs/plugin-react": "^5.0.4",
     "tailwindcss": "^4.1.14",
     "typescript": "~5.8.2",
-    "vite": "^6.2.3"
+    "vite": "^6.2.3",
+    "vitest": "^2.1.9"
   },
   "overrides": {
     "esbuild": "^0.25.10"
