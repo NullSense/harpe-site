@@ -47,7 +47,7 @@ interface ArtItem {
   dimensions: string;
   thumbUrl: string;
   fullUrl: string;
-  source: 'aic' | 'met' | 'cleveland';
+  source: 'aic' | 'met' | 'cleveland' | 'commons';
   isPublicDomain: boolean;
 }
 
@@ -60,6 +60,25 @@ function str(v: unknown): string {
   // Objects / arrays: do NOT pass through — coerce to empty string to prevent
   // React error #31 ("Objects are not valid as a React child").
   return '';
+}
+
+// Query-relevance ranking (mirrors the CLI's harpe.rank): score each result by
+// how many query tokens appear in its title+artist, so the ACTUAL work searched
+// for floats to the top instead of just "other works by the same artist".
+const STOP = new Set([
+  'the', 'and', 'of', 'to', 'in', 'on', 'by', 'with', 'from', 'for',
+  'his', 'her', 'its', 'a', 'an', 'at', 'as',
+]);
+
+function queryTokens(q: string): string[] {
+  return q.toLowerCase().split(/[^a-z0-9]+/).filter((t) => t.length >= 3 && !STOP.has(t));
+}
+
+function relevance(item: ArtItem, toks: string[]): number {
+  const hay = `${item.title} ${item.artist}`.toLowerCase();
+  let r = 0;
+  for (const t of toks) if (hay.includes(t)) r++;
+  return r;
 }
 
 async function timedFetch(url: string, signal: AbortSignal): Promise<Response> {
@@ -193,9 +212,11 @@ async function fetchCleveland(q: string): Promise<ArtItem[]> {
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
 
   try {
+    // No cc0 filter — that excluded famous casts (e.g. Cleveland's The Thinker).
+    // We keep has_image and badge rights per-item from share_license_status.
     const url =
       `https://openaccess-api.clevelandart.org/api/artworks/` +
-      `?q=${encodeURIComponent(q)}&has_image=1&cc0=1&limit=10`;
+      `?q=${encodeURIComponent(q)}&has_image=1&limit=12`;
 
     const res = await timedFetch(url, controller.signal);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -205,6 +226,7 @@ async function fetchCleveland(q: string): Promise<ArtItem[]> {
         id?: unknown;
         title?: unknown;
         creators?: Array<{ description?: unknown }>;
+        share_license_status?: unknown;
         // dimensions is an OBJECT in Cleveland's API — deliberately typed as
         // unknown to force explicit handling below; never pass through raw.
         dimensions?: unknown;
@@ -239,7 +261,62 @@ async function fetchCleveland(q: string): Promise<ArtItem[]> {
         thumbUrl: imageUrl,
         fullUrl: imageUrl,
         source: 'cleveland',
-        isPublicDomain: true, // cc0 filter guarantees this
+        isPublicDomain: str(d.share_license_status).toUpperCase() === 'CC0',
+      });
+    }
+
+    return items;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// ─── Wikimedia Commons (huge coverage — the real recall fix) ──────────────────
+
+async function fetchCommons(q: string): Promise<ArtItem[]> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+
+  try {
+    const url =
+      `https://commons.wikimedia.org/w/api.php?action=query&format=json` +
+      `&generator=search&gsrsearch=${encodeURIComponent(q)}&gsrnamespace=6&gsrlimit=15` +
+      `&prop=imageinfo&iiprop=url%7Csize%7Cmime&iiurlwidth=843`;
+
+    const res = await timedFetch(url, controller.signal);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+    const json = await res.json() as {
+      query?: {
+        pages?: Record<string, {
+          title?: unknown;
+          imageinfo?: Array<{
+            url?: unknown; thumburl?: unknown;
+            width?: unknown; height?: unknown; mime?: unknown;
+          }>;
+        }>;
+      };
+    };
+
+    const items: ArtItem[] = [];
+    for (const p of Object.values(json.query?.pages ?? {})) {
+      const ii = p.imageinfo?.[0];
+      if (!ii) continue;
+      if (!/^image\/(jpeg|png|tiff|webp)/.test(str(ii.mime))) continue;
+      const full = str(ii.url);
+      if (!full) continue;
+      const w = Number(ii.width) || 0;
+      const h = Number(ii.height) || 0;
+      const title = str(p.title).replace(/^File:/, '').replace(/\.[A-Za-z0-9]+$/, '');
+      items.push({
+        id: `commons-${title}`,
+        title: title || 'Untitled',
+        artist: '',
+        dimensions: w && h ? `${w} × ${h} px` : '',
+        thumbUrl: str(ii.thumburl) || full,
+        fullUrl: full,
+        source: 'commons',
+        isPublicDomain: true, // Commons hosts freely-licensed / PD media
       });
     }
 
@@ -278,52 +355,38 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     throw e;
   }
 
-  // Fetch all three sources concurrently; one failing only adds a warning
-  const [aicResult, metResult, clevelandResult] = await Promise.allSettled([
-    fetchAic(q),
-    fetchMet(q),
-    fetchCleveland(q),
-  ]);
+  // Fetch all sources concurrently; one failing only adds a warning
+  const sources: Array<[string, Promise<ArtItem[]>]> = [
+    ['AIC', fetchAic(q)],
+    ['Met', fetchMet(q)],
+    ['Cleveland', fetchCleveland(q)],
+    ['Commons', fetchCommons(q)],
+  ];
+  const settled = await Promise.allSettled(sources.map(([, p]) => p));
 
   const items: ArtItem[] = [];
   const warnings: string[] = [];
+  settled.forEach((r, i) => {
+    const name = sources[i][0];
+    if (r.status === 'fulfilled') items.push(...r.value);
+    else warnings.push(`${name}: ${r.reason instanceof Error ? r.reason.message : String(r.reason)}`);
+  });
 
-  if (aicResult.status === 'fulfilled') {
-    items.push(...aicResult.value);
-  } else {
-    const msg = aicResult.reason instanceof Error ? aicResult.reason.message : String(aicResult.reason);
-    warnings.push(`AIC: ${msg}`);
-  }
-
-  if (metResult.status === 'fulfilled') {
-    items.push(...metResult.value);
-  } else {
-    const msg = metResult.reason instanceof Error ? metResult.reason.message : String(metResult.reason);
-    warnings.push(`Met: ${msg}`);
-  }
-
-  if (clevelandResult.status === 'fulfilled') {
-    items.push(...clevelandResult.value);
-  } else {
-    const msg = clevelandResult.reason instanceof Error ? clevelandResult.reason.message : String(clevelandResult.reason);
-    warnings.push(`Cleveland: ${msg}`);
-  }
-
-  if (items.length === 0 && warnings.length === 3) {
-    // All three sources failed — surface as a server error
+  if (items.length === 0 && warnings.length === sources.length) {
     res.setHeader('Cache-Control', 'no-store');
-    return res.status(502).json({
-      error: 'All museum sources failed',
-      warnings,
-    });
+    return res.status(502).json({ error: 'All museum sources failed', warnings });
   }
 
-  // Sort: public domain first, then by source order (aic, met, cleveland)
-  const SOURCE_ORDER: Record<string, number> = { aic: 0, met: 1, cleveland: 2 };
+  // Rank by query relevance FIRST (so the actual work searched for is on top),
+  // then public-domain, then source order. This is the fix for "Rodin Thinker"
+  // returning other Rodin works instead of The Thinker.
+  const toks = queryTokens(q);
+  const SOURCE_ORDER: Record<string, number> = { aic: 0, met: 1, cleveland: 2, commons: 3 };
   items.sort((a, b) => {
-    if (a.isPublicDomain !== b.isPublicDomain) {
-      return a.isPublicDomain ? -1 : 1;
-    }
+    const ra = relevance(a, toks);
+    const rb = relevance(b, toks);
+    if (ra !== rb) return rb - ra;
+    if (a.isPublicDomain !== b.isPublicDomain) return a.isPublicDomain ? -1 : 1;
     return (SOURCE_ORDER[a.source] ?? 9) - (SOURCE_ORDER[b.source] ?? 9);
   });
 

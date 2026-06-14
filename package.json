@@ -13,7 +13,7 @@
   "dependencies": {
     "@upstash/ratelimit": "^2.0.8",
     "@upstash/redis": "^1.38.0",
-    "@vercel/node": "^5.1.1",
+    "@vercel/node": "^5.8.17",
     "node-html-parser": "^6.1.13",
     "react": "^19.0.1",
     "react-dom": "^19.0.1",
@@ -21,7 +21,7 @@
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.1.14",
-    "@types/node": "^22.14.0",
+    "@types/node": "^24.13.2",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^5.0.4",
