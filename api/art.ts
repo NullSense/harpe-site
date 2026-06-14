@@ -28,8 +28,16 @@
  */
 
 import type { VercelRequest, VercelResponse } from './_vercel.js';
-import { fetch } from 'undici';
+import { fetch, Agent } from 'undici';
 import { GuardError, rateLimit, clientIp } from './_guard.js';
+
+// HTTP/2 dispatcher (lazy). NYPL's HTTP/1.1 path returns "HTTP Basic: Access
+// denied" and ignores the Token auth scheme; over HTTP/2 (what curl uses) the
+// Token is honoured. undici defaults to HTTP/1.1, so NYPL needs this explicitly.
+let _h2: Agent | undefined;
+function h2Agent(): Agent {
+  return (_h2 ??= new Agent({ allowH2: true }));
+}
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -1177,15 +1185,16 @@ async function fetchNypl(q: string): Promise<ArtItem[]> {
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
   try {
     // v2 + `Authorization: Token token="…"` is the documented scheme (v1 is now
-    // disabled). A 401 "HTTP Basic: Access denied" here means the TOKEN VALUE is
-    // wrong/not-activated (e.g. an account password was set instead of the token).
+    // disabled). Must go over HTTP/2 (see h2Agent) — NYPL's HTTP/1.1 path replies
+    // "HTTP Basic: Access denied" and ignores the Token scheme.
     const url =
       `https://api.repo.nypl.org/api/v2/items/search?q=${encodeURIComponent(q)}` +
       `&publicDomainOnly=true&per_page=20`;
     const res = await fetch(url, {
+      dispatcher: h2Agent(),   // NYPL honours the Token scheme only over HTTP/2
       signal: controller.signal,
       headers: { 'User-Agent': UA, Accept: 'application/json', Authorization: `Token token="${token}"` },
-    }) as unknown as Response;
+    } as Parameters<typeof fetch>[1]) as unknown as Response;
     if (!res.ok) {
       const b = await res.text().catch(() => '');
       throw new Error(`HTTP ${res.status} ${b.replace(/\s+/g, ' ').slice(0, 90)}`);
