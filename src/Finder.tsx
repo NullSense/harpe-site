@@ -615,6 +615,9 @@ export default function Finder() {
           </button>
         ))}
       </div>
+      <p className="mt-3 text-center font-mono text-[.68rem] tracking-[0.04em] text-muted/55">
+        art search spans Art Institute of Chicago · The Met · Cleveland · V&amp;A · WikiArt · Wikimedia Commons
+      </p>
 
       {/* ── results ── */}
       <div className="mt-10">
