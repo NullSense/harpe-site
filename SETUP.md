@@ -38,3 +38,17 @@ For stricter enforcement across all instances (recommended for production), conf
    ```
 
 The limit is generous: **60 requests per 60 seconds per IP** (sliding window), so real users are never blocked. Only abusive scripts hitting the API repeatedly will be rate-limited. The fallback in-memory limiter remains active if env vars are missing or the Redis connection fails.
+
+> The code also accepts the `KV_REST_API_URL` / `KV_REST_API_TOKEN` names that the Vercel Marketplace **Upstash for Redis** integration injects — so the one-click integration works with no code change.
+
+## Optional art sources (free API keys)
+
+The art search runs 7 keyless museum sources out of the box (AIC, The Met, Cleveland, V&A, Wellcome, WikiArt, Wikimedia Commons). Three more big collections can be enabled by adding a free key. **The keys live only in server-side env vars and never reach the browser** (Vite only bundles `VITE_`-prefixed vars; these run inside the serverless function, which proxies the call). Each source stays dormant until its key is set.
+
+| Source | Env var | Get a free key |
+|---|---|---|
+| Europeana (3,000+ EU institutions) | `EUROPEANA_API_KEY` | https://pro.europeana.eu/pages/get-api |
+| Harvard Art Museums | `HARVARD_API_KEY` | https://harvardartmuseums.org/collections/api |
+| Smithsonian (Open Access, CC0) | `SMITHSONIAN_API_KEY` | https://api.data.gov/signup |
+
+Add each in the Vercel dashboard (**Settings → Environment Variables**) or via `vercel env add <NAME> production`, then redeploy. Because `/api/art` is public, your key is consumed indirectly by site visitors — but the per-IP rate limit + 1-hour edge cache keep usage low, and if a key's quota is exhausted that one source just degrades to a warning (nothing breaks).

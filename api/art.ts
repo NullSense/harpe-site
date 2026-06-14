@@ -64,7 +64,7 @@ interface ArtItem {
   format: string;       // format of the primary download
   lossless: boolean;    // true if ANY download variant is lossless
   downloads: Download[];
-  source: 'aic' | 'met' | 'cleveland' | 'commons' | 'wikiart' | 'vam' | 'wellcome';
+  source: 'aic' | 'met' | 'cleveland' | 'commons' | 'wikiart' | 'vam' | 'wellcome' | 'europeana' | 'harvard' | 'si';
   isPublicDomain: boolean;
 }
 
@@ -561,6 +561,156 @@ async function fetchWellcome(q: string): Promise<ArtItem[]> {
   }
 }
 
+// ─── Keyed sources (dormant until their env key is set) ───────────────────────
+// These read a free API key from a server-only env var. The key NEVER reaches
+// the browser (Vite only bundles VITE_-prefixed vars; these run in the
+// serverless function). Each fetcher is only added to the fan-out when its key
+// is present, so the site works fully without any of them.
+
+function first(v: unknown): string {
+  if (Array.isArray(v)) return v.length ? str(v[0]) : '';
+  return str(v);
+}
+
+// Europeana — aggregates 3,000+ European institutions. Free key: EUROPEANA_API_KEY
+async function fetchEuropeana(q: string): Promise<ArtItem[]> {
+  const key = process.env.EUROPEANA_API_KEY!;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  try {
+    const url =
+      `https://api.europeana.eu/record/v2/search.json?wskey=${encodeURIComponent(key)}` +
+      `&query=${encodeURIComponent(q)}&qf=TYPE:IMAGE&reusability=open&media=true&thumbnail=true&rows=15`;
+    const res = await timedFetch(url, controller.signal);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const json = await res.json() as {
+      items?: Array<{
+        title?: unknown; dcCreator?: unknown; edmPreview?: unknown;
+        edmIsShownBy?: unknown; isShownBy?: unknown; guid?: unknown; id?: unknown;
+      }>;
+    };
+    const items: ArtItem[] = [];
+    for (const it of json.items ?? []) {
+      const thumb = first(it.edmPreview);
+      const full = first(it.edmIsShownBy) || first(it.isShownBy) || thumb;
+      if (!thumb) continue;
+      items.push({
+        id: `europeana-${str(it.id) || str(it.guid)}`,
+        title: first(it.title) || 'Untitled',
+        artist: first(it.dcCreator),
+        dimensions: '',
+        thumbUrl: thumb,
+        previewUrl: full || thumb,
+        fullUrl: full || thumb,
+        format: fmtFromUrl(full || thumb),
+        lossless: LOSSLESS_FORMATS.has(fmtFromUrl(full || thumb)),
+        downloads: [{ label: 'Full image', url: full || thumb, format: fmtFromUrl(full || thumb), lossless: false }],
+        source: 'europeana',
+        isPublicDomain: true, // reusability=open filter
+      });
+    }
+    return items;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Harvard Art Museums. Free key: HARVARD_API_KEY
+async function fetchHarvard(q: string): Promise<ArtItem[]> {
+  const key = process.env.HARVARD_API_KEY!;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  try {
+    const url =
+      `https://api.harvardartmuseums.org/object?apikey=${encodeURIComponent(key)}` +
+      `&keyword=${encodeURIComponent(q)}&hasimage=1&size=20&sort=rank`;
+    const res = await timedFetch(url, controller.signal);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const json = await res.json() as {
+      records?: Array<{
+        id?: unknown; title?: unknown; dated?: unknown;
+        people?: Array<{ name?: unknown; role?: unknown }>;
+        primaryimageurl?: unknown; iiifbaseuri?: unknown; imagepermissionlevel?: unknown;
+      }>;
+    };
+    const items: ArtItem[] = [];
+    for (const r of json.records ?? []) {
+      // imagepermissionlevel 0 = freely usable; require a primary image.
+      if (Number(r.imagepermissionlevel) !== 0) continue;
+      const primary = str(r.primaryimageurl);
+      if (!primary) continue;
+      const iiif = str(r.iiifbaseuri);
+      const date = str(r.dated);
+      const artist = (r.people?.find((p) => str(p.role) === 'Artist') ?? r.people?.[0]);
+      items.push({
+        id: `harvard-${str(r.id)}`,
+        title: (str(r.title) || 'Untitled') + (date ? ` (${date})` : ''),
+        artist: artist ? str(artist.name) : '',
+        dimensions: '',
+        thumbUrl: iiif ? `${iiif}/full/!843,843/0/default.jpg` : `${primary}?height=843`,
+        previewUrl: iiif ? `${iiif}/full/!1600,1600/0/default.jpg` : primary,
+        fullUrl: primary,
+        format: 'jpeg',
+        lossless: false,
+        downloads: [{ label: 'Full JPEG', url: primary, format: 'jpeg', lossless: false }],
+        source: 'harvard',
+        isPublicDomain: true, // imagepermissionlevel 0
+      });
+    }
+    return items;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Smithsonian Open Access (CC0). Free key: SMITHSONIAN_API_KEY
+async function fetchSmithsonian(q: string): Promise<ArtItem[]> {
+  const key = process.env.SMITHSONIAN_API_KEY!;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  try {
+    const url =
+      `https://api.si.edu/openaccess/api/v1.0/search?api_key=${encodeURIComponent(key)}` +
+      `&q=${encodeURIComponent(`${q} AND online_media_type:Images`)}&rows=15`;
+    const res = await timedFetch(url, controller.signal);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const json = await res.json() as {
+      response?: { rows?: Array<{
+        id?: unknown; title?: unknown;
+        content?: {
+          freetext?: { name?: Array<{ content?: unknown }> };
+          descriptiveNonRepeating?: { online_media?: { media?: Array<{ thumbnail?: unknown; content?: unknown; type?: unknown }> } };
+        };
+      }> };
+    };
+    const items: ArtItem[] = [];
+    for (const r of json.response?.rows ?? []) {
+      const media = r.content?.descriptiveNonRepeating?.online_media?.media ?? [];
+      const m = media.find((x) => str(x.type) === 'Images') ?? media[0];
+      const thumb = str(m?.thumbnail);
+      const full = str(m?.content) || thumb;
+      if (!thumb) continue;
+      items.push({
+        id: `si-${str(r.id)}`,
+        title: str(r.title) || 'Untitled',
+        artist: first(r.content?.freetext?.name?.map((n) => str(n.content)).filter(Boolean)),
+        dimensions: '',
+        thumbUrl: thumb,
+        previewUrl: full || thumb,
+        fullUrl: full || thumb,
+        format: fmtFromUrl(full || thumb),
+        lossless: false,
+        downloads: [{ label: 'Full image', url: full || thumb, format: fmtFromUrl(full || thumb), lossless: false }],
+        source: 'si',
+        isPublicDomain: true, // Smithsonian Open Access is CC0
+      });
+    }
+    return items;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // ─── Handler ─────────────────────────────────────────────────────────────────
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -600,6 +750,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     ['V&A', fetchVam(q)],
     ['Wellcome', fetchWellcome(q)],
   ];
+  // Keyed sources: only queried when their (server-only) API key is configured.
+  if (process.env.EUROPEANA_API_KEY) sources.push(['Europeana', fetchEuropeana(q)]);
+  if (process.env.HARVARD_API_KEY) sources.push(['Harvard', fetchHarvard(q)]);
+  if (process.env.SMITHSONIAN_API_KEY) sources.push(['Smithsonian', fetchSmithsonian(q)]);
   const settled = await Promise.allSettled(sources.map(([, p]) => p));
 
   const items: ArtItem[] = [];
@@ -619,7 +773,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   // then public-domain, then source order. This is the fix for "Rodin Thinker"
   // returning other Rodin works instead of The Thinker.
   const toks = queryTokens(q);
-  const SOURCE_ORDER: Record<string, number> = { aic: 0, met: 1, cleveland: 2, vam: 3, wellcome: 4, wikiart: 5, commons: 6 };
+  const SOURCE_ORDER: Record<string, number> = {
+    aic: 0, met: 1, cleveland: 2, vam: 3, wellcome: 4, harvard: 5, europeana: 6, si: 7, wikiart: 8, commons: 9,
+  };
   items.sort((a, b) => {
     const ra = relevance(a, toks);
     const rb = relevance(b, toks);
