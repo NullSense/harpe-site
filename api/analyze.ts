@@ -17,6 +17,7 @@
 
 import type { VercelRequest, VercelResponse } from './_vercel.js';
 import { fetch } from 'undici';
+import { createHash } from 'node:crypto';
 import { GuardError, rateLimit, clientIp } from './_guard.js';
 
 const MODEL = process.env.HARPE_ANALYZE_MODEL || 'claude-haiku-4-5-20251001';
@@ -51,8 +52,17 @@ async function getRedis() {
   return _redis;
 }
 
-function cacheKey(title: string, artist: string): string {
-  return 'analyze:' + `${title}|${artist}`.toLowerCase().replace(/\s+/g, ' ').trim().slice(0, 200);
+// Key on the artwork AND a hash of the supplied source records. Because `items`
+// come from the request body, keying on title/artist alone would let a caller
+// poison the cache for a clean title with junk descriptions that then get served
+// to everyone. The items-hash makes tampered input produce a different key.
+function cacheKey(title: string, artist: string, items: SourceRecord[]): string {
+  const base = `${title}|${artist}`.toLowerCase().replace(/\s+/g, ' ').trim().slice(0, 160);
+  const norm = items
+    .map((i) => ({ s: i.source, d: i.date, m: i.medium, c: i.culture, cl: i.creditLine, desc: i.description }))
+    .sort((a, b) => (a.s || '').localeCompare(b.s || ''));
+  const h = createHash('sha256').update(JSON.stringify(norm)).digest('hex').slice(0, 16);
+  return `analyze:${base}:${h}`;
 }
 
 // ─── Prompt ────────────────────────────────────────────────────────────────────
@@ -134,7 +144,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const contributors = [...new Set(items.map((i) => i.source).filter(Boolean))] as string[];
 
   // ── Cache lookup ──
-  const ck = cacheKey(title, artist);
+  const ck = cacheKey(title, artist, items);
   const redis = await getRedis();
   if (redis) {
     try {
