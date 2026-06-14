@@ -331,6 +331,14 @@ function ArtCard({
 
 // ─── Art detail (combo: full-size zoom + ALL metadata + actions) ───────────────
 
+// A IIIF Image-API URL → its service base (info.json lives there). When present
+// we render OpenSeadragon for true tiled gigapixel deep-zoom (AIC, NGA, Harvard,
+// Wellcome, raw IIIF…); otherwise we fall back to the plain <img> zoom.
+function deriveIIIF(url: string): string | null {
+  const m = /^(https?:\/\/.+?)\/full\/(?:full|max|pct:\d+|!?\d+,\d*|\d*,\d+)\/0\/(?:default|native|color)\.(?:jpe?g|png|webp|tif)/i.exec(url);
+  return m ? m[1] : null;
+}
+
 function ArtDetail({
   items, index, onClose, onIndex, onAnalyze, onShare, onSearch, onFindSource, analyzeEnabled,
 }: {
@@ -345,8 +353,41 @@ function ArtDetail({
   analyzeEnabled: boolean;
 }) {
   const open = index >= 0 && index < items.length;
+  const active = open ? items[index] : undefined;
+  const iiifBase = active ? deriveIIIF(active.fullUrl) : null;
   const [z, setZ] = useState(1);
   const [nat, setNat] = useState<{ w: number; h: number } | null>(null); // measured pixels
+  // OpenSeadragon (tiled deep-zoom) for IIIF items; falls back to <img> on failure.
+  const osdRef = useRef<HTMLDivElement>(null);
+  const [osdFailed, setOsdFailed] = useState(false);
+  const useOsd = open && !!iiifBase && !osdFailed;
+  useEffect(() => { setOsdFailed(false); }, [index]);
+  useEffect(() => {
+    if (!open || !iiifBase || osdFailed) return;
+    let viewer: { destroy: () => void; addHandler: (e: string, f: () => void) => void; world: { getItemAt: (i: number) => { getContentSize: () => { x: number; y: number } } | undefined } } | undefined;
+    let cancelled = false;
+    import('openseadragon').then(({ default: OSD }) => {
+      if (cancelled || !osdRef.current) return;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      viewer = (OSD as any)({
+        element: osdRef.current,
+        tileSources: `${iiifBase}/info.json`,
+        crossOriginPolicy: 'Anonymous',
+        showNavigationControl: false,
+        gestureSettingsMouse: { clickToZoom: false, dblClickToZoom: true },
+        visibilityRatio: 1,
+        minZoomImageRatio: 0.85,
+        maxZoomPixelRatio: 5,
+        animationTime: 0.4,
+      });
+      viewer!.addHandler('open', () => {
+        const t = viewer!.world.getItemAt(0);
+        if (t) { const s = t.getContentSize(); setNat({ w: Math.round(s.x), h: Math.round(s.y) }); }
+      });
+      viewer!.addHandler('open-failed', () => { if (!cancelled) setOsdFailed(true); });
+    }).catch(() => { if (!cancelled) setOsdFailed(true); });
+    return () => { cancelled = true; try { viewer?.destroy(); } catch { /* noop */ } };
+  }, [open, iiifBase, osdFailed, index]);
   // Pan is kept in a ref and applied to the <img> imperatively, so dragging does
   // NOT re-render the whole overlay on every pointer-move (that was the lag).
   const imgRef = useRef<HTMLImageElement>(null);
@@ -396,40 +437,45 @@ function ArtDetail({
     setZ(next);
   };
 
+  const imgHandlers = useOsd ? {} : {
+    onWheel,
+    onDoubleClick: () => { const n = z > 1 ? 1 : 2.4; if (n === 1) panRef.current = { x: 0, y: 0 }; apply(n); setZ(n); },
+    onPointerDown: (e: React.PointerEvent) => { if (z > 1) { drag.current = { sx: e.clientX, sy: e.clientY, px: panRef.current.x, py: panRef.current.y }; (e.target as HTMLElement).setPointerCapture?.(e.pointerId); } },
+    onPointerMove: (e: React.PointerEvent) => { if (drag.current) { panRef.current = { x: drag.current.px + (e.clientX - drag.current.sx), y: drag.current.py + (e.clientY - drag.current.sy) }; apply(z); } },
+    onPointerUp: () => { drag.current = null; },
+    style: { cursor: z > 1 ? 'grab' : 'zoom-in' } as React.CSSProperties,
+  };
+
   return createPortal(
     <div role="dialog" aria-modal="true" aria-label={item.title} className="fixed inset-0 z-[70] flex flex-col bg-[rgba(8,6,4,.96)] backdrop-blur-sm lg:flex-row">
       {/* image stage */}
-      <div
-        className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden"
-        onWheel={onWheel}
-        onDoubleClick={() => { const n = z > 1 ? 1 : 2.4; if (n === 1) panRef.current = { x: 0, y: 0 }; apply(n); setZ(n); }}
-        onPointerDown={(e) => { if (z > 1) { drag.current = { sx: e.clientX, sy: e.clientY, px: panRef.current.x, py: panRef.current.y }; (e.target as HTMLElement).setPointerCapture?.(e.pointerId); } }}
-        onPointerMove={(e) => { if (drag.current) { panRef.current = { x: drag.current.px + (e.clientX - drag.current.sx), y: drag.current.py + (e.clientY - drag.current.sy) }; apply(z); } }}
-        onPointerUp={() => { drag.current = null; }}
-        style={{ cursor: z > 1 ? 'grab' : 'zoom-in' }}
-      >
-        <img
-          ref={imgRef}
-          /* zoomed in → load the full-resolution original (unless it's a TIFF the
-             browser can't render) so deep zoom is sharp, not a blurry preview. */
-          src={displaySrc(z > 1 && item.fullUrl && item.format !== 'tiff' ? item.fullUrl : (item.previewUrl || item.fullUrl))}
-          alt={item.title}
-          draggable={false}
-          onLoad={(e) => { setNat({ w: e.currentTarget.naturalWidth, h: e.currentTarget.naturalHeight }); apply(z); }}
-          className="max-h-full max-w-full select-none object-contain transition-transform duration-75"
-        />
+      <div className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden" {...imgHandlers}>
+        {useOsd ? (
+          <div ref={osdRef} className="absolute inset-0" />
+        ) : (
+          <img
+            ref={imgRef}
+            /* zoomed in → load the full-resolution original (unless it's a TIFF the
+               browser can't render) so deep zoom is sharp, not a blurry preview. */
+            src={displaySrc(z > 1 && item.fullUrl && item.format !== 'tiff' ? item.fullUrl : (item.previewUrl || item.fullUrl))}
+            alt={item.title}
+            draggable={false}
+            onLoad={(e) => { setNat({ w: e.currentTarget.naturalWidth, h: e.currentTarget.naturalHeight }); apply(z); }}
+            className="max-h-full max-w-full select-none object-contain transition-transform duration-75"
+          />
+        )}
         {/* prev / next */}
         {index > 0 && (
-          <button type="button" onClick={() => onIndex(index - 1)} aria-label="Previous" className="absolute left-3 top-1/2 -translate-y-1/2 rounded-full border border-line bg-[rgba(10,8,6,.7)] px-3 py-2 text-ink/80 transition hover:border-bronze/60 hover:text-bronze-bright">‹</button>
+          <button type="button" onClick={() => onIndex(index - 1)} aria-label="Previous" className="absolute left-3 top-1/2 z-10 -translate-y-1/2 rounded-full border border-line bg-[rgba(10,8,6,.7)] px-3 py-2 text-ink/80 transition hover:border-bronze/60 hover:text-bronze-bright">‹</button>
         )}
         {index < items.length - 1 && (
-          <button type="button" onClick={() => onIndex(index + 1)} aria-label="Next" className="absolute right-3 top-1/2 -translate-y-1/2 rounded-full border border-line bg-[rgba(10,8,6,.7)] px-3 py-2 text-ink/80 transition hover:border-bronze/60 hover:text-bronze-bright">›</button>
+          <button type="button" onClick={() => onIndex(index + 1)} aria-label="Next" className="absolute right-3 top-1/2 z-10 -translate-y-1/2 rounded-full border border-line bg-[rgba(10,8,6,.7)] px-3 py-2 text-ink/80 transition hover:border-bronze/60 hover:text-bronze-bright">›</button>
         )}
-        {/* zoom controls + counter */}
-        <div className="absolute bottom-3 left-3 flex items-center gap-1 font-mono text-[.72rem]">
-          <button type="button" onClick={() => { const n = Math.max(1, z / 1.4); if (n === 1) panRef.current = { x: 0, y: 0 }; apply(n); setZ(n); }} className="rounded border border-line bg-[rgba(10,8,6,.7)] px-2 py-1 text-muted hover:text-bronze-bright">−</button>
-          <button type="button" onClick={() => { const n = Math.min(6, z * 1.4); apply(n); setZ(n); }} className="rounded border border-line bg-[rgba(10,8,6,.7)] px-2 py-1 text-muted hover:text-bronze-bright">+</button>
-          <span className="ml-2 rounded bg-[rgba(10,8,6,.7)] px-2 py-1 text-muted/70">{index + 1} / {items.length}</span>
+        {/* zoom controls (img mode only — OSD has its own scroll/pinch) + counter */}
+        <div className="absolute bottom-3 left-3 z-10 flex items-center gap-1 font-mono text-[.72rem]">
+          {!useOsd && <button type="button" onClick={() => { const n = Math.max(1, z / 1.4); if (n === 1) panRef.current = { x: 0, y: 0 }; apply(n); setZ(n); }} className="rounded border border-line bg-[rgba(10,8,6,.7)] px-2 py-1 text-muted hover:text-bronze-bright">−</button>}
+          {!useOsd && <button type="button" onClick={() => { const n = Math.min(6, z * 1.4); apply(n); setZ(n); }} className="rounded border border-line bg-[rgba(10,8,6,.7)] px-2 py-1 text-muted hover:text-bronze-bright">+</button>}
+          <span className="rounded bg-[rgba(10,8,6,.7)] px-2 py-1 text-muted/70">{index + 1} / {items.length}{useOsd ? ' · deep-zoom' : ''}</span>
         </div>
       </div>
 
