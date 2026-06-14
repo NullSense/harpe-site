@@ -43,6 +43,17 @@ export function proxyUrl(url: string, referer?: string): string {
   return `/api/fetch?${p.toString()}`;
 }
 
+/**
+ * Display-safe image src. Insecure `http://` URLs are blocked by the browser as
+ * mixed content on our HTTPS page (and auto-upgrade often fails on bad certs), so
+ * route those through our same-origin HTTPS proxy. `https://` URLs pass through
+ * untouched (no extra proxy cost for the common case).
+ */
+export function displaySrc(url: string, referer?: string): string {
+  if (!url) return url;
+  return url.startsWith('http://') ? proxyUrl(url, referer) : url;
+}
+
 /** Fetch an image through the proxy and trigger a browser download. */
 export async function downloadViaProxy(
   url: string,

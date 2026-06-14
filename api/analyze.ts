@@ -52,11 +52,14 @@ function pickProvider(): Provider | null {
     // Primary model + free fallbacks: OpenRouter tries them in order, so a
     // rate-limited/unavailable free model auto-falls-through to the next.
     const primary = process.env.HARPE_ANALYZE_MODEL || 'google/gemini-2.0-flash-exp:free';
+    // Free-model fallback: OpenRouter routes to the first available so a
+    // rate-limited model falls through to the next. NOTE: OpenRouter caps this
+    // array at 3 — diverse picks maximise the chance one isn't rate-limited.
     const models = [...new Set([
       primary,
+      'deepseek/deepseek-chat-v3-0324:free',
       'meta-llama/llama-3.3-70b-instruct:free',
-      'mistralai/mistral-small-3.1-24b-instruct:free',
-    ])];
+    ])].slice(0, 3);
     // Opt-in Exa-powered web search to enrich the analysis with live context.
     const web = process.env.HARPE_ANALYZE_WEB === '1';
     return {

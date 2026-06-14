@@ -20,6 +20,7 @@ import {
   type DownloadVariant,
   type LightboxSlide,
   LOSSLESS_FORMATS,
+  displaySrc,
   downloadViaProxy,
   extFor,
   isURL,
@@ -323,7 +324,7 @@ function ScanCard({
 
       <div className="relative aspect-[4/3] overflow-hidden bg-[rgba(10,8,6,.8)]">
         <img
-          src={item.url}
+          src={displaySrc(item.url)}
           alt={item.name}
           loading="lazy"
           decoding="async"
@@ -405,7 +406,7 @@ function ArtCard({
         className="relative aspect-[4/3] cursor-zoom-in overflow-hidden bg-[rgba(10,8,6,.8)] outline-none focus-visible:ring-2 focus-visible:ring-bronze/60"
       >
         <img
-          src={item.thumbUrl}
+          src={displaySrc(item.thumbUrl)}
           alt={`${item.title}${item.artist ? `, by ${item.artist}` : ''}`}
           loading="lazy"
           decoding="async"
@@ -698,7 +699,11 @@ export default function Finder() {
       });
       const json = await res.json();
       if (!res.ok) {
-        setAnalysis({ phase: 'error', title: item.title, message: json.error ?? `Error ${res.status}` });
+        const rateLimited = /429|rate.?limit|temporarily/i.test(JSON.stringify(json));
+        const message = rateLimited
+          ? 'The free AI models are busy right now — please try again in a moment.'
+          : (json.error ?? `Error ${res.status}`);
+        setAnalysis({ phase: 'error', title: item.title, message });
         return;
       }
       setAnalysis({ phase: 'done', title: item.title, text: json.analysis, contributors: json.contributors, cached: json.cached });
@@ -718,7 +723,7 @@ export default function Finder() {
         let host = '';
         try { host = new URL(img.url).hostname.replace(/^www\./, ''); } catch { /* not a URL */ }
         return {
-          src: img.url,
+          src: displaySrc(img.url, pageUrl || undefined),
           title: img.name,
           description: [dims, host && `from ${host}`].filter(Boolean).join(' · '),
           downloadUrl: proxyUrl(img.url, pageUrl || undefined),
@@ -731,7 +736,7 @@ export default function Finder() {
         const best = it.downloads[0] ?? { url: it.fullUrl, format: it.format, label: 'Download' };
         const facts = [it.artist, it.date, it.medium, it.culture].filter(Boolean).join(' · ');
         return {
-          src: it.previewUrl || it.fullUrl,
+          src: displaySrc(it.previewUrl || it.fullUrl),
           title: it.title,
           description: [facts, it.description, it.creditLine].filter(Boolean).join('\n\n'),
           downloadUrl: proxyUrl(best.url),
@@ -1069,7 +1074,7 @@ export default function Finder() {
           >
             <div className="mb-3 flex items-start justify-between gap-3">
               <div className="flex items-center gap-3">
-                <img src={sauce.imageUrl} alt="" className="h-12 w-12 shrink-0 rounded object-cover" />
+                <img src={displaySrc(sauce.imageUrl)} alt="" className="h-12 w-12 shrink-0 rounded object-cover" />
                 <div>
                   <span className="block font-mono text-[.7rem] tracking-[0.12em] text-bronze">🔍 SOURCE MATCHES</span>
                   <h3 className="mt-0.5 font-display text-[1.05rem] font-medium text-ink">Where this image appears</h3>
@@ -1093,7 +1098,7 @@ export default function Finder() {
                 <ul className="space-y-2">
                   {sauce.results.map((r, i) => (
                     <li key={i} className="flex items-center gap-3 rounded-lg border border-line p-2.5">
-                      {r.thumbnail && <img src={r.thumbnail} alt="" loading="lazy" className="h-14 w-14 shrink-0 rounded object-cover" />}
+                      {r.thumbnail && <img src={displaySrc(r.thumbnail)} alt="" loading="lazy" className="h-14 w-14 shrink-0 rounded object-cover" />}
                       <div className="min-w-0 flex-1">
                         <a href={r.urls[0]} target="_blank" rel="noopener" className="block truncate font-medium text-[.86rem] text-bronze-bright hover:underline">
                           {r.title || r.site || r.urls[0]}

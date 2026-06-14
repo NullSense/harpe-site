@@ -1176,6 +1176,9 @@ async function fetchNypl(q: string): Promise<ArtItem[]> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
   try {
+    // v2 + `Authorization: Token token="…"` is the documented scheme (v1 is now
+    // disabled). A 401 "HTTP Basic: Access denied" here means the TOKEN VALUE is
+    // wrong/not-activated (e.g. an account password was set instead of the token).
     const url =
       `https://api.repo.nypl.org/api/v2/items/search?q=${encodeURIComponent(q)}` +
       `&publicDomainOnly=true&per_page=20`;
@@ -1183,7 +1186,10 @@ async function fetchNypl(q: string): Promise<ArtItem[]> {
       signal: controller.signal,
       headers: { 'User-Agent': UA, Accept: 'application/json', Authorization: `Token token="${token}"` },
     }) as unknown as Response;
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    if (!res.ok) {
+      const b = await res.text().catch(() => '');
+      throw new Error(`HTTP ${res.status} ${b.replace(/\s+/g, ' ').slice(0, 90)}`);
+    }
     const json = await res.json() as { nyplAPI?: { response?: { result?: unknown } } };
     const raw = json.nyplAPI?.response?.result;
     const results = Array.isArray(raw) ? raw : raw ? [raw] : [];
