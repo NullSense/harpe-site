@@ -1,0 +1,13 @@
+{
+  "name": "Harpe — a hooked blade for the web",
+  "short_name": "Harpe",
+  "description": "Search millions of public-domain artworks across 15 museum collections, or grab every image from any page.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0a0806",
+  "theme_color": "#0a0806",
+  "icons": [
+    { "src": "/logo.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/favicon.png", "sizes": "192x192", "type": "image/png", "purpose": "any" }
+  ]
+}

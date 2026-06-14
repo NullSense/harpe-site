@@ -134,6 +134,24 @@ function relevance(item: ArtItem, toks: string[]): number {
   return r;
 }
 
+// Quality nudge (mirrors the client): paintings up; reproductions / photos-of-art
+// / book-pages / aggregator-junk down. Applied on top of relevance.
+const PAINT_RE = /\b(oil|tempera|acrylic|gouache|fresco|distemper|encaustic|watercolou?r|panel|canvas)\b/;
+const REPRO_RE = /\b(photograph|photo|negative|gelatin silver|transparency|lantern|daguerreotype|photomechanical|collotype|halftone|photogravure|lithograph|etching|engraving|woodcut|mezzotint|serigraph|screen ?print|poster|postcard|reproduction|xerography)\b/;
+const BOOK_RE = /\b(book|bound volume|frontispiece|title page|folio|pamphlet|magazine|periodical|leaflet)\b/;
+const SRC_PRIOR: Record<string, number> = { digitalnz: -5, commons: -1, si: -1 };
+function qualityScore(item: ArtItem): number {
+  let s = 0;
+  const med = (item.medium || '').toLowerCase();
+  const t = (item.title || '').toLowerCase();
+  if (PAINT_RE.test(med)) s += 4;
+  if (REPRO_RE.test(med)) s -= 3;
+  if (BOOK_RE.test(med) || BOOK_RE.test(t)) s -= 3;
+  if (/\bafter [a-z]|reproduction|postcard|photograph of\b/.test(t)) s -= 2;
+  s += SRC_PRIOR[item.source] ?? 0;
+  return s;
+}
+
 async function timedFetch(url: string, signal: AbortSignal): Promise<Response> {
   return fetch(url, {
     signal,
@@ -1355,10 +1373,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   // Sort: exact matches first (relevance), then INTERLEAVE sources within each
   // relevance tier (round-robin) so every contributing collection gets shown,
   // then public-domain, then a stable source order.
+  // relevance dominates (×10); quality nudges order within each relevance tier.
+  const score = (it: ArtItem) => relevance(it, toks) * 10 + qualityScore(it);
   items.sort((a, b) => {
-    const ra = relevance(a, toks);
-    const rb = relevance(b, toks);
-    if (ra !== rb) return rb - ra;
+    const sa = score(a);
+    const sb = score(b);
+    if (sa !== sb) return sb - sa;
     const da = rrIndex.get(a) ?? 0;
     const db = rrIndex.get(b) ?? 0;
     if (da !== db) return da - db;

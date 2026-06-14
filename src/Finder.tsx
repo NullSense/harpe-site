@@ -14,20 +14,16 @@
 import type React from 'react';
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import MediaLightbox from './components/MediaLightbox';
 import DownloadMenu from './components/DownloadMenu';
 import { streamArt } from './lib/useArtStream';
 import { fitsScreen } from './lib/resolutions';
 import {
   type DownloadVariant,
-  type LightboxSlide,
   LOSSLESS_FORMATS,
   displaySrc,
   downloadViaProxy,
-  extFor,
+  fmtFromUrl,
   isURL,
-  proxyUrl,
-  safeName,
 } from './lib/media';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -55,7 +51,7 @@ interface ArtItem {
   format: string;
   lossless: boolean;
   downloads: DownloadVariant[];
-  source: 'aic' | 'met' | 'cleveland' | 'commons' | 'wikiart' | 'vam' | 'wellcome' | 'smk' | 'nasjonalmuseet' | 'digitalnz' | 'wikidata' | 'europeana' | 'harvard' | 'si' | 'parismusees' | 'moma' | 'nga' | 'mia' | 'loc' | 'nypl' | 'dumps' | 'iiif';
+  source: 'aic' | 'met' | 'cleveland' | 'commons' | 'wikiart' | 'vam' | 'wellcome' | 'smk' | 'nasjonalmuseet' | 'digitalnz' | 'wikidata' | 'europeana' | 'harvard' | 'si' | 'parismusees' | 'moma' | 'nga' | 'mia' | 'loc' | 'nypl' | 'dumps' | 'iiif' | 'scan';
   isPublicDomain: boolean;
   date?: string;
   medium?: string;
@@ -98,6 +94,27 @@ const SOURCE_ORDER: Record<string, number> = {
 function qTokens(q: string): string[] {
   return q.toLowerCase().split(/[^a-z0-9]+/).filter((t) => t.length >= 3 && !STOP.has(t));
 }
+
+// Quality heuristic (free, no model): nudge real paintings up and reproductions /
+// photos-of-art / book-pages / aggregator-junk down. Derived from sampling ~1200
+// live results. Applied as a SCORE on top of relevance (relevance still wins), so
+// it re-orders within a relevance tier rather than hiding anything.
+const PAINT_RE = /\b(oil|tempera|acrylic|gouache|fresco|distemper|encaustic|watercolou?r|panel|canvas)\b/;
+const REPRO_RE = /\b(photograph|photo|negative|gelatin silver|transparency|lantern|daguerreotype|photomechanical|collotype|halftone|photogravure|lithograph|etching|engraving|woodcut|mezzotint|serigraph|screen ?print|poster|postcard|reproduction|xerography)\b/;
+const BOOK_RE = /\b(book|bound volume|frontispiece|title page|folio|pamphlet|magazine|periodical|leaflet)\b/;
+const SRC_PRIOR: Record<string, number> = { digitalnz: -5, commons: -1, si: -1 };
+function qualityScore(it: ArtItem): number {
+  let s = 0;
+  const med = (it.medium || '').toLowerCase();
+  const t = (it.title || '').toLowerCase();
+  if (PAINT_RE.test(med)) s += 4;
+  if (REPRO_RE.test(med)) s -= 3;
+  if (BOOK_RE.test(med) || BOOK_RE.test(t)) s -= 3;
+  if (/\bafter [a-z]|reproduction|postcard|photograph of\b/.test(t)) s -= 2;
+  s += SRC_PRIOR[it.source] ?? 0;
+  return s;
+}
+
 function rankArt(items: ArtItem[], q: string): ArtItem[] {
   const toks = qTokens(q);
   const rel = (it: ArtItem) => {
@@ -107,8 +124,10 @@ function rankArt(items: ArtItem[], q: string): ArtItem[] {
   const rr = new Map<ArtItem, number>();
   const seen: Record<string, number> = {};
   for (const it of items) { seen[it.source] = (seen[it.source] ?? -1) + 1; rr.set(it, seen[it.source]); }
+  // relevance dominates (×10); quality nudges order within each relevance tier.
+  const score = (it: ArtItem) => rel(it) * 10 + qualityScore(it);
   return [...items].sort((a, b) => {
-    const r = rel(b) - rel(a); if (r) return r;
+    const r = score(b) - score(a); if (r) return r;
     const d = (rr.get(a) ?? 0) - (rr.get(b) ?? 0); if (d) return d;
     if (a.isPublicDomain !== b.isPublicDomain) return a.isPublicDomain ? -1 : 1;
     return (SOURCE_ORDER[a.source] ?? 99) - (SOURCE_ORDER[b.source] ?? 99);
@@ -117,6 +136,7 @@ function rankArt(items: ArtItem[], q: string): ArtItem[] {
 
 const IIIF_MANIFEST_RE = /https?:\/\/[^/]+(?:\/[^?#]*)?(?:manifest|info\.json)(?:[?#].*)?$/i;
 const IIIF_INFO_RE = /^https?:\/\/.+\/info\.json$/i;
+const IMAGE_URL_RE = /\.(jpe?g|png|webp|gif|avif|tiff?|bmp)(?:[?#]|$)/i;
 
 // ─── IIIF resolution (client-side, CORS-open servers) ──────────────────────────
 
@@ -240,118 +260,10 @@ function PreviewBadge() {
   );
 }
 
-// ─── Scan card (URL mode: select + bulk download, click corner to preview) ─────
-
-function ScanCard({
-  item,
-  selected,
-  onToggle,
-  onPreview,
-  onFindSource,
-  onLoad,
-  onError,
-  dlStatus,
-}: {
-  item: ScanImage;
-  selected: boolean;
-  onToggle: () => void;
-  onPreview: () => void;
-  onFindSource?: () => void;
-  onLoad: (nw: number) => void;
-  onError: () => void;
-  dlStatus?: DlStatus;
-}) {
-  const border = selected
-    ? 'border-bronze shadow-[0_4px_24px_-8px_rgba(216,153,33,.35)]'
-    : 'border-line hover:border-bronze/60';
-  const widthLabel =
-    item.naturalWidth > 0 ? `${item.naturalWidth} px` : item.width ? `${item.width} px` : '?';
-
-  return (
-    <article
-      className={`group relative flex cursor-pointer flex-col overflow-hidden rounded-xl border bg-[rgba(16,11,8,.6)] transition hover:-translate-y-0.5 hover:shadow-[0_8px_32px_-12px_rgba(216,153,33,.18)] ${border}`}
-      onClick={onToggle}
-      role="checkbox"
-      aria-checked={selected}
-      aria-label={`${selected ? 'Deselect' : 'Select'} ${item.name}`}
-      tabIndex={0}
-      onKeyDown={(e) => {
-        if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); onToggle(); }
-      }}
-    >
-      <span
-        aria-hidden
-        className={`absolute left-2 top-2 z-10 flex h-5 w-5 items-center justify-center rounded-full text-[.7rem] font-bold transition ${
-          selected
-            ? 'bg-bronze text-[rgba(10,8,6,1)]'
-            : 'border border-line bg-[rgba(10,8,6,.7)] text-muted group-hover:border-bronze/60'
-        }`}
-      >
-        {selected ? '✓' : ''}
-      </span>
-
-      {/* corner actions (stop propagation so they don't toggle selection) */}
-      <div className="absolute right-2 top-2 z-10 flex gap-1">
-        {onFindSource && (
-          <button
-            type="button"
-            onClick={(e) => { e.stopPropagation(); onFindSource(); }}
-            aria-label={`Find the source of ${item.name}`}
-            title="Reverse-image search: find the source / a higher-res original"
-            className="rounded-full border border-line bg-[rgba(10,8,6,.7)] px-2 py-0.5 font-mono text-[.6rem] text-muted opacity-0 transition hover:border-bronze/60 hover:text-bronze-bright focus-visible:opacity-100 group-hover:opacity-100"
-          >
-            🔍
-          </button>
-        )}
-        <button
-          type="button"
-          onClick={(e) => { e.stopPropagation(); onPreview(); }}
-          aria-label={`Preview ${item.name}`}
-          className="rounded-full border border-line bg-[rgba(10,8,6,.7)] px-2 py-0.5 font-mono text-[.6rem] text-muted opacity-0 transition hover:border-bronze/60 hover:text-bronze-bright focus-visible:opacity-100 group-hover:opacity-100"
-        >
-          ⤢
-        </button>
-      </div>
-
-      {dlStatus && (
-        <span
-          aria-hidden
-          className="absolute right-2 bottom-[2.6rem] z-10 flex items-center gap-1 rounded-sm bg-[rgba(10,8,6,.88)] px-1.5 py-0.5 font-mono text-[.62rem] text-bronze"
-        >
-          {dlStatus === 'downloading' && <><Spinner small />fetching…</>}
-          {dlStatus === 'done' && '✓ saved'}
-          {dlStatus === 'error' && '⚠ error'}
-        </span>
-      )}
-
-      <div className="relative aspect-[4/3] overflow-hidden bg-[rgba(10,8,6,.8)]">
-        <img
-          src={displaySrc(item.url)}
-          alt={item.name}
-          loading="lazy"
-          decoding="async"
-          className="h-full w-full object-contain transition-transform duration-500 group-hover:scale-[1.03]"
-          onLoad={(e) => onLoad((e.currentTarget as HTMLImageElement).naturalWidth)}
-          onError={onError}
-        />
-      </div>
-
-      <div className="flex items-center justify-between gap-2 px-3 py-2">
-        <p className="flex-1 truncate font-mono text-[.7rem] text-muted" title={item.name}>
-          {item.name}
-        </p>
-        <span className="shrink-0 rounded-sm bg-bronze/10 px-1.5 py-0.5 font-mono text-[.62rem] text-bronze">
-          {widthLabel}
-        </span>
-      </div>
-    </article>
-  );
-}
-
 // ─── Art card (search mode: per-variant downloads + metadata, click to preview) ─
 
 const SOURCE_LABELS: Record<string, string> = {
-  aic: 'AIC', met: 'Met', cleveland: 'Cleveland', commons: 'Commons', wikiart: 'WikiArt', vam: 'V&A', wellcome: 'Wellcome', smk: 'SMK', nasjonalmuseet: 'Nasjonalmus.', digitalnz: 'DigitalNZ', wikidata: 'Wikidata', europeana: 'Europeana', harvard: 'Harvard', si: 'Smithsonian', parismusees: 'Paris Musées', moma: 'MoMA', nga: 'NGA', mia: 'MIA', loc: 'Library of Congress', nypl: 'NYPL', dumps: 'Open data', iiif: 'IIIF',
+  aic: 'AIC', met: 'Met', cleveland: 'Cleveland', commons: 'Commons', wikiart: 'WikiArt', vam: 'V&A', wellcome: 'Wellcome', smk: 'SMK', nasjonalmuseet: 'Nasjonalmus.', digitalnz: 'DigitalNZ', wikidata: 'Wikidata', europeana: 'Europeana', harvard: 'Harvard', si: 'Smithsonian', parismusees: 'Paris Musées', moma: 'MoMA', nga: 'NGA', mia: 'MIA', loc: 'Library of Congress', nypl: 'NYPL', dumps: 'Open data', iiif: 'IIIF', scan: 'Web page',
 };
 function SourceBadge({ source }: { source: ArtItem['source'] }) {
   return (
@@ -361,16 +273,29 @@ function SourceBadge({ source }: { source: ArtItem['source'] }) {
   );
 }
 
-function ArtCard({ item, onOpen }: { item: ArtItem; onOpen: () => void }) {
-  // SMK-style tile: image-dominant, natural aspect (no crop), minimal label.
-  // The whole tile opens the detail view, where the full-size zoom, every field
-  // of metadata, and all actions (download / analyse / share) live.
+function ArtCard({
+  item, onOpen, selected, onToggleSelect, dlStatus, onImgLoad, onImgError,
+}: {
+  item: ArtItem;
+  onOpen: () => void;
+  selected?: boolean;             // scan mode: multi-select
+  onToggleSelect?: () => void;    // present → render a selection checkbox
+  dlStatus?: DlStatus;
+  onImgLoad?: (w: number, h: number) => void;
+  onImgError?: () => void;
+}) {
+  // SMK-style tile: image-dominant, natural aspect (no crop), minimal label. The
+  // whole tile opens the detail view (full-size zoom + all metadata + actions).
+  // The SAME tile is used for museum art AND scanned-page images.
+  const ring = selected ? 'ring-2 ring-bronze' : 'ring-1 ring-line/25 hover:ring-bronze/50';
   return (
-    <button
-      type="button"
+    <div
+      role="button"
+      tabIndex={0}
       onClick={onOpen}
+      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen(); } }}
       aria-label={`Open ${item.title}`}
-      className="group relative mb-4 block w-full break-inside-avoid overflow-hidden rounded-lg bg-[rgba(16,11,8,.4)] text-left outline-none ring-1 ring-line/25 transition hover:ring-bronze/50 focus-visible:ring-2 focus-visible:ring-bronze/60"
+      className={`group relative mb-4 block w-full cursor-pointer break-inside-avoid overflow-hidden rounded-lg bg-[rgba(16,11,8,.4)] text-left outline-none transition focus-visible:ring-2 focus-visible:ring-bronze/60 ${ring}`}
     >
       <div className="relative bg-[rgba(10,8,6,.8)]">
         <img
@@ -379,14 +304,33 @@ function ArtCard({ item, onOpen }: { item: ArtItem; onOpen: () => void }) {
           loading="lazy"
           decoding="async"
           className="block h-auto w-full transition-transform duration-500 group-hover:scale-[1.03]"
-          onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }}
+          onLoad={(e) => onImgLoad?.(e.currentTarget.naturalWidth, e.currentTarget.naturalHeight)}
+          onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; onImgError?.(); }}
         />
         <PreviewBadge />
-        {!item.isPublicDomain && (
-          <span className="absolute left-2 top-2 rounded-sm bg-[rgba(10,8,6,.82)] px-1.5 py-0.5 font-mono text-[.6rem] text-muted">© rights</span>
+        {onToggleSelect && (
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); onToggleSelect(); }}
+            aria-pressed={selected}
+            aria-label={selected ? 'Deselect' : 'Select'}
+            className={'absolute left-2 top-2 z-10 flex h-6 w-6 items-center justify-center rounded-full text-[.72rem] font-bold transition ' + (selected ? 'bg-bronze text-[rgba(10,8,6,1)]' : 'border border-line bg-[rgba(10,8,6,.75)] text-muted opacity-0 group-hover:opacity-100 focus-visible:opacity-100 hover:border-bronze/60')}
+          >
+            {selected ? '✓' : ''}
+          </button>
+        )}
+        {!item.isPublicDomain && item.source !== 'scan' && (
+          <span className="absolute right-2 top-2 rounded-sm bg-[rgba(10,8,6,.82)] px-1.5 py-0.5 font-mono text-[.6rem] text-muted">© rights</span>
         )}
         {item.width && item.height && fitsScreen(item.width, item.height) && (
           <span title="Big enough for a crisp wallpaper at your screen resolution" className="absolute bottom-2 left-2 rounded-sm bg-[rgba(10,8,6,.82)] px-1.5 py-0.5 font-mono text-[.58rem] text-bronze-bright">▣ wallpaper</span>
+        )}
+        {dlStatus && (
+          <span className="absolute bottom-2 right-2 flex items-center gap-1 rounded-sm bg-[rgba(10,8,6,.88)] px-1.5 py-0.5 font-mono text-[.6rem] text-bronze">
+            {dlStatus === 'downloading' && <><Spinner small />fetching…</>}
+            {dlStatus === 'done' && '✓ saved'}
+            {dlStatus === 'error' && '⚠ error'}
+          </span>
         )}
       </div>
       <div className="flex items-start justify-between gap-2 px-2.5 py-2">
@@ -396,14 +340,14 @@ function ArtCard({ item, onOpen }: { item: ArtItem; onOpen: () => void }) {
         </div>
         <SourceBadge source={item.source} />
       </div>
-    </button>
+    </div>
   );
 }
 
 // ─── Art detail (combo: full-size zoom + ALL metadata + actions) ───────────────
 
 function ArtDetail({
-  items, index, onClose, onIndex, onAnalyze, onShare, onSearch, analyzeEnabled, similarFor,
+  items, index, onClose, onIndex, onAnalyze, onShare, onSearch, onFindSource, analyzeEnabled,
 }: {
   items: ArtItem[];
   index: number;               // -1 = closed
@@ -412,8 +356,8 @@ function ArtDetail({
   onAnalyze: (it: ArtItem) => void;
   onShare: (id: string) => void;
   onSearch: (q: string) => void;
+  onFindSource?: (url: string) => void;
   analyzeEnabled: boolean;
-  similarFor: (it: ArtItem) => ArtItem[];
 }) {
   const open = index >= 0 && index < items.length;
   const [z, setZ] = useState(1);
@@ -441,7 +385,18 @@ function ArtDetail({
     item.width && item.height ? `${item.width} × ${item.height} px`
     : nat ? `${nat.w} × ${nat.h} px`
     : '';
-  const similar = similarFor(item);
+  // "More like this" from the items already on screen: same artist → title-token
+  // overlap → same source. Works for both museum art and scanned-page images.
+  const similar = (() => {
+    const seen = new Set([item.id]);
+    const out: ArtItem[] = [];
+    const add = (it: ArtItem) => { if (!seen.has(it.id)) { seen.add(it.id); out.push(it); } };
+    if (item.artist) for (const it of items) if (it.artist === item.artist) add(it);
+    const toks = item.title.toLowerCase().split(/[^a-z0-9]+/).filter((t) => t.length >= 4);
+    if (toks.length) for (const it of items) if (toks.some((t) => it.title.toLowerCase().includes(t))) add(it);
+    for (const it of items) if (it.source === item.source) add(it);
+    return out.slice(0, 6);
+  })();
   const onWheel = (e: React.WheelEvent) => {
     const next = Math.min(6, Math.max(1, z * (e.deltaY < 0 ? 1.15 : 1 / 1.15)));
     setZ(next);
@@ -461,7 +416,9 @@ function ArtDetail({
         style={{ cursor: z > 1 ? (drag.current ? 'grabbing' : 'grab') : 'zoom-in' }}
       >
         <img
-          src={displaySrc(item.previewUrl || item.fullUrl)}
+          /* zoomed in → load the full-resolution original (unless it's a TIFF the
+             browser can't render) so deep zoom is sharp, not a blurry preview. */
+          src={displaySrc(z > 1 && item.fullUrl && item.format !== 'tiff' ? item.fullUrl : (item.previewUrl || item.fullUrl))}
           alt={item.title}
           draggable={false}
           onLoad={(e) => setNat({ w: e.currentTarget.naturalWidth, h: e.currentTarget.naturalHeight })}
@@ -496,9 +453,11 @@ function ArtDetail({
         )}
         <div className="flex flex-wrap items-center gap-1.5">
           <SourceBadge source={item.source} />
-          <span className={'rounded-sm px-1.5 py-0.5 font-mono text-[.62rem] ' + (item.isPublicDomain ? 'bg-bronze/15 text-bronze' : 'border border-line text-muted')}>
-            {item.isPublicDomain ? 'Public domain' : '© rights may apply'}
-          </span>
+          {item.source !== 'scan' && (
+            <span className={'rounded-sm px-1.5 py-0.5 font-mono text-[.62rem] ' + (item.isPublicDomain ? 'bg-bronze/15 text-bronze' : 'border border-line text-muted')}>
+              {item.isPublicDomain ? 'Public domain' : '© rights may apply'}
+            </span>
+          )}
           {item.lossless && <span className="rounded-sm border border-bronze/40 bg-bronze/10 px-1.5 py-0.5 font-mono text-[.62rem] text-bronze-bright">◆ lossless</span>}
         </div>
         <dl className="space-y-1 text-[.82rem]">
@@ -518,6 +477,9 @@ function ArtDetail({
             <button type="button" onClick={() => onAnalyze(item)} className="rounded border border-bronze/40 bg-bronze/[.07] px-3 py-1.5 font-mono text-[.74rem] text-bronze-bright transition hover:border-bronze hover:bg-bronze/15">✦ Analyse</button>
           )}
           <button type="button" onClick={() => onShare(item.id)} title="Copy a shareable link" className="rounded border border-line px-2.5 py-1.5 font-mono text-[.78rem] text-muted transition hover:border-bronze/60 hover:text-bronze-bright">⧉</button>
+          {onFindSource && (
+            <button type="button" onClick={() => onFindSource(item.fullUrl)} title="Reverse-image search: find the source / a higher-res original" className="rounded border border-line px-2.5 py-1.5 font-mono text-[.78rem] text-muted transition hover:border-bronze/60 hover:text-bronze-bright">🔍</button>
+          )}
         </div>
         {item.sourceUrl && (
           <a href={item.sourceUrl} target="_blank" rel="noopener" className="font-mono text-[.76rem] text-bronze/80 transition hover:text-bronze-bright">↗ view at source</a>
@@ -572,8 +534,7 @@ export default function Finder() {
   const sentinelRef = useRef<HTMLDivElement>(null);
 
   // shared lightbox (index into the currently-visible list)
-  const [lightboxIndex, setLightboxIndex] = useState(-1);   // scan mode viewer
-  const [detailIndex, setDetailIndex] = useState(-1);       // art mode detail view
+  const [detailIndex, setDetailIndex] = useState(-1);       // shared detail viewer (art + scan)
 
   // reverse-image search (SauceNAO) — scan mode
   const [sauceEnabled, setSauceEnabled] = useState(false);
@@ -595,7 +556,7 @@ export default function Finder() {
   const run = useCallback(async (raw: string) => {
     const q = raw.trim();
     if (!q) return;
-    setLightboxIndex(-1);
+    setDetailIndex(-1);
     setMode('loading');
     setError('');
 
@@ -608,6 +569,32 @@ export default function Finder() {
         setError('Could not resolve a downloadable image from that IIIF URL. Try the Harpe CLI for full tile-stitching support.');
         setMode('error');
       }
+      return;
+    }
+
+    // A direct image URL → show THAT image (the whole point of pasting one). Thumb
+    // and preview go through our resize proxy so a gigapixel original isn't loaded
+    // just to display; the full-res original stays the download.
+    if (isURL(q) && IMAGE_URL_RE.test(q)) {
+      const fmt = fmtFromUrl(q);
+      const enc = encodeURIComponent(q);
+      const it: ArtItem = {
+        id: q,
+        title: decodeURIComponent((q.split('/').pop() || 'image').split(/[?#]/)[0]),
+        artist: '',
+        thumbUrl: `/api/fetch?url=${enc}&w=1024`,
+        previewUrl: `/api/fetch?url=${enc}&w=2560`,
+        fullUrl: q,
+        format: fmt,
+        lossless: LOSSLESS_FORMATS.has(fmt),
+        downloads: [{ label: 'Original', url: q, format: fmt, lossless: LOSSLESS_FORMATS.has(fmt) }],
+        source: 'scan',
+        isPublicDomain: true,
+        sourceUrl: q,
+      };
+      setArtItems([it]); setWarnings([]); setQuery(q); setStreaming(false);
+      setSourceFilter(new Set()); setPdOnly(false); setLosslessOnly(false);
+      setMode('art');
       return;
     }
 
@@ -711,6 +698,30 @@ export default function Finder() {
     [images],
   );
 
+  // Scanned-page images mapped into the SAME ArtItem shape the museum grid uses,
+  // so links and text-search render with the identical cards + detail view.
+  const scanAsArt = useMemo<ArtItem[]>(
+    () => visibleScan.map(([img]) => {
+      const fmt = fmtFromUrl(img.url);
+      return {
+        id: img.url,
+        title: img.name,
+        artist: '',
+        thumbUrl: img.url,
+        previewUrl: img.url,
+        fullUrl: img.url,
+        width: img.naturalWidth > 0 ? img.naturalWidth : undefined,
+        format: fmt,
+        lossless: LOSSLESS_FORMATS.has(fmt),
+        downloads: [{ label: 'Download', url: img.url, format: fmt, lossless: LOSSLESS_FORMATS.has(fmt) }],
+        source: 'scan',
+        isPublicDomain: true,
+        sourceUrl: pageUrl || undefined,
+      };
+    }),
+    [visibleScan, pageUrl],
+  );
+
   const toggleSelect = useCallback((idx: number) => {
     setSelected((prev) => { const n = new Set(prev); n.has(idx) ? n.delete(idx) : n.add(idx); return n; });
   }, []);
@@ -771,19 +782,8 @@ export default function Finder() {
     return m;
   }, [artItems]);
 
-  // "More like this" (free, heuristic): same artist first, then title-token
-  // overlap, then same source — from the items already on screen. Embedding-based
-  // similarity comes with the planned semantic feature.
-  const similarFor = useCallback((item: ArtItem): ArtItem[] => {
-    const seen = new Set([item.id]);
-    const out: ArtItem[] = [];
-    const push = (it: ArtItem) => { if (!seen.has(it.id)) { seen.add(it.id); out.push(it); } };
-    if (item.artist) for (const it of visibleArt) if (it.artist === item.artist) push(it);
-    const toks = qTokens(item.title);
-    if (toks.length) for (const it of visibleArt) if (toks.some((t) => it.title.toLowerCase().includes(t))) push(it);
-    for (const it of visibleArt) if (it.source === item.source) push(it);
-    return out.slice(0, 6);
-  }, [visibleArt]);
+  // The active list for the shared detail viewer: scanned-page images or museum art.
+  const detailItems = mode === 'scan' ? scanAsArt : visibleArt;
 
   const analyzeWork = useCallback(async (item: ArtItem) => {
     const group = siblingsByKey.get(workKey(item)) ?? [item];
@@ -816,54 +816,12 @@ export default function Finder() {
     }
   }, [siblingsByKey]);
 
-  // ── lightbox slides (built from whichever list is showing) ──
-  // Both modes feed the SAME MediaLightbox with the same slide shape
-  // (src + title + description + proxied download), so the viewer and its
-  // captions behave identically whether you scanned a URL or searched a museum.
-  const slides: LightboxSlide[] = useMemo(() => {
-    if (mode === 'scan') {
-      return visibleScan.map(([img]) => {
-        const dims = img.naturalWidth > 0 ? `${img.naturalWidth} px wide` : '';
-        let host = '';
-        try { host = new URL(img.url).hostname.replace(/^www\./, ''); } catch { /* not a URL */ }
-        return {
-          src: displaySrc(img.url, pageUrl || undefined),
-          title: img.name,
-          description: [dims, host && `from ${host}`].filter(Boolean).join(' · '),
-          downloadUrl: proxyUrl(img.url, pageUrl || undefined),
-          downloadFilename: img.name,
-        };
-      });
-    }
-    if (mode === 'art') {
-      return visibleArt.map((it) => {
-        const best = it.downloads[0] ?? { url: it.fullUrl, format: it.format, label: 'Download' };
-        const facts = [it.artist, it.date, it.medium, it.culture, it.dimensions].filter(Boolean).join(' · ');
-        return {
-          src: displaySrc(it.previewUrl || it.fullUrl),
-          title: it.title,
-          description: [facts, it.description, it.creditLine].filter(Boolean).join('\n\n'),
-          downloadUrl: proxyUrl(best.url),
-          downloadFilename: safeName(it.title, it.artist, extFor(best.format)),
-        };
-      });
-    }
-    return [];
-  }, [mode, visibleScan, visibleArt, pageUrl]);
-
   // ── shareable links (zero extra cost: pure client-side URL state) ──
   // The current search lives in the URL as ?q=<term>; an open slide adds &v=<id>.
   // Opening a shared link just re-runs the same search against the same endpoints,
   // so it costs exactly what a normal search does — nothing extra.
   const pendingViewRef = useRef<string | null>(null);
   const [shareMsg, setShareMsg] = useState('');
-
-  // Slide identity used in the URL: art uses the stable item id; scan uses the URL.
-  const slideShareId = useCallback(
-    (idx: number): string | undefined =>
-      mode === 'art' ? visibleArt[idx]?.id : mode === 'scan' ? visibleScan[idx]?.[0]?.url : undefined,
-    [mode, visibleArt, visibleScan],
-  );
 
   const buildShareUrl = useCallback(
     (viewId?: string): string => {
@@ -900,19 +858,14 @@ export default function Finder() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Once results are in, open the deep-linked item (works while streaming, too).
-  // Art opens the detail view; scan opens the lightbox.
+  // Once results are in, open the deep-linked item (works while streaming, too) —
+  // the SAME detail viewer for both scanned images and museum art.
   useEffect(() => {
     const v = pendingViewRef.current;
     if (!v) return;
-    if (mode === 'art') {
-      const idx = visibleArt.findIndex((it) => it.id === v);
-      if (idx >= 0) { setDetailIndex(idx); pendingViewRef.current = null; }
-    } else if (mode === 'scan') {
-      const idx = visibleScan.findIndex(([img]) => img.url === v);
-      if (idx >= 0) { setLightboxIndex(idx); pendingViewRef.current = null; }
-    }
-  }, [mode, visibleArt, visibleScan]);
+    const idx = detailItems.findIndex((it) => it.id === v);
+    if (idx >= 0) { setDetailIndex(idx); pendingViewRef.current = null; }
+  }, [detailItems]);
 
   // Keep the address bar in sync (replaceState → no history spam during streaming).
   useEffect(() => {
@@ -920,13 +873,12 @@ export default function Finder() {
     const term = mode === 'scan' ? pageUrl : query;
     if (!term) return;
     const params = new URLSearchParams({ q: term });
-    const openIdx = mode === 'art' ? detailIndex : lightboxIndex;
-    if (openIdx >= 0) {
-      const id = slideShareId(openIdx);
+    if (detailIndex >= 0) {
+      const id = detailItems[detailIndex]?.id;
       if (id) params.set('v', id);
     }
     window.history.replaceState(null, '', `${window.location.pathname}?${params.toString()}`);
-  }, [mode, query, pageUrl, lightboxIndex, detailIndex, slideShareId]);
+  }, [mode, query, pageUrl, detailIndex, detailItems]);
 
   // Infinite scroll: reveal more cards as the sentinel nears the viewport.
   useEffect(() => {
@@ -1028,47 +980,44 @@ export default function Finder() {
           </div>
         )}
 
-        {/* SCAN results */}
+        {/* SCAN results — SAME full-width masonry + detail viewer as museum search */}
         {mode === 'scan' && (
-          <div aria-live="polite">
-            <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+          <div aria-live="polite" className="relative left-1/2 right-1/2 -ml-[50vw] -mr-[50vw] w-screen max-w-[100vw] overflow-x-clip px-4 sm:px-6 lg:px-10">
+            <div className="mb-4 flex flex-wrap items-center justify-center gap-x-3 gap-y-2">
               <p className="font-mono text-[.78rem] text-muted/70">
-                {visibleScan.length} image{visibleScan.length !== 1 ? 's' : ''} found
-                {selected.size > 0 && <span className="ml-2 text-bronze">{selected.size} selected</span>}
+                {visibleScan.length} image{visibleScan.length !== 1 ? 's' : ''}
+                {selected.size > 0 && <span className="ml-2 text-bronze">· {selected.size} selected</span>}
               </p>
-              <div className="flex items-center gap-2">
-                <button type="button" onClick={selectAll} className="rounded-md border border-line px-3 py-1.5 font-mono text-[.75rem] text-muted transition hover:border-bronze/60 hover:text-bronze-bright">Select all</button>
-                <button type="button" onClick={clearAll} className="rounded-md border border-line px-3 py-1.5 font-mono text-[.75rem] text-muted transition hover:border-bronze/60 hover:text-bronze-bright">Clear</button>
-                <button type="button" onClick={() => copyShare()} title="Copy a shareable link to these results" className="rounded-md border border-line px-3 py-1.5 font-mono text-[.75rem] text-muted transition hover:border-bronze/60 hover:text-bronze-bright">⧉ Share</button>
-                <button
-                  type="button"
-                  onClick={downloadSelected}
-                  disabled={selected.size === 0 || dlBusy}
-                  className="flex items-center gap-2 rounded-md border border-bronze/45 bg-bronze/10 px-4 py-1.5 font-mono text-[.8rem] text-bronze-bright transition hover:border-bronze hover:bg-bronze/20 disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  {dlBusy && <Spinner small />}
-                  {dlDone ? 'Done ✓' : `Download${selected.size > 0 ? ` ${selected.size}` : ''}`}
-                </button>
-              </div>
+              <button type="button" onClick={selectAll} className="rounded-full border border-line px-3 py-1 font-mono text-[.72rem] text-muted transition hover:border-bronze/60 hover:text-bronze-bright">Select all</button>
+              <button type="button" onClick={clearAll} className="rounded-full border border-line px-3 py-1 font-mono text-[.72rem] text-muted transition hover:border-bronze/60 hover:text-bronze-bright">Clear</button>
+              <button type="button" onClick={() => copyShare()} title="Copy a shareable link to these results" className="rounded-full border border-line px-3 py-1 font-mono text-[.72rem] text-muted transition hover:border-bronze/60 hover:text-bronze-bright">⧉ share</button>
+              <button
+                type="button"
+                onClick={downloadSelected}
+                disabled={selected.size === 0 || dlBusy}
+                className="flex items-center gap-2 rounded-full border border-bronze/45 bg-bronze/10 px-4 py-1 font-mono text-[.72rem] text-bronze-bright transition hover:border-bronze hover:bg-bronze/20 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                {dlBusy && <Spinner small />}
+                {dlDone ? 'Done ✓' : `Download${selected.size > 0 ? ` ${selected.size}` : ''}`}
+              </button>
             </div>
 
-            <div className="grid grid-cols-[repeat(auto-fill,minmax(190px,1fr))] gap-4">
-              {visibleScan.map(([item, originalIdx], visIdx) => (
-                <ScanCard
+            <div className="columns-2 gap-4 sm:columns-3 lg:columns-4 2xl:columns-5">
+              {visibleScan.map(([, originalIdx], i) => (
+                <ArtCard
                   key={originalIdx}
-                  item={item}
+                  item={scanAsArt[i]}
+                  onOpen={() => setDetailIndex(i)}
                   selected={selected.has(originalIdx)}
-                  onToggle={() => toggleSelect(originalIdx)}
-                  onPreview={() => setLightboxIndex(visIdx)}
-                  onFindSource={sauceEnabled ? () => findSource(item.url) : undefined}
-                  onLoad={(nw) => handleLoad(originalIdx, nw)}
-                  onError={() => handleError(originalIdx)}
+                  onToggleSelect={() => toggleSelect(originalIdx)}
                   dlStatus={dlMap.get(originalIdx)}
+                  onImgLoad={(w) => handleLoad(originalIdx, w)}
+                  onImgError={() => handleError(originalIdx)}
                 />
               ))}
             </div>
 
-            <div className="mt-10 rounded-xl border border-line bg-[rgba(14,10,7,.55)] px-5 py-4">
+            <div className="mx-auto mt-10 max-w-[680px] rounded-xl border border-line bg-[rgba(14,10,7,.55)] px-5 py-4">
               <p className="font-mono text-[.75rem] leading-relaxed text-muted/80">
                 <span className="font-semibold text-muted">Works on:</span> static pages, blogs, galleries,
                 museum sites, Wikipedia, news.{'  '}
@@ -1161,20 +1110,18 @@ export default function Finder() {
         )}
       </div>
 
-      {/* scan viewer (URL-grab mode) */}
-      <MediaLightbox slides={slides} index={lightboxIndex} onClose={() => setLightboxIndex(-1)} />
-
-      {/* art detail: full-size zoom + all metadata + actions + more-like-this */}
+      {/* the one detail viewer — full-size zoom + all metadata + actions, shared by
+          museum art AND scanned-page images */}
       <ArtDetail
-        items={visibleArt}
+        items={detailItems}
         index={detailIndex}
         onClose={() => setDetailIndex(-1)}
         onIndex={setDetailIndex}
         onAnalyze={analyzeWork}
         onShare={copyShare}
         onSearch={(qq) => { setInput(qq); setDetailIndex(-1); run(qq); }}
+        onFindSource={sauceEnabled ? findSource : undefined}
         analyzeEnabled={analyzeEnabled}
-        similarFor={similarFor}
       />
 
       {/* share-link toast */}
