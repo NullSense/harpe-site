@@ -907,8 +907,8 @@ export default function Finder() {
     const params = new URLSearchParams(window.location.search);
     const q = params.get('q');
     const v = params.get('v');
-    if (v) setDetailId(v);
     if (q) { setInput(q); run(q); }
+    if (v) setDetailId(v); // AFTER run() — run() clears detailId, so set it last
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
