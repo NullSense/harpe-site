@@ -5,3 +5,4 @@ dist/
 .DS_Store
 .vercel
 pnpm-lock.yaml
+demo/video/
