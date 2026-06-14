@@ -744,7 +744,7 @@ async function fetchDigitalNZ(q: string): Promise<ArtItem[]> {
         downloads: [{ label: 'Image', url: large, format: 'jpeg', lossless: false }],
         source: 'digitalnz',
         isPublicDomain: false, // mixed rights — badge a caution
-        date: first(r.date),
+        date: first(r.date).slice(0, 10), // trim ISO timestamps to YYYY-MM-DD
         description: first(r.description),
         culture: str(r.display_content_partner),
         sourceUrl: first(r.landing_url),
