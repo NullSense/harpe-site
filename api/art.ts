@@ -36,8 +36,7 @@ import { GuardError, rateLimit, clientIp } from './_guard.js';
 const UA =
   'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 const TIMEOUT_MS = 8_000;
-const MAX_ITEMS = 36;
-const MAX_PER_SOURCE = 8; // keep any one source from crowding the others out
+const MAX_ITEMS = 40;
 
 // ─── Response types ───────────────────────────────────────────────────────────
 
@@ -64,7 +63,7 @@ interface ArtItem {
   format: string;       // format of the primary download
   lossless: boolean;    // true if ANY download variant is lossless
   downloads: Download[];
-  source: 'aic' | 'met' | 'cleveland' | 'commons' | 'wikiart' | 'vam' | 'wellcome' | 'europeana' | 'harvard' | 'si';
+  source: 'aic' | 'met' | 'cleveland' | 'commons' | 'wikiart' | 'vam' | 'wellcome' | 'smk' | 'nasjonalmuseet' | 'digitalnz' | 'europeana' | 'harvard' | 'si';
   isPublicDomain: boolean;
 }
 
@@ -561,6 +560,153 @@ async function fetchWellcome(q: string): Promise<ArtItem[]> {
   }
 }
 
+// ─── SMK — Statens Museum for Kunst (Denmark; keyless, IIIF) ──────────────────
+
+async function fetchSmk(q: string): Promise<ArtItem[]> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  try {
+    const url =
+      `https://api.smk.dk/api/v1/art/search?keys=${encodeURIComponent(q)}` +
+      `&filters=%5Bhas_image%3Atrue%5D&offset=0&rows=15`;
+    const res = await timedFetch(url, controller.signal);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const json = await res.json() as {
+      items?: Array<{
+        object_number?: unknown;
+        titles?: Array<{ title?: unknown; language?: unknown }>;
+        artist?: unknown;
+        image_thumbnail?: unknown;
+        image_iiif_id?: unknown;
+        public_domain?: unknown;
+      }>;
+    };
+    const items: ArtItem[] = [];
+    for (const it of json.items ?? []) {
+      const iiif = str(it.image_iiif_id);
+      const thumb0 = str(it.image_thumbnail);
+      if (!iiif && !thumb0) continue;
+      const titles = it.titles ?? [];
+      const en = titles.find((t) => str(t.language) === 'engelsk');
+      const title = str(en?.title) || str(titles[0]?.title) || 'Untitled';
+      const full = iiif ? `${iiif}/full/full/0/default.jpg` : thumb0;
+      items.push({
+        id: `smk-${str(it.object_number)}`,
+        title,
+        artist: first(it.artist),
+        dimensions: '',
+        thumbUrl: thumb0 || `${iiif}/full/!843,/0/default.jpg`,
+        previewUrl: iiif ? `${iiif}/full/!1600,/0/default.jpg` : thumb0,
+        fullUrl: full,
+        format: 'jpeg',
+        lossless: false,
+        downloads: [{ label: 'Full JPEG', url: full, format: 'jpeg', lossless: false }],
+        source: 'smk',
+        isPublicDomain: Boolean(it.public_domain),
+      });
+    }
+    return items;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// ─── Nasjonalmuseet (Norway; keyless, IIIF) ───────────────────────────────────
+
+async function fetchNasjonalmuseet(q: string): Promise<ArtItem[]> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  try {
+    const url = `https://api.nasjonalmuseet.no/api/v1/objects/text-search?q=${encodeURIComponent(q)}`;
+    const res = await timedFetch(url, controller.signal);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const json = await res.json() as {
+      data?: Array<{
+        id?: unknown;
+        mainTitle?: unknown;
+        production?: Array<{ person?: { name?: unknown }; role?: unknown }>;
+        multimedia?: Array<{ imageUrl?: unknown; iiifUrl?: unknown; thumbnail?: unknown }>;
+      }>;
+    };
+    const items: ArtItem[] = [];
+    for (const it of (json.data ?? []).slice(0, 15)) {
+      const mm = it.multimedia ?? [];
+      const primary = mm.find((m) => str(m.iiifUrl)) ?? mm[0];
+      if (!primary) continue;
+      const iiif = str(primary.iiifUrl); // ends with /full/full/0/default.jpg
+      const img = str(primary.imageUrl);
+      let thumb = img, preview = img, full = img;
+      if (iiif) {
+        thumb = iiif.replace('/full/full/', '/full/!843,/');
+        preview = iiif.replace('/full/full/', '/full/!1600,/');
+        full = iiif;
+      }
+      if (!thumb) continue;
+      const artist = it.production?.find((p) => p.person && str(p.person.name))?.person;
+      items.push({
+        id: `nasjonalmuseet-${str(it.id)}`,
+        title: str(it.mainTitle) || 'Untitled',
+        artist: artist ? str(artist.name) : '',
+        dimensions: '',
+        thumbUrl: thumb,
+        previewUrl: preview,
+        fullUrl: full,
+        format: 'jpeg',
+        lossless: false,
+        downloads: [{ label: 'Full JPEG', url: full, format: 'jpeg', lossless: false }],
+        source: 'nasjonalmuseet',
+        isPublicDomain: false, // mixed rights — badge a caution
+      });
+    }
+    return items;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// ─── DigitalNZ (New Zealand aggregator; keyless) ──────────────────────────────
+
+async function fetchDigitalNZ(q: string): Promise<ArtItem[]> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  try {
+    const url =
+      `https://api.digitalnz.org/v3/records.json?text=${encodeURIComponent(q)}` +
+      `&i%5Bcategory%5D=Images&per_page=15`;
+    const res = await timedFetch(url, controller.signal);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const json = await res.json() as {
+      search?: { results?: Array<{
+        id?: unknown; title?: unknown; creator?: unknown;
+        thumbnail_url?: unknown; large_thumbnail_url?: unknown;
+      }> };
+    };
+    const items: ArtItem[] = [];
+    for (const r of json.search?.results ?? []) {
+      const thumb = str(r.thumbnail_url);
+      if (!thumb) continue;
+      const large = str(r.large_thumbnail_url) || thumb;
+      items.push({
+        id: `digitalnz-${str(r.id)}`,
+        title: str(r.title) || 'Untitled',
+        artist: first(r.creator),
+        dimensions: '',
+        thumbUrl: thumb,
+        previewUrl: large,
+        fullUrl: large,
+        format: 'jpeg',
+        lossless: false,
+        downloads: [{ label: 'Image', url: large, format: 'jpeg', lossless: false }],
+        source: 'digitalnz',
+        isPublicDomain: false, // mixed rights — badge a caution
+      });
+    }
+    return items;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // ─── Keyed sources (dormant until their env key is set) ───────────────────────
 // These read a free API key from a server-only env var. The key NEVER reaches
 // the browser (Vite only bundles VITE_-prefixed vars; these run in the
@@ -749,6 +895,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     ['WikiArt', fetchWikiArt(q)],
     ['V&A', fetchVam(q)],
     ['Wellcome', fetchWellcome(q)],
+    ['SMK', fetchSmk(q)],
+    ['Nasjonalmuseet', fetchNasjonalmuseet(q)],
+    ['DigitalNZ', fetchDigitalNZ(q)],
   ];
   // Keyed sources: only queried when their (server-only) API key is configured.
   if (process.env.EUROPEANA_API_KEY) sources.push(['Europeana', fetchEuropeana(q)]);
@@ -774,23 +923,31 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   // returning other Rodin works instead of The Thinker.
   const toks = queryTokens(q);
   const SOURCE_ORDER: Record<string, number> = {
-    aic: 0, met: 1, cleveland: 2, vam: 3, wellcome: 4, harvard: 5, europeana: 6, si: 7, wikiart: 8, commons: 9,
+    aic: 0, met: 1, cleveland: 2, vam: 3, wellcome: 4, smk: 5, nasjonalmuseet: 6,
+    harvard: 7, europeana: 8, si: 9, digitalnz: 10, wikiart: 11, commons: 12,
   };
+  // Round-robin rank: 0 = each source's top result, 1 = its second, etc.
+  // (items arrive grouped by source, each in that API's own relevance order).
+  const rrIndex = new Map<ArtItem, number>();
+  const seen: Record<string, number> = {};
+  for (const it of items) {
+    seen[it.source] = (seen[it.source] ?? -1) + 1;
+    rrIndex.set(it, seen[it.source]);
+  }
+  // Sort: exact matches first (relevance), then INTERLEAVE sources within each
+  // relevance tier (round-robin) so every contributing collection gets shown,
+  // then public-domain, then a stable source order.
   items.sort((a, b) => {
     const ra = relevance(a, toks);
     const rb = relevance(b, toks);
     if (ra !== rb) return rb - ra;
+    const da = rrIndex.get(a) ?? 0;
+    const db = rrIndex.get(b) ?? 0;
+    if (da !== db) return da - db;
     if (a.isPublicDomain !== b.isPublicDomain) return a.isPublicDomain ? -1 : 1;
-    return (SOURCE_ORDER[a.source] ?? 9) - (SOURCE_ORDER[b.source] ?? 9);
+    return (SOURCE_ORDER[a.source] ?? 99) - (SOURCE_ORDER[b.source] ?? 99);
   });
-
-  // Cap per source (so one prolific source can't crowd the others out), then total.
-  const perSource: Record<string, number> = {};
-  const balanced = items.filter((it) => {
-    perSource[it.source] = (perSource[it.source] ?? 0) + 1;
-    return perSource[it.source] <= MAX_PER_SOURCE;
-  });
-  const capped = balanced.slice(0, MAX_ITEMS);
+  const capped = items.slice(0, MAX_ITEMS);
 
   res.setHeader('Cache-Control', 'public, s-maxage=3600, stale-while-revalidate=86400');
   return res.status(200).json({ items: capped, warnings });
