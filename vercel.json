@@ -3,7 +3,11 @@
   "framework": "vite",
   "functions": {
     "api/scan.ts": {
-      "maxDuration": 10,
+      "maxDuration": 30,
+      "memory": 256
+    },
+    "api/sauce.ts": {
+      "maxDuration": 15,
       "memory": 256
     },
     "api/fetch.ts": {

@@ -25,6 +25,7 @@ const UA =
   'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 const MAX_BODY = 4 * 1024 * 1024; // 4 MB
 const TIMEOUT_MS = 8_000;
+const FIRECRAWL_TIMEOUT_MS = 22_000; // JS rendering is slower than a static GET
 const MAX_CANDIDATES = 150;
 const MAX_REDIRECTS = 3;
 
@@ -271,6 +272,36 @@ async function safeFetch(startUrl: string): Promise<{ finalUrl: string; html: st
   }
 }
 
+// ─── Firecrawl fallback (JS-rendered pages) ────────────────────────────────────
+// The static fetch above only sees server-rendered HTML. For JS-built galleries
+// (infinite scroll, client-side hydration) it finds nothing. When FIRECRAWL_API_KEY
+// is set we fall back to Firecrawl, which renders the page and returns final HTML.
+// Used ONLY when the static scan found 0 images, to conserve Firecrawl credits.
+async function firecrawlScrape(targetUrl: string): Promise<{ finalUrl: string; html: string } | null> {
+  const key = process.env.FIRECRAWL_API_KEY;
+  if (!key) return null;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), FIRECRAWL_TIMEOUT_MS);
+  try {
+    const res = await fetch('https://api.firecrawl.dev/v1/scrape', {
+      method: 'POST',
+      signal: controller.signal,
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
+      body: JSON.stringify({ url: targetUrl, formats: ['html'], onlyMainContent: false }),
+    });
+    if (!res.ok) return null;
+    const json = (await res.json()) as { data?: { html?: string; metadata?: { url?: string; sourceURL?: string } } };
+    const html = json.data?.html;
+    if (!html) return null;
+    const finalUrl = json.data?.metadata?.sourceURL || json.data?.metadata?.url || targetUrl;
+    return { finalUrl, html };
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // ─── Handler ─────────────────────────────────────────────────────────────────
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -312,9 +343,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   try {
     const { finalUrl, html } = await safeFetch(rawUrl);
-    const images = extractImages(html, finalUrl);
+    let images = extractImages(html, finalUrl);
+    let rendered = false;
+    // JS-rendered page → nothing in static HTML → try Firecrawl (if configured).
+    if (images.length === 0) {
+      const fc = await firecrawlScrape(rawUrl);
+      if (fc) {
+        const fcImages = extractImages(fc.html, fc.finalUrl);
+        if (fcImages.length > 0) { images = fcImages; rendered = true; }
+      }
+    }
     res.setHeader('Cache-Control', 'public, s-maxage=1800, stale-while-revalidate=86400');
-    return res.status(200).json({ images });
+    return res.status(200).json({ images, rendered, sauceEnabled: Boolean(process.env.SAUCENAO_API_KEY) });
   } catch (e) {
     if (e instanceof GuardError) {
       res.setHeader('Cache-Control', 'no-store');

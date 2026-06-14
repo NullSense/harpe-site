@@ -63,7 +63,7 @@ export interface ArtItem {
   format: string;       // format of the primary download
   lossless: boolean;    // true if ANY download variant is lossless
   downloads: Download[];
-  source: 'aic' | 'met' | 'cleveland' | 'commons' | 'wikiart' | 'vam' | 'wellcome' | 'smk' | 'nasjonalmuseet' | 'digitalnz' | 'wikidata' | 'europeana' | 'harvard' | 'si' | 'parismusees' | 'moma' | 'nga' | 'dumps';
+  source: 'aic' | 'met' | 'cleveland' | 'commons' | 'wikiart' | 'vam' | 'wellcome' | 'smk' | 'nasjonalmuseet' | 'digitalnz' | 'wikidata' | 'europeana' | 'harvard' | 'si' | 'parismusees' | 'moma' | 'nga' | 'mia' | 'loc' | 'nypl' | 'dumps';
   isPublicDomain: boolean;
   // ── Enrichment (optional; the union "mega-model" beyond the basics above) ──
   date?: string;        // display date, e.g. "1642" / "ca. 1665"
@@ -1059,7 +1059,7 @@ async function fetchDumps(q: string): Promise<ArtItem[]> {
       const full = str(row.image_full) || thumb;
       if (!thumb) continue;
       const rs = str(row.source);
-      const source = (rs === 'moma' || rs === 'nga') ? rs : 'dumps';
+      const source = (rs === 'moma' || rs === 'nga' || rs === 'mia') ? rs : 'dumps';
       items.push({
         id: str(row.id) || `dumps-${items.length}`,
         title: str(row.title) || 'Untitled',
@@ -1078,6 +1078,145 @@ async function fetchDumps(q: string): Promise<ArtItem[]> {
         creditLine: str(row.credit_line),
         description: str(row.description),
         sourceUrl: str(row.source_url),
+      });
+    }
+    return items;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// ─── Library of Congress (Prints & Photographs) ──────────────────────────────
+// Keyless JSON API: any loc.gov page + ?fo=json. The /photos/ endpoint covers the
+// P&P catalog — incl. the FSA/OWI archive (Dorothea Lange, Walker Evans, Russell
+// Lee…) and Carol Highsmith, exactly the photographers the painting-heavy sources
+// miss. Real derivatives live on tile.loc.gov; largest listed is ~1024px.
+function locName(raw: string): string {
+  // "lange, dorothea" → "Dorothea Lange"
+  const s = raw.includes(',') ? raw.split(',').reverse().join(' ') : raw;
+  return s.replace(/\s+/g, ' ').trim().replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+async function fetchLoc(q: string): Promise<ArtItem[]> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  try {
+    const url =
+      `https://www.loc.gov/photos/?q=${encodeURIComponent(q)}&fo=json&c=20&at=results`;
+    const res = await timedFetch(url, controller.signal);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const json = await res.json() as {
+      results?: Array<{
+        title?: unknown; image_url?: unknown; url?: unknown; id?: unknown;
+        date?: unknown; contributor?: unknown; unrestricted?: unknown;
+        access_restricted?: unknown; item?: Record<string, unknown>;
+      }>;
+    };
+    const clean = (u: string) => u.split('#')[0];
+    const items: ArtItem[] = [];
+    for (const r of json.results ?? []) {
+      const imgs = Array.isArray(r.image_url) ? (r.image_url as unknown[]).map(str) : [];
+      const usable = imgs.filter((u) => u.includes('tile.loc.gov')); // skips svg group placeholders
+      if (usable.length === 0) continue;
+      const lastRaw = usable[usable.length - 1];
+      const full = clean(lastRaw);
+      const thumb = clean(usable[0]);
+      const dm = /[#&]h=(\d+)&w=(\d+)/.exec(lastRaw); // dims from the largest derivative
+      const height = dm ? Number(dm[1]) : undefined;
+      const width = dm ? Number(dm[2]) : undefined;
+      const contributors = Array.isArray(r.contributor) ? (r.contributor as unknown[]).map(str).filter(Boolean) : [];
+      const item = (r.item && typeof r.item === 'object') ? r.item : {};
+      const med = Array.isArray(item.medium_brief) ? str((item.medium_brief as unknown[])[0])
+        : Array.isArray(item.medium) ? str((item.medium as unknown[])[0]) : str(item.medium_brief);
+      const sourceUrl = str(r.url) || str(r.id);
+      const pd = r.unrestricted === true && r.access_restricted !== true;
+      const digits = sourceUrl.replace(/\D+/g, '').slice(0, 12);
+      items.push({
+        id: `loc-${digits || items.length}`,
+        title: str(r.title) || 'Untitled',
+        artist: contributors.length ? locName(contributors[0]) : '',
+        dimensions: '',
+        thumbUrl: thumb,
+        previewUrl: full,
+        fullUrl: full,
+        width, height,
+        format: 'jpeg',
+        lossless: false,
+        downloads: [{ label: 'Full JPEG', url: full, format: 'jpeg', lossless: false }],
+        source: 'loc',
+        isPublicDomain: pd,
+        date: str(r.date),
+        medium: med,
+        sourceUrl,
+      });
+    }
+    return items;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// ─── NYPL (New York Public Library Digital Collections) ──────────────────────
+// Keyed (free token, 10k req/day). With publicDomainOnly=true the results carry
+// usable imageLinks. Strong photography. Dormant until NYPL_API_TOKEN is set.
+// DEFENSIVE: only emits items where a real http(s) image URL was parsed, so a
+// shape mismatch degrades to "0 results", never broken tiles.
+function nyplPick(links: string[], codes: string[]): string {
+  for (const c of codes) {
+    const hit = links.find((u) => new RegExp(`[?&]t=${c}(?:&|$)`).test(u));
+    if (hit) return hit;
+  }
+  return links[0] || '';
+}
+
+async function fetchNypl(q: string): Promise<ArtItem[]> {
+  // Tolerate a value pasted with surrounding quotes or a `Token token=` prefix.
+  const token = (process.env.NYPL_API_TOKEN || process.env.NYPL_API_KEY || '')
+    .trim().replace(/^Token\s+token=/i, '').replace(/^["']|["']$/g, '').trim();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  try {
+    const url =
+      `https://api.repo.nypl.org/api/v2/items/search?q=${encodeURIComponent(q)}` +
+      `&publicDomainOnly=true&per_page=20`;
+    const res = await fetch(url, {
+      signal: controller.signal,
+      headers: { 'User-Agent': UA, Accept: 'application/json', Authorization: `Token token="${token}"` },
+    }) as unknown as Response;
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const json = await res.json() as { nyplAPI?: { response?: { result?: unknown } } };
+    const raw = json.nyplAPI?.response?.result;
+    const results = Array.isArray(raw) ? raw : raw ? [raw] : [];
+    const items: ArtItem[] = [];
+    for (const r0 of results) {
+      const r = r0 as Record<string, unknown>;
+      const ilNode = (r.imageLinks && typeof r.imageLinks === 'object')
+        ? (r.imageLinks as Record<string, unknown>).imageLink : undefined;
+      let links = (Array.isArray(ilNode) ? ilNode.map(str) : ilNode ? [str(ilNode)] : [])
+        .map((u) => u.replace(/&amp;/g, '&').trim())      // NYPL HTML-encodes & in links
+        .map((u) => (u.startsWith('//') ? `https:${u}` : u))
+        .filter((u) => /^https?:/i.test(u));
+      const imageID = str(r.imageID);
+      if (links.length === 0 && imageID) links = [`https://images.nypl.org/index.php?id=${imageID}&t=w`];
+      const full = nyplPick(links, ['g', 'v', 'q', 'w']);
+      if (!/^https?:/i.test(full)) continue; // safety: never emit a broken tile
+      const thumb = nyplPick(links, ['w', 'r', 't']) || full;
+      const uuid = str(r.uuid);
+      items.push({
+        id: `nypl-${uuid || items.length}`,
+        title: str(r.title) || 'Untitled',
+        artist: '',
+        dimensions: '',
+        thumbUrl: thumb,
+        previewUrl: full,
+        fullUrl: full,
+        format: 'jpeg',
+        lossless: false,
+        downloads: [{ label: 'Full image', url: full, format: 'jpeg', lossless: false }],
+        source: 'nypl',
+        isPublicDomain: true,
+        date: str(r.dateDigitized),
+        sourceUrl: uuid ? `https://digitalcollections.nypl.org/items/${uuid}` : '',
       });
     }
     return items;
@@ -1106,17 +1245,19 @@ export async function gatherSources(q: string): Promise<Array<[string, Promise<A
     ['Nasjonalmuseet', fetchNasjonalmuseet(q)],
     ['DigitalNZ', fetchDigitalNZ(q)],
     ['Wikidata', fetchWikidata(q)],
+    ['Library of Congress', fetchLoc(q)],
   ];
   // Keyed sources: only queried when their (server-only) API key is configured.
   if (process.env.EUROPEANA_API_KEY) sources.push(['Europeana', fetchEuropeana(q)]);
   if (process.env.HARVARD_API_KEY) sources.push(['Harvard', fetchHarvard(q)]);
   if (process.env.SMITHSONIAN_API_KEY) sources.push(['Smithsonian', fetchSmithsonian(q)]);
+  if (process.env.NYPL_API_TOKEN || process.env.NYPL_API_KEY) sources.push(['NYPL', fetchNypl(q)]);
+  if (process.env.PARIS_MUSEES_TOKEN) sources.push(['Paris Musées', fetchParisMusees(q)]);
   if (process.env.HARPE_DUMP_DATASET) sources.push(['Dumps', fetchDumps(q)]);
-  // Paris Musées is DISABLED: its Drupal GraphQL has no fast fulltext search —
-  // LIKE on `title` is an unindexed scan over ~280k rows that returns nothing or
-  // times out. All 14 Paris museums are already covered by Europeana, so this is
-  // redundant. The fetcher is kept (see fetchParisMusees) for reference only.
-  void fetchParisMusees;
+  // Note: Paris Musées' Drupal GraphQL has no fast fulltext index — the LIKE scan
+  // can be slow/empty. It's best-effort: its own timeout caps latency and a slow
+  // or failing call just degrades to a per-source warning (the 14 Paris museums
+  // are also covered by Europeana).
   return sources;
 }
 
@@ -1172,8 +1313,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const toks = queryTokens(q);
   const SOURCE_ORDER: Record<string, number> = {
     aic: 0, met: 1, cleveland: 2, vam: 3, wellcome: 4, smk: 5, nasjonalmuseet: 6,
-    parismusees: 7, harvard: 8, europeana: 9, si: 10, moma: 11, nga: 12, dumps: 13,
-    wikidata: 14, digitalnz: 15, wikiart: 16, commons: 17,
+    parismusees: 7, harvard: 8, europeana: 9, si: 10, moma: 11, nga: 12, mia: 13, loc: 14,
+    nypl: 15, dumps: 16, wikidata: 17, digitalnz: 18, wikiart: 19, commons: 20,
   };
   // Round-robin rank: 0 = each source's top result, 1 = its second, etc.
   // (items arrive grouped by source, each in that API's own relevance order).

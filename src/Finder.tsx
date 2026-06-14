@@ -52,7 +52,7 @@ interface ArtItem {
   format: string;
   lossless: boolean;
   downloads: DownloadVariant[];
-  source: 'aic' | 'met' | 'cleveland' | 'commons' | 'wikiart' | 'vam' | 'wellcome' | 'smk' | 'nasjonalmuseet' | 'digitalnz' | 'wikidata' | 'europeana' | 'harvard' | 'si' | 'parismusees' | 'moma' | 'nga' | 'dumps' | 'iiif';
+  source: 'aic' | 'met' | 'cleveland' | 'commons' | 'wikiart' | 'vam' | 'wellcome' | 'smk' | 'nasjonalmuseet' | 'digitalnz' | 'wikidata' | 'europeana' | 'harvard' | 'si' | 'parismusees' | 'moma' | 'nga' | 'mia' | 'loc' | 'nypl' | 'dumps' | 'iiif';
   isPublicDomain: boolean;
   date?: string;
   medium?: string;
@@ -69,6 +69,15 @@ function workKey(it: { title: string; artist: string }): string {
   return `${t}|${a}`;
 }
 
+interface SauceResult {
+  similarity: number;
+  thumbnail: string;
+  title: string;
+  author: string;
+  site: string;
+  urls: string[];
+}
+
 type Mode = 'idle' | 'loading' | 'scan' | 'art' | 'empty' | 'error';
 type DlStatus = 'downloading' | 'done' | 'error';
 
@@ -80,8 +89,8 @@ const SHOWN_STEP = 24; // infinite-scroll page size
 const STOP = new Set(['the','and','of','to','in','on','by','with','from','for','his','her','its','a','an','at','as']);
 const SOURCE_ORDER: Record<string, number> = {
   aic: 0, met: 1, cleveland: 2, vam: 3, wellcome: 4, smk: 5, nasjonalmuseet: 6,
-  parismusees: 7, harvard: 8, europeana: 9, si: 10, moma: 11, nga: 12, dumps: 13,
-  wikidata: 14, digitalnz: 15, wikiart: 16, commons: 17,
+  parismusees: 7, harvard: 8, europeana: 9, si: 10, moma: 11, nga: 12, mia: 13, loc: 14,
+  nypl: 15, dumps: 16, wikidata: 17, digitalnz: 18, wikiart: 19, commons: 20,
 };
 function qTokens(q: string): string[] {
   return q.toLowerCase().split(/[^a-z0-9]+/).filter((t) => t.length >= 3 && !STOP.has(t));
@@ -235,6 +244,7 @@ function ScanCard({
   selected,
   onToggle,
   onPreview,
+  onFindSource,
   onLoad,
   onError,
   dlStatus,
@@ -243,6 +253,7 @@ function ScanCard({
   selected: boolean;
   onToggle: () => void;
   onPreview: () => void;
+  onFindSource?: () => void;
   onLoad: (nw: number) => void;
   onError: () => void;
   dlStatus?: DlStatus;
@@ -276,15 +287,28 @@ function ScanCard({
         {selected ? '✓' : ''}
       </span>
 
-      {/* preview button (stops propagation so it doesn't toggle selection) */}
-      <button
-        type="button"
-        onClick={(e) => { e.stopPropagation(); onPreview(); }}
-        aria-label={`Preview ${item.name}`}
-        className="absolute right-2 top-2 z-10 rounded-full border border-line bg-[rgba(10,8,6,.7)] px-2 py-0.5 font-mono text-[.6rem] text-muted opacity-0 transition hover:border-bronze/60 hover:text-bronze-bright focus-visible:opacity-100 group-hover:opacity-100"
-      >
-        ⤢
-      </button>
+      {/* corner actions (stop propagation so they don't toggle selection) */}
+      <div className="absolute right-2 top-2 z-10 flex gap-1">
+        {onFindSource && (
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); onFindSource(); }}
+            aria-label={`Find the source of ${item.name}`}
+            title="Reverse-image search: find the source / a higher-res original"
+            className="rounded-full border border-line bg-[rgba(10,8,6,.7)] px-2 py-0.5 font-mono text-[.6rem] text-muted opacity-0 transition hover:border-bronze/60 hover:text-bronze-bright focus-visible:opacity-100 group-hover:opacity-100"
+          >
+            🔍
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={(e) => { e.stopPropagation(); onPreview(); }}
+          aria-label={`Preview ${item.name}`}
+          className="rounded-full border border-line bg-[rgba(10,8,6,.7)] px-2 py-0.5 font-mono text-[.6rem] text-muted opacity-0 transition hover:border-bronze/60 hover:text-bronze-bright focus-visible:opacity-100 group-hover:opacity-100"
+        >
+          ⤢
+        </button>
+      </div>
 
       {dlStatus && (
         <span
@@ -325,7 +349,7 @@ function ScanCard({
 
 function SourceBadge({ source }: { source: ArtItem['source'] }) {
   const labels: Record<ArtItem['source'], string> = {
-    aic: 'AIC', met: 'Met', cleveland: 'Cleveland', commons: 'Commons', wikiart: 'WikiArt', vam: 'V&A', wellcome: 'Wellcome', smk: 'SMK', nasjonalmuseet: 'Nasjonalmus.', digitalnz: 'DigitalNZ', wikidata: 'Wikidata', europeana: 'Europeana', harvard: 'Harvard', si: 'Smithsonian', parismusees: 'Paris Musées', moma: 'MoMA', nga: 'NGA', dumps: 'Open data', iiif: 'IIIF',
+    aic: 'AIC', met: 'Met', cleveland: 'Cleveland', commons: 'Commons', wikiart: 'WikiArt', vam: 'V&A', wellcome: 'Wellcome', smk: 'SMK', nasjonalmuseet: 'Nasjonalmus.', digitalnz: 'DigitalNZ', wikidata: 'Wikidata', europeana: 'Europeana', harvard: 'Harvard', si: 'Smithsonian', parismusees: 'Paris Musées', moma: 'MoMA', nga: 'NGA', mia: 'MIA', loc: 'Library of Congress', nypl: 'NYPL', dumps: 'Open data', iiif: 'IIIF',
   };
   return (
     <span className="rounded-sm bg-bronze/15 px-1.5 py-0.5 font-mono text-[.65rem] text-bronze">
@@ -363,11 +387,12 @@ function MetaChips({ item }: { item: ArtItem }) {
 }
 
 function ArtCard({
-  item, onPreview, onAnalyze, siblings, analyzeEnabled,
+  item, onPreview, onAnalyze, onShare, siblings, analyzeEnabled,
 }: {
   item: ArtItem;
   onPreview: () => void;
   onAnalyze: () => void;
+  onShare: () => void;
   siblings: number;      // how many sources (incl. this) describe the same work
   analyzeEnabled: boolean;
 }) {
@@ -401,12 +426,15 @@ function ArtCard({
           <SourceBadge source={item.source} />
         </div>
         {item.artist && <p className="text-[.82rem] text-muted">{item.artist}</p>}
-        {(item.date || item.medium) && (
-          <p className="text-[.74rem] text-muted/80">{[item.date, item.medium].filter(Boolean).join(' · ')}</p>
+        {(item.date || item.medium || item.culture) && (
+          <p className="text-[.74rem] text-muted/80">{[item.date, item.medium, item.culture].filter(Boolean).join(' · ')}</p>
         )}
         {item.dimensions && <p className="font-mono text-[.72rem] text-muted/70">{item.dimensions}</p>}
         {item.description && (
           <p className="line-clamp-3 text-[.76rem] leading-snug text-muted/75">{item.description}</p>
+        )}
+        {item.creditLine && (
+          <p className="text-[.7rem] italic leading-snug text-muted/55">{item.creditLine}</p>
         )}
         {item.sourceUrl && (
           <a
@@ -431,8 +459,17 @@ function ArtCard({
           </button>
         )}
 
-        <div className="mt-auto pt-2">
+        <div className="mt-auto flex items-center gap-2 pt-2">
           <DownloadMenu fullUrl={item.fullUrl} title={item.title} artist={item.artist} />
+          <button
+            type="button"
+            onClick={onShare}
+            title="Copy a shareable link to this work"
+            aria-label="Copy a shareable link to this work"
+            className="rounded border border-line px-2.5 py-1.5 font-mono text-[.78rem] text-muted transition hover:border-bronze/60 hover:text-bronze-bright"
+          >
+            ⧉
+          </button>
         </div>
       </div>
     </article>
@@ -467,6 +504,13 @@ export default function Finder() {
   // shared lightbox (index into the currently-visible list)
   const [lightboxIndex, setLightboxIndex] = useState(-1);
 
+  // reverse-image search (SauceNAO) — scan mode
+  const [sauceEnabled, setSauceEnabled] = useState(false);
+  const [sauce, setSauce] = useState<
+    | null
+    | { phase: 'loading' | 'done' | 'error'; imageUrl: string; results?: SauceResult[]; message?: string }
+  >(null);
+
   // cross-source synthesis ("mega-analysis")
   const [analyzeEnabled, setAnalyzeEnabled] = useState(false);
   const [analysis, setAnalysis] = useState<
@@ -499,11 +543,12 @@ export default function Finder() {
     // Any other URL → scan the page for images
     if (isURL(q)) {
       setImages([]); setSelected(new Set()); setDlMap(new Map()); setDlBusy(false); setDlDone(false);
-      setPageUrl(q);
+      setPageUrl(q); setQuery(q);
       try {
         const res = await fetch(`/api/scan?url=${encodeURIComponent(q)}`);
-        const json: { images?: ImageCandidate[]; error?: string } = await res.json();
+        const json: { images?: ImageCandidate[]; error?: string; sauceEnabled?: boolean } = await res.json();
         if (!res.ok) { setError(json.error ?? `Server error ${res.status}`); setMode('error'); return; }
+        setSauceEnabled(Boolean(json.sauceEnabled));
         const candidates = json.images ?? [];
         if (candidates.length === 0) { setMode('empty'); return; }
         setImages(candidates.map((c) => ({ ...c, naturalWidth: -1, loaded: false })));
@@ -552,6 +597,18 @@ export default function Finder() {
       setArtItems(items); setMode('art');
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Network error'); setMode('error');
+    }
+  }, []);
+
+  const findSource = useCallback(async (imageUrl: string) => {
+    setSauce({ phase: 'loading', imageUrl });
+    try {
+      const res = await fetch(`/api/sauce?url=${encodeURIComponent(imageUrl)}`);
+      const json = await res.json();
+      if (!res.ok) { setSauce({ phase: 'error', imageUrl, message: json.error ?? `Error ${res.status}` }); return; }
+      setSauce({ phase: 'done', imageUrl, results: Array.isArray(json.results) ? json.results : [] });
+    } catch (e) {
+      setSauce({ phase: 'error', imageUrl, message: e instanceof Error ? e.message : 'Network error' });
     }
   }, []);
 
@@ -651,14 +708,23 @@ export default function Finder() {
   }, [siblingsByKey]);
 
   // ── lightbox slides (built from whichever list is showing) ──
+  // Both modes feed the SAME MediaLightbox with the same slide shape
+  // (src + title + description + proxied download), so the viewer and its
+  // captions behave identically whether you scanned a URL or searched a museum.
   const slides: LightboxSlide[] = useMemo(() => {
     if (mode === 'scan') {
-      return visibleScan.map(([img]) => ({
-        src: img.url,
-        title: img.name,
-        downloadUrl: proxyUrl(img.url, pageUrl || undefined),
-        downloadFilename: img.name,
-      }));
+      return visibleScan.map(([img]) => {
+        const dims = img.naturalWidth > 0 ? `${img.naturalWidth} px wide` : '';
+        let host = '';
+        try { host = new URL(img.url).hostname.replace(/^www\./, ''); } catch { /* not a URL */ }
+        return {
+          src: img.url,
+          title: img.name,
+          description: [dims, host && `from ${host}`].filter(Boolean).join(' · '),
+          downloadUrl: proxyUrl(img.url, pageUrl || undefined),
+          downloadFilename: img.name,
+        };
+      });
     }
     if (mode === 'art') {
       return visibleArt.map((it) => {
@@ -667,7 +733,7 @@ export default function Finder() {
         return {
           src: it.previewUrl || it.fullUrl,
           title: it.title,
-          description: [facts, it.description].filter(Boolean).join('\n\n'),
+          description: [facts, it.description, it.creditLine].filter(Boolean).join('\n\n'),
           downloadUrl: proxyUrl(best.url),
           downloadFilename: safeName(it.title, it.artist, extFor(best.format)),
         };
@@ -675,6 +741,81 @@ export default function Finder() {
     }
     return [];
   }, [mode, visibleScan, visibleArt, pageUrl]);
+
+  // ── shareable links (zero extra cost: pure client-side URL state) ──
+  // The current search lives in the URL as ?q=<term>; an open slide adds &v=<id>.
+  // Opening a shared link just re-runs the same search against the same endpoints,
+  // so it costs exactly what a normal search does — nothing extra.
+  const pendingViewRef = useRef<string | null>(null);
+  const [shareMsg, setShareMsg] = useState('');
+
+  // Slide identity used in the URL: art uses the stable item id; scan uses the URL.
+  const slideShareId = useCallback(
+    (idx: number): string | undefined =>
+      mode === 'art' ? visibleArt[idx]?.id : mode === 'scan' ? visibleScan[idx]?.[0]?.url : undefined,
+    [mode, visibleArt, visibleScan],
+  );
+
+  const buildShareUrl = useCallback(
+    (viewId?: string): string => {
+      const term = mode === 'scan' ? pageUrl : query;
+      const params = new URLSearchParams();
+      if (term) params.set('q', term);
+      if (viewId) params.set('v', viewId);
+      return `${window.location.origin}${window.location.pathname}?${params.toString()}`;
+    },
+    [mode, pageUrl, query],
+  );
+
+  const copyShare = useCallback(
+    async (viewId?: string) => {
+      const url = buildShareUrl(viewId);
+      try {
+        await navigator.clipboard.writeText(url);
+        setShareMsg('Link copied ✓');
+      } catch {
+        setShareMsg('Copy this link: ' + url);
+      }
+      setTimeout(() => setShareMsg(''), 2600);
+    },
+    [buildShareUrl],
+  );
+
+  // Hydrate from the URL on first load: ?q= runs the search, ?v= opens that slide.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const q = params.get('q');
+    const v = params.get('v');
+    if (v) pendingViewRef.current = v;
+    if (q) { setInput(q); run(q); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Once results are in, open the deep-linked slide (works while streaming, too).
+  useEffect(() => {
+    const v = pendingViewRef.current;
+    if (!v) return;
+    const idx =
+      mode === 'art'
+        ? visibleArt.findIndex((it) => it.id === v)
+        : mode === 'scan'
+          ? visibleScan.findIndex(([img]) => img.url === v)
+          : -1;
+    if (idx >= 0) { setLightboxIndex(idx); pendingViewRef.current = null; }
+  }, [mode, visibleArt, visibleScan]);
+
+  // Keep the address bar in sync (replaceState → no history spam during streaming).
+  useEffect(() => {
+    if (mode !== 'art' && mode !== 'scan') return;
+    const term = mode === 'scan' ? pageUrl : query;
+    if (!term) return;
+    const params = new URLSearchParams({ q: term });
+    if (lightboxIndex >= 0) {
+      const id = slideShareId(lightboxIndex);
+      if (id) params.set('v', id);
+    }
+    window.history.replaceState(null, '', `${window.location.pathname}?${params.toString()}`);
+  }, [mode, query, pageUrl, lightboxIndex, slideShareId]);
 
   // Infinite scroll: reveal more cards as the sentinel nears the viewport.
   useEffect(() => {
@@ -741,8 +882,8 @@ export default function Finder() {
         ))}
       </div>
       <p className="mt-3 text-center font-mono text-[.68rem] tracking-[0.04em] text-muted/55">
-        millions of works across 14 open collections — the Met · Art Institute of Chicago · Cleveland · V&amp;A ·
-        Wellcome · Harvard · Smithsonian · SMK · Nasjonalmuseet · Europeana · Wikidata · DigitalNZ · WikiArt · Wikimedia Commons
+        millions of works across 15 open collections — the Met · Art Institute of Chicago · Cleveland · V&amp;A ·
+        Wellcome · Harvard · Smithsonian · Library of Congress · SMK · Nasjonalmuseet · Europeana · Wikidata · DigitalNZ · WikiArt · Wikimedia Commons
       </p>
 
       {/* ── results ── */}
@@ -787,6 +928,7 @@ export default function Finder() {
               <div className="flex items-center gap-2">
                 <button type="button" onClick={selectAll} className="rounded-md border border-line px-3 py-1.5 font-mono text-[.75rem] text-muted transition hover:border-bronze/60 hover:text-bronze-bright">Select all</button>
                 <button type="button" onClick={clearAll} className="rounded-md border border-line px-3 py-1.5 font-mono text-[.75rem] text-muted transition hover:border-bronze/60 hover:text-bronze-bright">Clear</button>
+                <button type="button" onClick={() => copyShare()} title="Copy a shareable link to these results" className="rounded-md border border-line px-3 py-1.5 font-mono text-[.75rem] text-muted transition hover:border-bronze/60 hover:text-bronze-bright">⧉ Share</button>
                 <button
                   type="button"
                   onClick={downloadSelected}
@@ -807,6 +949,7 @@ export default function Finder() {
                   selected={selected.has(originalIdx)}
                   onToggle={() => toggleSelect(originalIdx)}
                   onPreview={() => setLightboxIndex(visIdx)}
+                  onFindSource={sauceEnabled ? () => findSource(item.url) : undefined}
                   onLoad={(nw) => handleLoad(originalIdx, nw)}
                   onError={() => handleError(originalIdx)}
                   dlStatus={dlMap.get(originalIdx)}
@@ -853,6 +996,14 @@ export default function Finder() {
               >
                 {losslessOnly ? '◆ lossless only ✓' : `◆ lossless only (${losslessCount})`}
               </button>
+              <button
+                type="button"
+                onClick={() => copyShare()}
+                title="Copy a shareable link to this search"
+                className="rounded-full border border-line px-3 py-1 font-mono text-[.72rem] text-muted transition hover:border-bronze/60 hover:text-bronze-bright"
+              >
+                ⧉ share search
+              </button>
             </div>
 
             {visibleArt.length === 0 ? (
@@ -869,6 +1020,7 @@ export default function Finder() {
                       item={item}
                       onPreview={() => setLightboxIndex(i)}
                       onAnalyze={() => analyzeWork(item)}
+                      onShare={() => copyShare(item.id)}
                       siblings={siblingsByKey.get(workKey(item))?.length ?? 1}
                       analyzeEnabled={analyzeEnabled}
                     />
@@ -890,6 +1042,77 @@ export default function Finder() {
 
       {/* the one viewer, shared by both result kinds */}
       <MediaLightbox slides={slides} index={lightboxIndex} onClose={() => setLightboxIndex(-1)} />
+
+      {/* share-link toast */}
+      {shareMsg && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="fixed bottom-6 left-1/2 z-[70] -translate-x-1/2 rounded-lg border border-bronze/50 bg-[rgba(16,11,8,.97)] px-4 py-2 font-mono text-[.8rem] text-bronze-bright shadow-xl"
+        >
+          {shareMsg}
+        </div>
+      )}
+
+      {/* reverse-image search (SauceNAO) modal */}
+      {sauce && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Reverse-image search"
+          onClick={() => setSauce(null)}
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-[rgba(8,6,4,.8)] p-4 backdrop-blur-sm"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="max-h-[85vh] w-[min(640px,100%)] overflow-y-auto rounded-xl border border-bronze/40 bg-[rgba(16,11,8,.97)] p-6 shadow-[0_30px_80px_-30px_rgba(0,0,0,.8)]"
+          >
+            <div className="mb-3 flex items-start justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <img src={sauce.imageUrl} alt="" className="h-12 w-12 shrink-0 rounded object-cover" />
+                <div>
+                  <span className="block font-mono text-[.7rem] tracking-[0.12em] text-bronze">🔍 SOURCE MATCHES</span>
+                  <h3 className="mt-0.5 font-display text-[1.05rem] font-medium text-ink">Where this image appears</h3>
+                </div>
+              </div>
+              <button
+                onClick={() => setSauce(null)}
+                aria-label="Close"
+                className="rounded-md border border-line px-2 py-0.5 font-mono text-muted transition hover:border-bronze/60 hover:text-bronze-bright"
+              >✕</button>
+            </div>
+
+            {sauce.phase === 'loading' && (
+              <p className="flex items-center gap-2 py-6 font-mono text-[.85rem] text-muted"><Spinner /> Searching the web for this image…</p>
+            )}
+            {sauce.phase === 'error' && (
+              <p className="py-4 text-[.88rem] text-amber/90">{sauce.message}</p>
+            )}
+            {sauce.phase === 'done' && (
+              (sauce.results && sauce.results.length > 0) ? (
+                <ul className="space-y-2">
+                  {sauce.results.map((r, i) => (
+                    <li key={i} className="flex items-center gap-3 rounded-lg border border-line p-2.5">
+                      {r.thumbnail && <img src={r.thumbnail} alt="" loading="lazy" className="h-14 w-14 shrink-0 rounded object-cover" />}
+                      <div className="min-w-0 flex-1">
+                        <a href={r.urls[0]} target="_blank" rel="noopener" className="block truncate font-medium text-[.86rem] text-bronze-bright hover:underline">
+                          {r.title || r.site || r.urls[0]}
+                        </a>
+                        {r.author && <p className="truncate text-[.76rem] text-muted">{r.author}</p>}
+                        <p className="truncate font-mono text-[.68rem] text-muted/60">{r.site}{r.urls.length > 1 ? ` · +${r.urls.length - 1} more` : ''}</p>
+                      </div>
+                      <span className="shrink-0 rounded-sm bg-bronze/10 px-1.5 py-0.5 font-mono text-[.66rem] text-bronze">{r.similarity.toFixed(0)}%</span>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="py-4 text-[.86rem] text-muted">No close matches found for this image.</p>
+              )
+            )}
+            <p className="mt-3 font-mono text-[.64rem] text-muted/50">Matches via SauceNAO — similarity is approximate; verify the source before reuse.</p>
+          </div>
+        </div>
+      )}
 
       {/* cross-source synthesis modal */}
       {analysis && (

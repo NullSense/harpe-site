@@ -10,3 +10,6 @@ demo/video/
 # generated demo media (regenerate with demo/record-web.mjs)
 demo/web.gif
 demo/web.mp4
+
+# build artifact from ingest pipeline (pushed to HF, not git)
+harpe-art.parquet
