@@ -64,7 +64,7 @@ interface ArtItem {
   format: string;       // format of the primary download
   lossless: boolean;    // true if ANY download variant is lossless
   downloads: Download[];
-  source: 'aic' | 'met' | 'cleveland' | 'commons' | 'wikiart' | 'vam';
+  source: 'aic' | 'met' | 'cleveland' | 'commons' | 'wikiart' | 'vam' | 'wellcome';
   isPublicDomain: boolean;
 }
 
@@ -510,6 +510,57 @@ async function fetchVam(q: string): Promise<ArtItem[]> {
   }
 }
 
+// ─── Wellcome Collection (UK; keyless catalogue API, IIIF images) ─────────────
+
+async function fetchWellcome(q: string): Promise<ArtItem[]> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+
+  try {
+    const url =
+      `https://api.wellcomecollection.org/catalogue/v2/works` +
+      `?query=${encodeURIComponent(q)}&pageSize=15&include=items`;
+    const res = await timedFetch(url, controller.signal);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+    const json = await res.json() as {
+      results?: Array<{
+        id?: unknown;
+        title?: unknown;
+        thumbnail?: { url?: unknown };
+      }>;
+    };
+
+    const items: ArtItem[] = [];
+    for (const w of json.results ?? []) {
+      // thumbnail: .../thumbs/<imageId>/full/!200,200/0/default.jpg — derive the
+      // full IIIF image from the same imageId via the /image/ service.
+      const thumb = str(w.thumbnail?.url);
+      const m = thumb.match(/\/thumbs\/([^/]+)\/full\//);
+      if (!m) continue;
+      const base = `https://iiif.wellcomecollection.org/image/${m[1]}`;
+      const full = `${base}/full/full/0/default.jpg`;
+      items.push({
+        id: `wellcome-${str(w.id)}`,
+        title: str(w.title) || 'Untitled',
+        artist: '',
+        dimensions: '',
+        thumbUrl: `${base}/full/!843,843/0/default.jpg`,
+        previewUrl: `${base}/full/!1600,1600/0/default.jpg`,
+        fullUrl: full,
+        format: 'jpeg',
+        lossless: false,
+        downloads: [{ label: 'Full JPEG', url: full, format: 'jpeg', lossless: false }],
+        source: 'wellcome',
+        isPublicDomain: true, // Wellcome Collection is open access (CC0/CC-BY/PD)
+      });
+    }
+    return items;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // ─── Handler ─────────────────────────────────────────────────────────────────
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -547,6 +598,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     ['Commons', fetchCommons(q)],
     ['WikiArt', fetchWikiArt(q)],
     ['V&A', fetchVam(q)],
+    ['Wellcome', fetchWellcome(q)],
   ];
   const settled = await Promise.allSettled(sources.map(([, p]) => p));
 
@@ -567,7 +619,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   // then public-domain, then source order. This is the fix for "Rodin Thinker"
   // returning other Rodin works instead of The Thinker.
   const toks = queryTokens(q);
-  const SOURCE_ORDER: Record<string, number> = { aic: 0, met: 1, cleveland: 2, vam: 3, wikiart: 4, commons: 5 };
+  const SOURCE_ORDER: Record<string, number> = { aic: 0, met: 1, cleveland: 2, vam: 3, wellcome: 4, wikiart: 5, commons: 6 };
   items.sort((a, b) => {
     const ra = relevance(a, toks);
     const rb = relevance(b, toks);

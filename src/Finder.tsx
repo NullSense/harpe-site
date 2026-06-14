@@ -49,7 +49,7 @@ interface ArtItem {
   format: string;
   lossless: boolean;
   downloads: DownloadVariant[];
-  source: 'aic' | 'met' | 'cleveland' | 'commons' | 'wikiart' | 'vam' | 'iiif';
+  source: 'aic' | 'met' | 'cleveland' | 'commons' | 'wikiart' | 'vam' | 'wellcome' | 'iiif';
   isPublicDomain: boolean;
 }
 
@@ -274,7 +274,7 @@ function ScanCard({
 
 function SourceBadge({ source }: { source: ArtItem['source'] }) {
   const labels: Record<ArtItem['source'], string> = {
-    aic: 'AIC', met: 'Met', cleveland: 'Cleveland', commons: 'Commons', wikiart: 'WikiArt', vam: 'V&A', iiif: 'IIIF',
+    aic: 'AIC', met: 'Met', cleveland: 'Cleveland', commons: 'Commons', wikiart: 'WikiArt', vam: 'V&A', wellcome: 'Wellcome', iiif: 'IIIF',
   };
   return (
     <span className="rounded-sm bg-bronze/15 px-1.5 py-0.5 font-mono text-[.65rem] text-bronze">
@@ -616,7 +616,7 @@ export default function Finder() {
         ))}
       </div>
       <p className="mt-3 text-center font-mono text-[.68rem] tracking-[0.04em] text-muted/55">
-        art search spans Art Institute of Chicago · The Met · Cleveland · V&amp;A · WikiArt · Wikimedia Commons
+        art search spans Art Institute of Chicago · The Met · Cleveland · V&amp;A · Wellcome · WikiArt · Wikimedia Commons
       </p>
 
       {/* ── results ── */}
