@@ -1,5 +1,5 @@
 /**
- * /api/fetch?url=<image-url>&referer=<page-url>
+ * /api/fetch?url=<image-url>&referer=<page-url>[&w=<px>&h=<px>&fmt=jpeg|png|webp|avif&q=<1-100>]
  *
  * Image download proxy. Streams the image bytes back to the browser with:
  *   Content-Disposition: attachment; filename="..."
@@ -7,12 +7,18 @@
  *
  * This bypasses browser CORS restrictions on cross-origin image downloads.
  *
+ * Optional conversion params (any present triggers sharp processing):
+ *   w   — max output width in px (positive integer ≤ 8000, else ignored)
+ *   h   — max output height in px (positive integer ≤ 8000, else ignored)
+ *   fmt — output format: jpeg | png | webp | avif (else ignored)
+ *   q   — quality 1–100 (clamped; default 82)
+ * When none of w/h/fmt/q are present: original streaming passthrough (no change).
+ *
  * Security:
  *   - SSRF guard via _guard.ts (private IP / bad scheme / bad port rejection)
  *   - Redirect following with per-hop SSRF re-validation (max 3 hops)
  *   - REQUIRES response Content-Type to start with "image/"
- *   - Body streamed (not buffered) with an 80 MB DoS cap — large enough for
- *     lossless TIFF originals (e.g. Cleveland's ~50 MB full-res scans)
+ *   - Body buffered (conversion) or streamed (passthrough) with an 80 MB DoS cap
  *   - 20 second total fetch timeout
  *   - Rate limiting: shared 30 req/min/IP with scan.ts (in-memory, best-effort)
  */
@@ -21,6 +27,7 @@ import type { VercelRequest, VercelResponse } from './_vercel.js';
 import { fetch } from 'undici';
 import type { Response as UndiciResponse } from 'undici';
 import { GuardError, guardUrl, pinnedAgent, rateLimit, clientIp } from './_guard.js';
+import sharp from 'sharp';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -123,6 +130,73 @@ async function streamToResponse(upstream: UndiciResponse, out: NodeWritable): Pr
   await new Promise<void>((resolve) => out.end(resolve));
 }
 
+// ─── Conversion param parsing ─────────────────────────────────────────────────
+
+const FMT_ALLOWLIST = new Set(['jpeg', 'png', 'webp', 'avif']);
+const FMT_CT: Record<string, string> = {
+  jpeg: 'image/jpeg',
+  png: 'image/png',
+  webp: 'image/webp',
+  avif: 'image/avif',
+};
+
+interface ConvertParams {
+  w?: number;
+  h?: number;
+  fmt?: string;
+  q?: number;
+}
+
+function parseConvertParams(query: Record<string, string | string[] | undefined>): ConvertParams {
+  const p: ConvertParams = {};
+
+  const parseIntParam = (key: string, max: number): number | undefined => {
+    const raw = typeof query[key] === 'string' ? (query[key] as string) : '';
+    if (!raw) return undefined;
+    const n = Math.round(Number(raw));
+    if (!Number.isFinite(n) || n < 1 || n > max) return undefined;
+    return n;
+  };
+
+  p.w = parseIntParam('w', 8000);
+  p.h = parseIntParam('h', 8000);
+
+  const rawFmt = typeof query.fmt === 'string' ? query.fmt.toLowerCase().trim() : '';
+  if (rawFmt && FMT_ALLOWLIST.has(rawFmt)) p.fmt = rawFmt;
+
+  const rawQ = typeof query.q === 'string' ? (query.q as string) : '';
+  if (rawQ) {
+    const qn = Math.round(Number(rawQ));
+    if (Number.isFinite(qn)) p.q = Math.max(1, Math.min(100, qn));
+  }
+
+  return p;
+}
+
+function needsConversion(p: ConvertParams): boolean {
+  return !!(p.w || p.h || p.fmt || p.q);
+}
+
+// ─── Buffer the body (for sharp conversion) ───────────────────────────────────
+
+async function bufferBody(upstream: UndiciResponse): Promise<Buffer> {
+  const reader = upstream.body?.getReader();
+  if (!reader) throw new GuardError(502, 'Empty response body');
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > MAX_BYTES) {
+      await reader.cancel();
+      throw new GuardError(413, 'Image exceeds 80 MB limit');
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks);
+}
+
 // ─── Filename derivation ──────────────────────────────────────────────────────
 
 function deriveFilename(url: string, contentType: string): string {
@@ -171,6 +245,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   const rawUrl = typeof req.query.url === 'string' ? req.query.url.trim() : '';
   const rawReferer = typeof req.query.referer === 'string' ? req.query.referer.trim() : undefined;
+  const convert = parseConvertParams(req.query as Record<string, string | string[] | undefined>);
 
   if (!rawUrl) {
     return res.status(400).json({ error: 'Missing ?url= parameter' });
@@ -233,9 +308,79 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(502).json({ error: 'Failed to fetch image' });
   }
 
-  // ── Phase 2: commit headers + stream (headers are sent — on error we can only
-  //    destroy the socket, not send a JSON error).
+  // ── Phase 2: commit headers + stream/convert ─────────────────────────────────
   const { upstream, contentType, contentLength } = connected;
+
+  if (needsConversion(convert)) {
+    // Buffer the body, run through sharp, send the result.
+    let buf: Buffer;
+    try {
+      buf = await bufferBody(upstream);
+    } catch (e) {
+      clearTimeout(timer);
+      if (e instanceof GuardError) {
+        res.setHeader('Cache-Control', 'no-store');
+        return res.status(e.status).json({ error: e.message });
+      }
+      console.error('[fetch] buffer error', e);
+      res.setHeader('Cache-Control', 'no-store');
+      return res.status(502).json({ error: 'Failed to read image body' });
+    }
+
+    let pipeline = sharp(buf).rotate(); // honour EXIF orientation
+
+    if (convert.w || convert.h) {
+      pipeline = pipeline.resize({
+        width: convert.w,
+        height: convert.h,
+        fit: 'inside',
+        withoutEnlargement: true,
+      });
+    }
+
+    // Determine output format: explicit fmt param, else infer from source content-type
+    const outFmt = (convert.fmt ?? contentType.replace('image/', '').replace('jpeg', 'jpeg')) as
+      keyof sharp.FormatEnum;
+    const safeFmt = FMT_ALLOWLIST.has(outFmt) ? outFmt : 'jpeg';
+    const quality = convert.q ?? 82;
+
+    let outBuf: Buffer;
+    try {
+      if (safeFmt === 'png') {
+        outBuf = await pipeline.png({ quality }).toBuffer();
+      } else if (safeFmt === 'webp') {
+        outBuf = await pipeline.webp({ quality }).toBuffer();
+      } else if (safeFmt === 'avif') {
+        outBuf = await pipeline.avif({ quality }).toBuffer();
+      } else {
+        outBuf = await pipeline.jpeg({ quality }).toBuffer();
+      }
+    } catch (e) {
+      clearTimeout(timer);
+      console.error('[fetch] sharp error', e);
+      res.setHeader('Cache-Control', 'no-store');
+      return res.status(422).json({ error: 'Image conversion failed' });
+    }
+
+    // Derive filename with the converted extension
+    const outContentType = FMT_CT[safeFmt] ?? 'image/jpeg';
+    const baseFilename = deriveFilename(rawUrl, contentType);
+    const stem = baseFilename.replace(/\.[^.]+$/, '');
+    const ext = safeFmt === 'jpeg' ? 'jpg' : safeFmt;
+    const outFilename = `${stem}.${ext}`;
+
+    clearTimeout(timer);
+    res.setHeader('Content-Type', outContentType);
+    res.setHeader('Content-Disposition', `attachment; filename="${outFilename.replace(/"/g, '_')}"`);
+    res.setHeader('Content-Length', outBuf.byteLength);
+    res.setHeader('Cache-Control', 'public, s-maxage=86400, stale-while-revalidate=604800');
+    res.status(200);
+    (res as unknown as NodeWritable).write(outBuf);
+    await new Promise<void>((resolve) => (res as unknown as NodeWritable).end(resolve));
+    return;
+  }
+
+  // Passthrough: headers committed here — on error we can only destroy the socket.
   const filename = deriveFilename(rawUrl, contentType);
   res.setHeader('Content-Type', contentType);
   res.setHeader('Content-Disposition', `attachment; filename="${filename.replace(/"/g, '_')}"`);

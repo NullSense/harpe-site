@@ -50,7 +50,7 @@ interface Download {
   lossless: boolean; // true for png/tiff/gif/bmp originals
 }
 
-interface ArtItem {
+export interface ArtItem {
   id: string;
   title: string;
   artist: string;
@@ -1086,6 +1086,40 @@ async function fetchDumps(q: string): Promise<ArtItem[]> {
   }
 }
 
+// ─── Source list builder ──────────────────────────────────────────────────────
+
+/**
+ * Build the full list of [name, promise] source pairs for a query.
+ * Reused by both the batch handler (art.ts) and the streaming handler
+ * (art-stream.ts) so the source list is defined in exactly one place.
+ */
+export async function gatherSources(q: string): Promise<Array<[string, Promise<ArtItem[]>]>> {
+  const sources: Array<[string, Promise<ArtItem[]>]> = [
+    ['AIC', fetchAic(q)],
+    ['Met', fetchMet(q)],
+    ['Cleveland', fetchCleveland(q)],
+    ['Commons', fetchCommons(q)],
+    ['WikiArt', fetchWikiArt(q)],
+    ['V&A', fetchVam(q)],
+    ['Wellcome', fetchWellcome(q)],
+    ['SMK', fetchSmk(q)],
+    ['Nasjonalmuseet', fetchNasjonalmuseet(q)],
+    ['DigitalNZ', fetchDigitalNZ(q)],
+    ['Wikidata', fetchWikidata(q)],
+  ];
+  // Keyed sources: only queried when their (server-only) API key is configured.
+  if (process.env.EUROPEANA_API_KEY) sources.push(['Europeana', fetchEuropeana(q)]);
+  if (process.env.HARVARD_API_KEY) sources.push(['Harvard', fetchHarvard(q)]);
+  if (process.env.SMITHSONIAN_API_KEY) sources.push(['Smithsonian', fetchSmithsonian(q)]);
+  if (process.env.HARPE_DUMP_DATASET) sources.push(['Dumps', fetchDumps(q)]);
+  // Paris Musées is DISABLED: its Drupal GraphQL has no fast fulltext search —
+  // LIKE on `title` is an unindexed scan over ~280k rows that returns nothing or
+  // times out. All 14 Paris museums are already covered by Europeana, so this is
+  // redundant. The fetcher is kept (see fetchParisMusees) for reference only.
+  void fetchParisMusees;
+  return sources;
+}
+
 // ─── Handler ─────────────────────────────────────────────────────────────────
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -1116,29 +1150,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   // Fetch all sources concurrently; one failing only adds a warning
-  const sources: Array<[string, Promise<ArtItem[]>]> = [
-    ['AIC', fetchAic(q)],
-    ['Met', fetchMet(q)],
-    ['Cleveland', fetchCleveland(q)],
-    ['Commons', fetchCommons(q)],
-    ['WikiArt', fetchWikiArt(q)],
-    ['V&A', fetchVam(q)],
-    ['Wellcome', fetchWellcome(q)],
-    ['SMK', fetchSmk(q)],
-    ['Nasjonalmuseet', fetchNasjonalmuseet(q)],
-    ['DigitalNZ', fetchDigitalNZ(q)],
-    ['Wikidata', fetchWikidata(q)],
-  ];
-  // Keyed sources: only queried when their (server-only) API key is configured.
-  if (process.env.EUROPEANA_API_KEY) sources.push(['Europeana', fetchEuropeana(q)]);
-  if (process.env.HARVARD_API_KEY) sources.push(['Harvard', fetchHarvard(q)]);
-  if (process.env.SMITHSONIAN_API_KEY) sources.push(['Smithsonian', fetchSmithsonian(q)]);
-  if (process.env.HARPE_DUMP_DATASET) sources.push(['Dumps', fetchDumps(q)]);
-  // Paris Musées is DISABLED: its Drupal GraphQL has no fast fulltext search —
-  // LIKE on `title` is an unindexed scan over ~280k rows that returns nothing or
-  // times out. All 14 Paris museums are already covered by Europeana, so this is
-  // redundant. The fetcher is kept (see fetchParisMusees) for reference only.
-  void fetchParisMusees;
+  const sources = await gatherSources(q);
   const settled = await Promise.allSettled(sources.map(([, p]) => p));
 
   const items: ArtItem[] = [];

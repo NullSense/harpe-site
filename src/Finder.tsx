@@ -11,8 +11,11 @@
  * and every download goes through the same /api/fetch proxy.
  */
 
-import { useCallback, useId, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import MediaLightbox from './components/MediaLightbox';
+import DownloadMenu from './components/DownloadMenu';
+import { streamArt } from './lib/useArtStream';
+import { fitsScreen } from './lib/resolutions';
 import {
   type DownloadVariant,
   type LightboxSlide,
@@ -70,6 +73,35 @@ type Mode = 'idle' | 'loading' | 'scan' | 'art' | 'empty' | 'error';
 type DlStatus = 'downloading' | 'done' | 'error';
 
 const MIN_WIDTH = 100;
+const SHOWN_STEP = 24; // infinite-scroll page size
+
+// Client-side ranking — mirrors /api/art so streamed results stay relevance-first
+// with sources interleaved (round-robin), instead of arrival order.
+const STOP = new Set(['the','and','of','to','in','on','by','with','from','for','his','her','its','a','an','at','as']);
+const SOURCE_ORDER: Record<string, number> = {
+  aic: 0, met: 1, cleveland: 2, vam: 3, wellcome: 4, smk: 5, nasjonalmuseet: 6,
+  parismusees: 7, harvard: 8, europeana: 9, si: 10, moma: 11, nga: 12, dumps: 13,
+  wikidata: 14, digitalnz: 15, wikiart: 16, commons: 17,
+};
+function qTokens(q: string): string[] {
+  return q.toLowerCase().split(/[^a-z0-9]+/).filter((t) => t.length >= 3 && !STOP.has(t));
+}
+function rankArt(items: ArtItem[], q: string): ArtItem[] {
+  const toks = qTokens(q);
+  const rel = (it: ArtItem) => {
+    const hay = `${it.title} ${it.artist}`.toLowerCase();
+    return toks.reduce((n, t) => n + (hay.includes(t) ? 1 : 0), 0);
+  };
+  const rr = new Map<ArtItem, number>();
+  const seen: Record<string, number> = {};
+  for (const it of items) { seen[it.source] = (seen[it.source] ?? -1) + 1; rr.set(it, seen[it.source]); }
+  return [...items].sort((a, b) => {
+    const r = rel(b) - rel(a); if (r) return r;
+    const d = (rr.get(a) ?? 0) - (rr.get(b) ?? 0); if (d) return d;
+    if (a.isPublicDomain !== b.isPublicDomain) return a.isPublicDomain ? -1 : 1;
+    return (SOURCE_ORDER[a.source] ?? 99) - (SOURCE_ORDER[b.source] ?? 99);
+  });
+}
 
 const IIIF_MANIFEST_RE = /https?:\/\/[^/]+(?:\/[^?#]*)?(?:manifest|info\.json)(?:[?#].*)?$/i;
 const IIIF_INFO_RE = /^https?:\/\/.+\/info\.json$/i;
@@ -318,6 +350,14 @@ function MetaChips({ item }: { item: ArtItem }) {
           ◆ lossless
         </span>
       )}
+      {item.width && item.height && fitsScreen(item.width, item.height) && (
+        <span
+          title="Big enough for a crisp wallpaper at your screen resolution"
+          className="rounded-sm border border-bronze/40 bg-bronze/10 px-1.5 py-0.5 font-mono text-[.62rem] text-bronze-bright"
+        >
+          ▣ wallpaper-ready
+        </span>
+      )}
     </div>
   );
 }
@@ -331,27 +371,6 @@ function ArtCard({
   siblings: number;      // how many sources (incl. this) describe the same work
   analyzeEnabled: boolean;
 }) {
-  const [dl, setDl] = useState<'idle' | 'fetching' | 'done' | 'error'>('idle');
-  const [activeLabel, setActiveLabel] = useState('');
-
-  const handleDownload = async (v: DownloadVariant) => {
-    if (dl === 'fetching') return;
-    setDl('fetching');
-    setActiveLabel(v.label);
-    try {
-      await downloadViaProxy(v.url, safeName(item.title, item.artist, extFor(v.format)));
-      setDl('done');
-      setTimeout(() => setDl('idle'), 3500);
-    } catch {
-      setDl('error');
-      setTimeout(() => setDl('idle'), 3000);
-    }
-  };
-
-  const downloads = item.downloads.length
-    ? item.downloads
-    : [{ label: 'Download', url: item.fullUrl, format: item.format, lossless: item.lossless }];
-
   return (
     <article className="group flex flex-col overflow-hidden rounded-xl border border-line bg-[rgba(16,11,8,.6)] transition hover:-translate-y-0.5 hover:border-bronze/60 hover:shadow-[0_8px_32px_-12px_rgba(216,153,33,.18)]">
       <button
@@ -412,36 +431,8 @@ function ArtCard({
           </button>
         )}
 
-        <div className="mt-auto flex flex-col gap-1.5 pt-2">
-          {downloads.map((v, i) => {
-            const busy = dl === 'fetching' && activeLabel === v.label;
-            const label = busy
-              ? 'Fetching…'
-              : dl === 'done' && activeLabel === v.label
-                ? 'Saved ✓'
-                : dl === 'error' && activeLabel === v.label
-                  ? 'Error — retry?'
-                  : v.label + (v.lossless ? ' · lossless' : '');
-            const primary = i === 0;
-            return (
-              <button
-                key={v.label}
-                onClick={() => handleDownload(v)}
-                disabled={dl === 'fetching'}
-                aria-label={`Download ${v.label} — ${item.title}`}
-                className={
-                  'flex items-center justify-center gap-2 rounded-md px-3 py-1.5 font-mono text-[.74rem] transition disabled:cursor-not-allowed disabled:opacity-50 ' +
-                  (primary
-                    ? 'border border-bronze/45 bg-bronze/10 text-bronze-bright hover:border-bronze hover:bg-bronze/20'
-                    : 'border border-line text-muted hover:border-bronze/60 hover:text-bronze')
-                }
-              >
-                {busy && <Spinner small />}
-                {!busy && <span aria-hidden>⬇</span>}
-                {label}
-              </button>
-            );
-          })}
+        <div className="mt-auto pt-2">
+          <DownloadMenu fullUrl={item.fullUrl} title={item.title} artist={item.artist} />
         </div>
       </div>
     </article>
@@ -468,6 +459,10 @@ export default function Finder() {
   const [warnings, setWarnings] = useState<string[]>([]);
   const [losslessOnly, setLosslessOnly] = useState(false);
   const [query, setQuery] = useState('');
+  const [streaming, setStreaming] = useState(false);   // SSE search in progress
+  const [shown, setShown] = useState(SHOWN_STEP);       // infinite-scroll window
+  const streamCancelRef = useRef<null | (() => void)>(null);
+  const sentinelRef = useRef<HTMLDivElement>(null);
 
   // shared lightbox (index into the currently-visible list)
   const [lightboxIndex, setLightboxIndex] = useState(-1);
@@ -519,19 +514,42 @@ export default function Finder() {
       return;
     }
 
-    // Plain text → museum search
-    setQuery(q);
+    // Plain text → museum search, STREAMED per-source (with /api/art fallback).
+    streamCancelRef.current?.();         // abort any in-flight stream
+    setQuery(q); setArtItems([]); setWarnings([]); setShown(SHOWN_STEP); setStreaming(true);
+    const acc: ArtItem[] = [];
+    let gotBatch = false;
+    const cancel = streamArt(q, {
+      onBatch: (_source, items) => {
+        gotBatch = true;
+        for (const it of items) acc.push(normalizeArt(it));
+        setArtItems(rankArt(acc, q));
+        setMode('art');
+      },
+      onError: (source, err) => { setWarnings((w) => [...w, `${source}: ${err}`]); },
+      onDone: ({ analyzeEnabled }) => {
+        setStreaming(false);
+        streamCancelRef.current = null;
+        setAnalyzeEnabled(analyzeEnabled);
+        if (!gotBatch) { fallbackArt(q); }       // SSE produced nothing → REST fallback
+        else if (acc.length === 0) setMode('empty');
+      },
+    });
+    streamCancelRef.current = cancel;
+  }, []);
+
+  // Non-streaming fallback (used if the SSE stream yields nothing — e.g. a proxy
+  // that buffers event-streams).
+  const fallbackArt = useCallback(async (q: string) => {
     try {
       const res = await fetch(`/api/art?q=${encodeURIComponent(q)}`);
       const json: { items?: unknown[]; warnings?: string[]; error?: string; analyzeEnabled?: boolean } = await res.json();
       if (!res.ok) { setError(json.error ?? `Server error ${res.status}`); setMode('error'); return; }
-      const w: string[] = Array.isArray(json.warnings) ? json.warnings : [];
-      const items = (json.items ?? []).map(normalizeArt);
       setAnalyzeEnabled(Boolean(json.analyzeEnabled));
-      setWarnings(w);
+      setWarnings(Array.isArray(json.warnings) ? json.warnings : []);
+      const items = (json.items ?? []).map(normalizeArt);
       if (items.length === 0) { setMode('empty'); return; }
-      setArtItems(items);
-      setMode('art');
+      setArtItems(items); setMode('art');
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Network error'); setMode('error');
     }
@@ -657,6 +675,18 @@ export default function Finder() {
     }
     return [];
   }, [mode, visibleScan, visibleArt, pageUrl]);
+
+  // Infinite scroll: reveal more cards as the sentinel nears the viewport.
+  useEffect(() => {
+    const el = sentinelRef.current;
+    if (!el) return;
+    const obs = new IntersectionObserver(
+      (entries) => { if (entries[0]?.isIntersecting) setShown((s) => s + SHOWN_STEP); },
+      { rootMargin: '600px' },
+    );
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, [mode, visibleArt.length]);
 
   const EXAMPLES: Array<{ label: string; value: string }> = [
     { label: 'Starry Night', value: 'Starry Night' },
@@ -806,7 +836,8 @@ export default function Finder() {
             <div className="mb-4 flex flex-wrap items-center justify-center gap-x-4 gap-y-2">
               <p className="font-mono text-[.78rem] text-muted/70">
                 {visibleArt.length} work{visibleArt.length !== 1 ? 's' : ''}
-                {losslessOnly && ` of ${artItems.length}`} shown
+                {losslessOnly && ` of ${artItems.length}`}
+                {streaming && <span className="ml-2 text-bronze">· searching…</span>}
               </p>
               <button
                 type="button"
@@ -830,18 +861,23 @@ export default function Finder() {
                 <button type="button" onClick={() => setLosslessOnly(false)} className="text-bronze hover:text-bronze-bright">Show all →</button>
               </p>
             ) : (
-              <div className="grid grid-cols-[repeat(auto-fill,minmax(210px,1fr))] gap-4">
-                {visibleArt.map((item, i) => (
-                  <ArtCard
-                    key={item.id}
-                    item={item}
-                    onPreview={() => setLightboxIndex(i)}
-                    onAnalyze={() => analyzeWork(item)}
-                    siblings={siblingsByKey.get(workKey(item))?.length ?? 1}
-                    analyzeEnabled={analyzeEnabled}
-                  />
-                ))}
-              </div>
+              <>
+                <div className="grid grid-cols-[repeat(auto-fill,minmax(210px,1fr))] gap-4">
+                  {visibleArt.slice(0, shown).map((item, i) => (
+                    <ArtCard
+                      key={item.id}
+                      item={item}
+                      onPreview={() => setLightboxIndex(i)}
+                      onAnalyze={() => analyzeWork(item)}
+                      siblings={siblingsByKey.get(workKey(item))?.length ?? 1}
+                      analyzeEnabled={analyzeEnabled}
+                    />
+                  ))}
+                </div>
+                {shown < visibleArt.length && (
+                  <div ref={sentinelRef} className="h-12" aria-hidden />
+                )}
+              </>
             )}
 
             <p className="mt-8 text-center font-mono text-[.74rem] text-muted/50">
