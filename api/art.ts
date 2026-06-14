@@ -1266,7 +1266,13 @@ export async function gatherSources(q: string): Promise<Array<[string, Promise<A
   if (process.env.EUROPEANA_API_KEY) sources.push(['Europeana', fetchEuropeana(q)]);
   if (process.env.HARVARD_API_KEY) sources.push(['Harvard', fetchHarvard(q)]);
   if (process.env.SMITHSONIAN_API_KEY) sources.push(['Smithsonian', fetchSmithsonian(q)]);
-  if (process.env.NYPL_API_TOKEN || process.env.NYPL_API_KEY) sources.push(['NYPL', fetchNypl(q)]);
+  // NYPL live API is DISABLED on Vercel: its token auth only works over HTTP/2,
+  // but Vercel's serverless egress forces HTTP/1.1 (where NYPL replies "HTTP
+  // Basic: Access denied" and ignores the Token scheme). Verified: the same code
+  // succeeds over HTTP/2 locally. Re-enable if egress ever supports h2, or run
+  // NYPL via its bulk public-domain dump instead. Photography is covered by LoC.
+  void fetchNypl;
+  // if (process.env.NYPL_API_TOKEN || process.env.NYPL_API_KEY) sources.push(['NYPL', fetchNypl(q)]);
   if (process.env.PARIS_MUSEES_TOKEN) sources.push(['Paris Musées', fetchParisMusees(q)]);
   if (process.env.HARPE_DUMP_DATASET) sources.push(['Dumps', fetchDumps(q)]);
   // Note: Paris Musées' Drupal GraphQL has no fast fulltext index — the LIKE scan
