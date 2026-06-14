@@ -63,7 +63,7 @@ interface ArtItem {
   format: string;       // format of the primary download
   lossless: boolean;    // true if ANY download variant is lossless
   downloads: Download[];
-  source: 'aic' | 'met' | 'cleveland' | 'commons' | 'wikiart' | 'vam' | 'wellcome' | 'smk' | 'nasjonalmuseet' | 'digitalnz' | 'wikidata' | 'europeana' | 'harvard' | 'si' | 'parismusees';
+  source: 'aic' | 'met' | 'cleveland' | 'commons' | 'wikiart' | 'vam' | 'wellcome' | 'smk' | 'nasjonalmuseet' | 'digitalnz' | 'wikidata' | 'europeana' | 'harvard' | 'si' | 'parismusees' | 'moma' | 'nga' | 'dumps';
   isPublicDomain: boolean;
   // ── Enrichment (optional; the union "mega-model" beyond the basics above) ──
   date?: string;        // display date, e.g. "1642" / "ca. 1665"
@@ -1038,6 +1038,54 @@ async function fetchParisMusees(q: string): Promise<ArtItem[]> {
   }
 }
 
+// Dump-backed source: our own metadata Parquet on Hugging Face, queried via HF's
+// keyless /search. Covers museums with no live API (MoMA, NGA, …) ingested by
+// scripts/ingest-art-dumps/ingest.py. Dormant until HARPE_DUMP_DATASET is set.
+async function fetchDumps(q: string): Promise<ArtItem[]> {
+  const dataset = process.env.HARPE_DUMP_DATASET!;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  try {
+    const url =
+      `https://datasets-server.huggingface.co/search?dataset=${encodeURIComponent(dataset)}` +
+      `&config=default&split=train&query=${encodeURIComponent(q)}&offset=0&length=20`;
+    const res = await timedFetch(url, controller.signal);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const json = await res.json() as { rows?: Array<{ row?: Record<string, unknown> }> };
+    const items: ArtItem[] = [];
+    for (const { row } of json.rows ?? []) {
+      if (!row) continue;
+      const thumb = str(row.image_thumb) || str(row.image_full);
+      const full = str(row.image_full) || thumb;
+      if (!thumb) continue;
+      const rs = str(row.source);
+      const source = (rs === 'moma' || rs === 'nga') ? rs : 'dumps';
+      items.push({
+        id: str(row.id) || `dumps-${items.length}`,
+        title: str(row.title) || 'Untitled',
+        artist: str(row.artist),
+        dimensions: '',
+        thumbUrl: thumb,
+        previewUrl: full,
+        fullUrl: full,
+        format: fmtFromUrl(full),
+        lossless: false,
+        downloads: [{ label: 'Full image', url: full, format: fmtFromUrl(full), lossless: false }],
+        source: source as ArtItem['source'],
+        isPublicDomain: row.is_public_domain !== false,
+        date: str(row.date),
+        medium: str(row.medium),
+        creditLine: str(row.credit_line),
+        description: str(row.description),
+        sourceUrl: str(row.source_url),
+      });
+    }
+    return items;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // ─── Handler ─────────────────────────────────────────────────────────────────
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -1085,6 +1133,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (process.env.EUROPEANA_API_KEY) sources.push(['Europeana', fetchEuropeana(q)]);
   if (process.env.HARVARD_API_KEY) sources.push(['Harvard', fetchHarvard(q)]);
   if (process.env.SMITHSONIAN_API_KEY) sources.push(['Smithsonian', fetchSmithsonian(q)]);
+  if (process.env.HARPE_DUMP_DATASET) sources.push(['Dumps', fetchDumps(q)]);
   // Paris Musées is DISABLED: its Drupal GraphQL has no fast fulltext search —
   // LIKE on `title` is an unindexed scan over ~280k rows that returns nothing or
   // times out. All 14 Paris museums are already covered by Europeana, so this is
@@ -1111,7 +1160,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const toks = queryTokens(q);
   const SOURCE_ORDER: Record<string, number> = {
     aic: 0, met: 1, cleveland: 2, vam: 3, wellcome: 4, smk: 5, nasjonalmuseet: 6,
-    parismusees: 7, harvard: 8, europeana: 9, si: 10, wikidata: 11, digitalnz: 12, wikiart: 13, commons: 14,
+    parismusees: 7, harvard: 8, europeana: 9, si: 10, moma: 11, nga: 12, dumps: 13,
+    wikidata: 14, digitalnz: 15, wikiart: 16, commons: 17,
   };
   // Round-robin rank: 0 = each source's top result, 1 = its second, etc.
   // (items arrive grouped by source, each in that API's own relevance order).

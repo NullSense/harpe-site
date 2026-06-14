@@ -54,6 +54,22 @@ The art search runs 7 keyless museum sources out of the box (AIC, The Met, Cleve
 
 Add each in the Vercel dashboard (**Settings → Environment Variables**) or via `vercel env add <NAME> production`, then redeploy.
 
+## Open-data dumps (museums with no live API)
+
+Museums that publish a bulk dump (MoMA, National Gallery of Art, …) but no
+searchable API are ingested into one **metadata-only Parquet** (text + image
+URLs, no images) hosted free on **Hugging Face**, and queried via HF's keyless
+`/search`. Storage cost ≈ $0.
+
+1. Build + push the dataset (needs `huggingface-cli login`):
+   ```
+   uv run scripts/ingest-art-dumps/ingest.py --push <your-hf-user>/harpe-art
+   ```
+2. Set `HARPE_DUMP_DATASET=<your-hf-user>/harpe-art` in Vercel, redeploy.
+
+The `dumps` source is dormant until that env var is set. Add more museums by
+UNION-ing another SELECT in `ingest.py` (MIA's sharded JSON is left as a TODO).
+
 ## Cross-source AI synthesis (the "deep analysis")
 
 `POST /api/analyze` merges every source's metadata + descriptions for one artwork
