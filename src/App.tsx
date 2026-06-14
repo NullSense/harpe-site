@@ -1,38 +1,10 @@
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import AsciiHero from './AsciiHero.tsx';
-import ArtGrab from './ArtGrab.tsx';
-import WebGrab from './WebGrab.tsx';
-
-// ─── Tab definitions ──────────────────────────────────────────────────────────
-
-type TabId = 'web' | 'art' | 'cli' | 'extension';
-
-interface Tab {
-  id: TabId;
-  label: string;
-  hash: string;
-}
-
-const TABS: Tab[] = [
-  { id: 'web',       label: 'Web',          hash: '#web' },
-  { id: 'art',       label: 'Museum art',   hash: '#art' },
-  { id: 'cli',       label: 'CLI',          hash: '#cli' },
-  { id: 'extension', label: 'Extension',    hash: '#extension' },
-];
-
-const HASH_TO_TAB: Record<string, TabId> = {
-  '#web': 'web',
-  '#art': 'art',
-  '#cli': 'cli',
-  '#extension': 'extension',
-};
-
-function tabFromHash(): TabId {
-  const h = window.location.hash.toLowerCase();
-  return HASH_TO_TAB[h] ?? 'web';
-}
+import Finder from './Finder.tsx';
 
 // ─── CLI reference data ───────────────────────────────────────────────────────
+
+const INSTALL = 'uv tool install git+https://github.com/NullSense/harpe';
 
 const MODES = [
   ['▰', 'Video & audio', 'yt-dlp under the hood, forced to true max bitrate — 1800+ sites.'],
@@ -52,95 +24,36 @@ const CLI_COMMANDS = [
   { cmd: 'harpe', desc: 'bare invocation — interactive mode with fzf picker' },
 ] as const;
 
-// ─── Typewriter ───────────────────────────────────────────────────────────────
+// ─── Power-user tabs (CLI / Extension) ─────────────────────────────────────────
 
-const EXAMPLES = [
-  '-p https://any.site/with/images',
-  '-s "the great day of his wrath"',
-  'https://x.com/i/status/…',
-  '-r ./painting.jpg',
-  '-a artsandculture.google.com/asset/…',
-];
+type ToolTab = 'cli' | 'extension';
 
-function Typewriter() {
-  const [text, setText] = useState('');
-  const st = useRef({ i: 0, j: 0, del: false });
-  useEffect(() => {
-    let timer: number;
-    const tick = () => {
-      const s = EXAMPLES[st.current.i];
-      const { j, del } = st.current;
-      setText(del ? s.slice(0, j - 1) : s.slice(0, j + 1));
-      st.current.j += del ? -1 : 1;
-      let delay = del ? 28 : 55;
-      if (!del && st.current.j > s.length) { st.current.del = true; delay = 1700; }
-      else if (del && st.current.j < 0) { st.current.del = false; st.current.i = (st.current.i + 1) % EXAMPLES.length; st.current.j = 0; }
-      timer = window.setTimeout(tick, delay);
-    };
-    timer = window.setTimeout(tick, 600);
-    return () => clearTimeout(timer);
-  }, []);
-  return <span className="text-bronze-bright">{text}</span>;
-}
+const TOOL_HASH: Record<string, ToolTab> = { '#cli': 'cli', '#extension': 'extension' };
+const toolFromHash = (): ToolTab => TOOL_HASH[window.location.hash.toLowerCase()] ?? 'cli';
 
-// ─── Tab bar ──────────────────────────────────────────────────────────────────
-
-interface TabBarProps {
-  active: TabId;
-  onSelect: (id: TabId) => void;
-}
-
-function TabBar({ active, onSelect }: TabBarProps) {
-  const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
-
-  const handleKeyDown = (e: React.KeyboardEvent, idx: number) => {
-    let next = idx;
-    if (e.key === 'ArrowRight') next = (idx + 1) % TABS.length;
-    else if (e.key === 'ArrowLeft') next = (idx - 1 + TABS.length) % TABS.length;
-    else if (e.key === 'Home') next = 0;
-    else if (e.key === 'End') next = TABS.length - 1;
-    else return;
-
-    e.preventDefault();
-    tabRefs.current[next]?.focus();
-    onSelect(TABS[next].id);
-  };
-
+function ToolTabs({ active, onSelect }: { active: ToolTab; onSelect: (t: ToolTab) => void }) {
+  const tabs: Array<{ id: ToolTab; label: string }> = [
+    { id: 'cli', label: 'Terminal (CLI)' },
+    { id: 'extension', label: 'Browser extension' },
+  ];
   return (
-    <div
-      role="tablist"
-      aria-label="Harpe features"
-      className="flex items-end gap-0 border-b border-line"
-    >
-      {TABS.map((tab, idx) => {
-        const isActive = tab.id === active;
+    <div role="tablist" aria-label="Power-user tools" className="flex justify-center gap-2">
+      {tabs.map((t) => {
+        const isActive = t.id === active;
         return (
           <button
-            key={tab.id}
-            id={`tab-${tab.id}`}
+            key={t.id}
             role="tab"
             aria-selected={isActive}
-            aria-controls={`panel-${tab.id}`}
-            tabIndex={isActive ? 0 : -1}
-            ref={(el) => { tabRefs.current[idx] = el; }}
-            onClick={() => onSelect(tab.id)}
-            onKeyDown={(e) => handleKeyDown(e, idx)}
-            className={[
-              'relative px-4 py-2.5 font-mono text-[.82rem] tracking-[0.04em] transition-colors',
-              'focus-visible:outline focus-visible:outline-2 focus-visible:outline-bronze/60 focus-visible:outline-offset-2 rounded-t-sm',
-              isActive
-                ? 'text-bronze-bright'
-                : 'text-muted hover:text-ink',
-            ].join(' ')}
+            onClick={() => onSelect(t.id)}
+            className={
+              'rounded-full px-4 py-1.5 font-mono text-[.78rem] transition ' +
+              (isActive
+                ? 'border border-bronze/60 bg-bronze/15 text-bronze-bright'
+                : 'border border-line text-muted hover:border-bronze/60 hover:text-ink')
+            }
           >
-            {tab.label}
-            {/* active indicator — bronze underline flush with the border-b */}
-            {isActive && (
-              <span
-                aria-hidden
-                className="absolute bottom-[-1px] left-0 right-0 h-[2px] rounded-t-full bg-bronze"
-              />
-            )}
+            {t.label}
           </button>
         );
       })}
@@ -150,30 +63,21 @@ function TabBar({ active, onSelect }: TabBarProps) {
 
 // ─── CLI panel ────────────────────────────────────────────────────────────────
 
-function CLIPanel({ install }: { install: string }) {
+function CLIPanel() {
   const [copied, setCopied] = useState(false);
   const copy = () => {
-    navigator.clipboard.writeText(install);
+    navigator.clipboard.writeText(INSTALL);
     setCopied(true);
     setTimeout(() => setCopied(false), 1400);
   };
 
   return (
-    <div className="py-10">
-      {/* heading */}
-      <div className="mb-10 text-center">
-        <span className="mb-3 block font-mono text-[.8rem] tracking-[0.12em] text-bronze">
-          ⌗ CLI REFERENCE
-        </span>
-        <h2 className="font-display text-[clamp(1.3rem,3vw,1.9rem)] font-medium">
-          One command, every source
-        </h2>
-        <p className="mx-auto mt-3 max-w-[540px] text-[.95rem] text-muted">
-          Install once with uv, then pull anything from the terminal. Bare{' '}
-          <code className="font-mono text-bronze">harpe</code> is interactive —
-          more than one image opens an fzf picker automatically.
-        </p>
-      </div>
+    <div className="pt-8">
+      <p className="mx-auto mb-8 max-w-[540px] text-center text-[.95rem] text-muted">
+        Install once with uv, then pull anything from the terminal. Bare{' '}
+        <code className="font-mono text-bronze">harpe</code> is interactive — more than one image opens
+        an fzf picker automatically.
+      </p>
 
       {/* install card */}
       <div className="relative mx-auto mb-8 w-[min(640px,100%)] overflow-hidden rounded-xl border border-line bg-[rgba(14,10,7,.78)] text-left backdrop-blur-md shadow-[0_30px_80px_-50px_rgba(216,153,33,.22)]">
@@ -184,9 +88,7 @@ function CLIPanel({ install }: { install: string }) {
           <span className="ml-2 font-mono text-[.74rem] tracking-[0.08em] text-muted">install</span>
         </div>
         <pre className="overflow-x-auto px-4 py-4 font-mono text-[.86rem] leading-relaxed">
-          <code>
-            <span className="text-bronze">$</span> {install}
-          </code>
+          <code><span className="text-bronze">$</span> {INSTALL}</code>
         </pre>
         <button
           onClick={copy}
@@ -204,16 +106,9 @@ function CLIPanel({ install }: { install: string }) {
         <table className="w-full">
           <tbody>
             {CLI_COMMANDS.map(({ cmd, desc }, i) => (
-              <tr
-                key={cmd}
-                className={i < CLI_COMMANDS.length - 1 ? 'border-b border-line/50' : ''}
-              >
-                <td className="whitespace-nowrap px-4 py-2.5 align-top font-mono text-[.82rem] text-bronze-bright">
-                  {cmd}
-                </td>
-                <td className="px-4 py-2.5 align-top text-[.85rem] text-muted">
-                  {desc}
-                </td>
+              <tr key={cmd} className={i < CLI_COMMANDS.length - 1 ? 'border-b border-line/50' : ''}>
+                <td className="whitespace-nowrap px-4 py-2.5 align-top font-mono text-[.82rem] text-bronze-bright">{cmd}</td>
+                <td className="px-4 py-2.5 align-top text-[.85rem] text-muted">{desc}</td>
               </tr>
             ))}
           </tbody>
@@ -223,10 +118,7 @@ function CLIPanel({ install }: { install: string }) {
       {/* feature cards */}
       <div className="grid grid-cols-[repeat(auto-fit,minmax(210px,1fr))] gap-3.5">
         {MODES.map(([g, title, body]) => (
-          <article
-            key={title}
-            className="rounded-xl border border-line bg-[rgba(16,11,8,.55)] p-5 transition hover:-translate-y-0.5 hover:border-bronze"
-          >
+          <article key={title} className="rounded-xl border border-line bg-[rgba(16,11,8,.55)] p-5 transition hover:-translate-y-0.5 hover:border-bronze">
             <span className="mb-2 block font-mono text-2xl text-bronze">{g}</span>
             <h3 className="mb-1 font-display text-[1.02rem] font-medium">{title}</h3>
             <p className="text-[.9rem] leading-snug text-muted">{body}</p>
@@ -241,45 +133,19 @@ function CLIPanel({ install }: { install: string }) {
 
 function ExtensionPanel() {
   return (
-    <div className="py-10">
-      {/* heading */}
-      <div className="mb-10 text-center">
-        <span className="mb-3 block font-mono text-[.8rem] tracking-[0.12em] text-bronze">
-          ⊡ BROWSER EXTENSION
-        </span>
-        <h2 className="font-display text-[clamp(1.3rem,3vw,1.9rem)] font-medium">
-          Reach what the web tool can't
-        </h2>
-        <p className="mx-auto mt-3 max-w-[560px] text-[.95rem] text-muted">
-          The browser extension runs inside your browser session — it sees
-          everything the web tool can't: JavaScript-rendered galleries, lazy-loaded
-          images, and pages that require you to be logged in.
-        </p>
-      </div>
+    <div className="pt-8">
+      <p className="mx-auto mb-10 max-w-[560px] text-center text-[.95rem] text-muted">
+        The browser extension runs inside your session — it sees what a server can't:
+        JavaScript-rendered galleries, lazy-loaded images, and pages that require you to be logged in.
+      </p>
 
-      {/* feature cards */}
       <div className="mx-auto mb-10 grid max-w-[680px] grid-cols-[repeat(auto-fit,minmax(200px,1fr))] gap-4">
         {[
-          {
-            g: '⊞',
-            title: 'Full DOM scan',
-            body: 'Scans the rendered DOM after all JavaScript has run — catches lazy-loaded and dynamically injected images the web tool misses.',
-          },
-          {
-            g: '⌗',
-            title: 'Your session, your images',
-            body: 'Instagram, X, YouTube, paywalled sites — the extension uses your active login so it can reach images a headless server never could.',
-          },
-          {
-            g: '▰',
-            title: 'Same engine, more reach',
-            body: 'Picks and downloads go through the same Harpe backend — select images in a visual grid, download via the server proxy.',
-          },
+          { g: '⊞', title: 'Full DOM scan', body: 'Scans the rendered DOM after all JavaScript runs — catches lazy-loaded and injected images the web tool misses.' },
+          { g: '⌗', title: 'Your session, your images', body: 'Instagram, X, YouTube, paywalled sites — it uses your active login to reach images a headless server never could.' },
+          { g: '▰', title: 'Same engine, more reach', body: 'Picks and downloads go through the same Harpe backend — select in a visual grid, download via the proxy.' },
         ].map(({ g, title, body }) => (
-          <article
-            key={title}
-            className="rounded-xl border border-line bg-[rgba(16,11,8,.55)] p-5 transition hover:-translate-y-0.5 hover:border-bronze"
-          >
+          <article key={title} className="rounded-xl border border-line bg-[rgba(16,11,8,.55)] p-5 transition hover:-translate-y-0.5 hover:border-bronze">
             <span className="mb-2 block font-mono text-2xl text-bronze">{g}</span>
             <h3 className="mb-1 font-display text-[1.02rem] font-medium">{title}</h3>
             <p className="text-[.9rem] leading-snug text-muted">{body}</p>
@@ -287,32 +153,22 @@ function ExtensionPanel() {
         ))}
       </div>
 
-      {/* who it's for */}
       <div className="mx-auto mb-10 max-w-[640px] rounded-xl border border-line bg-[rgba(14,10,7,.55)] px-5 py-4">
         <p className="font-mono text-[.78rem] leading-relaxed text-muted/80">
-          <span className="font-semibold text-muted">Best for:</span>{' '}
-          Instagram galleries, X/Twitter media, YouTube thumbnails, any auth-walled site,
-          and pages that assemble their image grid entirely in JavaScript.
-          {'  '}
-          <span className="font-semibold text-muted">Web tool covers:</span>{' '}
-          static pages, blogs, museum sites, Wikipedia — no extension needed.
+          <span className="font-semibold text-muted">Best for:</span> Instagram galleries, X/Twitter media,
+          YouTube thumbnails, any auth-walled site, and JS-only image grids.{'  '}
+          <span className="font-semibold text-muted">The search box above covers:</span> static pages,
+          blogs, museum sites, Wikipedia — no extension needed.
         </p>
       </div>
 
-      {/* coming soon + link */}
       <div className="text-center">
-        <a
-          href="https://github.com/NullSense/harpe"
-          className="inline-flex items-center gap-2 rounded-md border border-bronze/45 bg-bronze/10 px-5 py-2.5 text-[.95rem] font-medium text-bronze-bright transition hover:border-bronze hover:bg-bronze/20"
-        >
+        <a href="https://github.com/NullSense/harpe" className="inline-flex items-center gap-2 rounded-md border border-bronze/45 bg-bronze/10 px-5 py-2.5 text-[.95rem] font-medium text-bronze-bright transition hover:border-bronze hover:bg-bronze/20">
           View on GitHub →
         </a>
         <p className="mt-3 font-mono text-[.74rem] text-muted/60">
           Extension repo coming — follow{' '}
-          <a href="https://github.com/NullSense/harpe" className="text-bronze hover:text-bronze-bright">
-            NullSense/harpe
-          </a>{' '}
-          for updates.
+          <a href="https://github.com/NullSense/harpe" className="text-bronze hover:text-bronze-bright">NullSense/harpe</a>{' '}for updates.
         </p>
       </div>
     </div>
@@ -322,30 +178,17 @@ function ExtensionPanel() {
 // ─── App ──────────────────────────────────────────────────────────────────────
 
 export default function App() {
-  const [copied, setCopied] = useState(false);
-  const [activeTab, setActiveTab] = useState<TabId>(tabFromHash);
-  const install = 'uv tool install git+https://github.com/NullSense/harpe';
+  const [toolTab, setToolTab] = useState<ToolTab>(toolFromHash);
 
-  const copy = () => {
-    navigator.clipboard.writeText(install);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1400);
-  };
-
-  // Sync hash ↔ active tab
-  const selectTab = useCallback((id: TabId) => {
-    const tab = TABS.find((t) => t.id === id);
-    if (tab) {
-      history.replaceState(null, '', tab.hash);
-    }
-    setActiveTab(id);
+  const selectTool = useCallback((t: ToolTab) => {
+    history.replaceState(null, '', t === 'cli' ? '#cli' : '#extension');
+    setToolTab(t);
   }, []);
 
-  // Handle back/forward navigation
   useEffect(() => {
-    const onHashChange = () => setActiveTab(tabFromHash());
-    window.addEventListener('hashchange', onHashChange);
-    return () => window.removeEventListener('hashchange', onHashChange);
+    const onHash = () => setToolTab(toolFromHash());
+    window.addEventListener('hashchange', onHash);
+    return () => window.removeEventListener('hashchange', onHash);
   }, []);
 
   return (
@@ -356,115 +199,59 @@ export default function App() {
         className="pointer-events-none fixed inset-0 -z-10"
         style={{
           background:
-            'radial-gradient(ellipse 60% 52% at 50% 44%, rgba(10,8,6,.82) 0%, rgba(10,8,6,.45) 52%, transparent 78%), radial-gradient(120% 90% at 50% 38%, transparent 0%, rgba(10,8,6,.5) 46%, rgba(10,8,6,.92) 78%, #0a0806 100%), linear-gradient(180deg, rgba(10,8,6,.55), transparent 20% 68%, #0a0806)',
+            'radial-gradient(ellipse 60% 52% at 50% 30%, rgba(10,8,6,.82) 0%, rgba(10,8,6,.45) 52%, transparent 78%), radial-gradient(120% 90% at 50% 24%, transparent 0%, rgba(10,8,6,.5) 46%, rgba(10,8,6,.92) 78%, #0a0806 100%), linear-gradient(180deg, rgba(10,8,6,.55), transparent 16% 64%, #0a0806)',
         }}
       />
 
       <main className="relative z-10 mx-auto max-w-3xl px-5">
-        {/* ── Hero section (unchanged) ── */}
-        <section className="flex min-h-[100svh] flex-col items-center justify-center py-[7vh] text-center">
-          <img
-            src="/logo.png"
-            alt="Harpe — a bronze hooked sickle-blade with a Greek meander on the hilt"
-            className="animate-rise h-[210px] w-auto max-sm:h-[160px]"
-            style={{ filter: 'drop-shadow(0 8px 50px rgba(216,153,33,.18))' }}
-          />
-          <h1 className="sr-only">Harpe</h1>
-          <p className="mt-1.5 font-display text-[clamp(1.05rem,2.6vw,1.5rem)] font-medium tracking-[0.04em]">
-            A hooked blade for the web — <em className="not-italic text-bronze-bright">enter, catch, retrieve.</em>
-          </p>
-          <p className="mx-auto mt-4 max-w-[620px] text-[clamp(.96rem,1.7vw,1.08rem)] text-ink/75">
-            One command to pull <strong className="font-semibold text-ink">video</strong>,{' '}
-            <strong className="font-semibold text-ink">image galleries</strong>, a whole{' '}
-            <strong className="font-semibold text-ink">page of images</strong>, or{' '}
-            <strong className="font-semibold text-ink">gigapixel artwork</strong> from the world's
-            museums. The fzf picker is just one frontend — the engine is yours.
-          </p>
-
-          {/* terminal */}
-          <div className="relative mt-8 w-[min(640px,100%)] overflow-hidden rounded-xl border border-line bg-[rgba(14,10,7,.78)] text-left backdrop-blur-md shadow-[0_30px_80px_-50px_rgba(216,153,33,.22)]">
-            <div className="flex items-center gap-2 border-b border-line px-3.5 py-2.5">
-              <span className="h-2.5 w-2.5 rounded-full border border-line" />
-              <span className="h-2.5 w-2.5 rounded-full border border-line" />
-              <span className="h-2.5 w-2.5 rounded-full border border-line" />
-              <span className="ml-2 font-mono text-[.74rem] tracking-[0.08em] text-muted">harpe</span>
-            </div>
-            <pre className="overflow-x-auto px-4 py-4 font-mono text-[.86rem] leading-relaxed">
-              <code>
-                <span className="text-bronze">$</span> {install}
-                {'\n'}
-                <span className="text-bronze">$</span> harpe <Typewriter />
-                <span className="caret text-amber">▋</span>
-              </code>
-            </pre>
-            <button
-              onClick={copy}
-              className="absolute right-3 top-2.5 cursor-pointer rounded-md border border-line px-2.5 py-1 font-mono text-[.7rem] text-muted transition hover:border-bronze hover:text-bronze-bright"
-            >
-              {copied ? 'copied ✓' : 'copy install'}
-            </button>
+        {/* ── Hero: brand + the one search box ── */}
+        <section className="pt-[9vh] pb-14">
+          <div className="flex flex-col items-center text-center">
+            <img
+              src="/logo.png"
+              alt="Harpe — a bronze hooked sickle-blade with a Greek meander on the hilt"
+              className="animate-rise h-[150px] w-auto max-sm:h-[120px]"
+              style={{ filter: 'drop-shadow(0 8px 50px rgba(216,153,33,.18))' }}
+            />
+            <h1 className="sr-only">Harpe</h1>
+            <p className="mt-1.5 font-display text-[clamp(1.05rem,2.6vw,1.5rem)] font-medium tracking-[0.04em]">
+              A hooked blade for the web — <em className="not-italic text-bronze-bright">enter, catch, retrieve.</em>
+            </p>
+            <p className="mx-auto mt-3 max-w-[560px] text-[clamp(.92rem,1.6vw,1.02rem)] text-ink/70">
+              Pull a whole page of images, or high-res artwork from the world's museums — right here, no
+              install.
+            </p>
           </div>
 
-          <div className="mt-8 flex flex-wrap justify-center gap-3">
-            <a
-              href="https://github.com/NullSense/harpe"
-              className="rounded-md border border-bronze/45 bg-bronze/10 px-5 py-2.5 text-[.95rem] font-medium text-bronze-bright transition hover:border-bronze hover:bg-bronze/20"
-            >
-              View on GitHub →
-            </a>
-            <a
-              href="https://github.com/NullSense/harpe#readme"
-              className="rounded-md border border-line px-5 py-2.5 text-[.95rem] font-medium text-muted transition hover:border-bronze/60 hover:text-ink"
-            >
-              Read the docs
-            </a>
+          {/* the one search box + results */}
+          <div className="mt-8">
+            <Finder />
+          </div>
+
+          {/* secondary links */}
+          <div className="mt-10 flex flex-wrap items-center justify-center gap-x-5 gap-y-2 font-mono text-[.78rem]">
+            <a href="https://github.com/NullSense/harpe" className="text-muted transition hover:text-bronze-bright">View on GitHub →</a>
+            <a href="https://github.com/NullSense/harpe#readme" className="text-muted transition hover:text-bronze-bright">Read the docs</a>
+            <a href="#tools" className="text-muted transition hover:text-bronze-bright">↓ Terminal &amp; extension</a>
           </div>
         </section>
 
-        {/* ── Tabbed interface ── */}
-        <div className="mb-20">
-          <TabBar active={activeTab} onSelect={selectTab} />
-
-          {/* Web tab */}
-          <div
-            id="panel-web"
-            role="tabpanel"
-            aria-labelledby="tab-web"
-            hidden={activeTab !== 'web'}
-          >
-            {activeTab === 'web' && <WebGrab />}
+        {/* ── Power users: CLI / Extension ── */}
+        <section id="tools" className="mb-20 scroll-mt-6 border-t border-line pt-12">
+          <div className="mb-8 text-center">
+            <span className="mb-3 block font-mono text-[.8rem] tracking-[0.12em] text-bronze">⌗ GO FURTHER</span>
+            <h2 className="font-display text-[clamp(1.3rem,3vw,1.9rem)] font-medium">Prefer the terminal — or your browser?</h2>
+            <p className="mx-auto mt-3 max-w-[560px] text-[.95rem] text-muted">
+              The search box above handles most pages and museum art. For video, login-walled sites, and
+              1,800+ extractors, reach for the CLI or the browser extension.
+            </p>
           </div>
 
-          {/* Museum art tab */}
-          <div
-            id="panel-art"
-            role="tabpanel"
-            aria-labelledby="tab-art"
-            hidden={activeTab !== 'art'}
-          >
-            {activeTab === 'art' && <ArtGrab />}
-          </div>
+          <ToolTabs active={toolTab} onSelect={selectTool} />
 
-          {/* CLI tab */}
-          <div
-            id="panel-cli"
-            role="tabpanel"
-            aria-labelledby="tab-cli"
-            hidden={activeTab !== 'cli'}
-          >
-            {activeTab === 'cli' && <CLIPanel install={install} />}
-          </div>
-
-          {/* Extension tab */}
-          <div
-            id="panel-extension"
-            role="tabpanel"
-            aria-labelledby="tab-extension"
-            hidden={activeTab !== 'extension'}
-          >
-            {activeTab === 'extension' && <ExtensionPanel />}
-          </div>
-        </div>
+          <div role="tabpanel" hidden={toolTab !== 'cli'}>{toolTab === 'cli' && <CLIPanel />}</div>
+          <div role="tabpanel" hidden={toolTab !== 'extension'}>{toolTab === 'extension' && <ExtensionPanel />}</div>
+        </section>
 
         <footer className="pb-16 text-center text-muted">
           <p className="mx-auto mb-2 max-w-[600px] text-[.9rem]">
@@ -473,9 +260,7 @@ export default function App() {
           </p>
           <p className="font-mono text-[.76rem] opacity-80">
             MIT ·{' '}
-            <a href="https://github.com/NullSense/harpe" className="text-bronze hover:text-bronze-bright">
-              NullSense/harpe
-            </a>{' '}
+            <a href="https://github.com/NullSense/harpe" className="text-bronze hover:text-bronze-bright">NullSense/harpe</a>{' '}
             · hero: Antonio Canova, <em>Perseus Triumphant</em> — Perseus with the harpe &amp; the head of Medusa, rendered in ASCII
           </p>
         </footer>
