@@ -430,7 +430,7 @@ function ArtCard({
 
       <div className="flex flex-col gap-1 p-2.5">
         <div className="flex items-start justify-between gap-2">
-          <h3 className="flex-1 font-display text-[.86rem] font-medium leading-snug text-ink">{item.title}</h3>
+          <h3 className="line-clamp-3 flex-1 font-display text-[.86rem] font-medium leading-snug text-ink" title={item.title}>{item.title}</h3>
           <SourceBadge source={item.source} />
         </div>
         {item.artist && <p className="truncate text-[.78rem] text-muted">{item.artist}</p>}
