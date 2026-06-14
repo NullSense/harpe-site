@@ -91,10 +91,11 @@ export default function AsciiHero() {
       for (let i = 0; i < lum.length; i++)
         lum[i] = (0.299 * data[i * 4] + 0.587 * data[i * 4 + 1] + 0.114 * data[i * 4 + 2]) / 255;
 
-      // per-image contrast stretch (2nd–98th percentile) so the marble pops
+      // per-image contrast stretch — tight percentiles (10th–93rd) for punchy,
+      // dramatic contrast: a deep black void with bright marble highlights.
       const sorted = Float32Array.from(lum).sort();
-      const lo = sorted[(sorted.length * 0.02) | 0];
-      const hi = sorted[(sorted.length * 0.98) | 0] || 1;
+      const lo = sorted[(sorted.length * 0.10) | 0];
+      const hi = sorted[(sorted.length * 0.93) | 0] || 1;
       const span = Math.max(0.001, hi - lo);
 
       cells = [];
@@ -102,6 +103,7 @@ export default function AsciiHero() {
         for (let col = 0; col < cols; col++) {
           let b = (lum[row * cols + col] - lo) / span;
           b = Math.min(1, Math.max(0, b));
+          b = Math.pow(b, 1.35); // gamma — sink the mid-tones so the figure pops
           cells.push({ col, row, b });
         }
 
@@ -143,7 +145,7 @@ export default function AsciiHero() {
     <canvas
       ref={ref}
       aria-hidden="true"
-      className="pointer-events-none fixed inset-0 -z-20 h-screen w-screen opacity-[0.55]"
+      className="pointer-events-none fixed inset-0 -z-20 h-screen w-screen opacity-[0.7]"
     />
   );
 }
