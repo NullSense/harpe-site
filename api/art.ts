@@ -1187,5 +1187,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const capped = items.slice(0, MAX_ITEMS);
 
   res.setHeader('Cache-Control', 'public, s-maxage=3600, stale-while-revalidate=86400');
-  return res.status(200).json({ items: capped, warnings, analyzeEnabled: Boolean(process.env.ANTHROPIC_API_KEY) });
+  return res.status(200).json({
+    items: capped, warnings,
+    analyzeEnabled: Boolean(process.env.OPENROUTER_API_KEY || process.env.ANTHROPIC_API_KEY),
+  });
 }

@@ -75,10 +75,13 @@ UNION-ing another SELECT in `ingest.py` (MIA's sharded JSON is left as a TODO).
 `POST /api/analyze` merges every source's metadata + descriptions for one artwork
 and asks an LLM to synthesize a single account. **Dormant until you set a key:**
 
+Set **either** provider (OpenRouter is checked first):
+
 | Env var | Purpose |
 |---|---|
-| `ANTHROPIC_API_KEY` | enables the "✦ Synthesize" button (server-only; never sent to the browser) |
-| `HARPE_ANALYZE_MODEL` | optional model override (default `claude-haiku-4-5-20251001`) |
+| `OPENROUTER_API_KEY` | **free** inference via OpenRouter `:free` models (default `google/gemini-2.0-flash-exp:free`) |
+| `ANTHROPIC_API_KEY` | Claude (used if no OpenRouter key); default `claude-haiku-4-5-20251001` |
+| `HARPE_ANALYZE_MODEL` | optional model override for whichever provider is active |
 
 Without the key, the button is hidden and `/api/analyze` returns 501. Results are
 cached in Upstash (30 days) keyed by artwork, so each work is synthesized once.

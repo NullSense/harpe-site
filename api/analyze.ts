@@ -20,7 +20,6 @@ import { fetch } from 'undici';
 import { createHash } from 'node:crypto';
 import { GuardError, rateLimit, clientIp } from './_guard.js';
 
-const MODEL = process.env.HARPE_ANALYZE_MODEL || 'claude-haiku-4-5-20251001';
 const TIMEOUT_MS = 25_000;
 const CACHE_TTL_S = 60 * 60 * 24 * 30; // 30 days
 
@@ -36,6 +35,44 @@ interface SourceRecord {
 
 function s(v: unknown): string {
   return typeof v === 'string' ? v : v == null ? '' : String(v);
+}
+
+// LLM provider — prefer OpenRouter (free `:free` models, OpenAI-compatible),
+// fall back to Anthropic. Both keys are server-only.
+interface Provider {
+  url: string;
+  headers: Record<string, string>;
+  body: (prompt: string) => unknown;
+  extract: (data: unknown) => string;
+}
+
+function pickProvider(): Provider | null {
+  const ork = process.env.OPENROUTER_API_KEY;
+  if (ork) {
+    const model = process.env.HARPE_ANALYZE_MODEL || 'google/gemini-2.0-flash-exp:free';
+    return {
+      url: 'https://openrouter.ai/api/v1/chat/completions',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${ork}`,
+        'HTTP-Referer': 'https://harpe-site.vercel.app',
+        'X-Title': 'Harpe',
+      },
+      body: (prompt) => ({ model, max_tokens: 800, messages: [{ role: 'user', content: prompt }] }),
+      extract: (d) => s((d as { choices?: Array<{ message?: { content?: unknown } }> })?.choices?.[0]?.message?.content),
+    };
+  }
+  const ak = process.env.ANTHROPIC_API_KEY;
+  if (ak) {
+    const model = process.env.HARPE_ANALYZE_MODEL || 'claude-haiku-4-5-20251001';
+    return {
+      url: 'https://api.anthropic.com/v1/messages',
+      headers: { 'content-type': 'application/json', 'x-api-key': ak, 'anthropic-version': '2023-06-01' },
+      body: (prompt) => ({ model, max_tokens: 800, messages: [{ role: 'user', content: prompt }] }),
+      extract: (d) => s((d as { content?: Array<{ text?: unknown }> })?.content?.[0]?.text),
+    };
+  }
+  return null;
 }
 
 // ─── Optional Upstash cache (shares env with the rate limiter) ────────────────
@@ -105,10 +142,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(405).json({ error: 'POST only' });
   }
 
-  const key = process.env.ANTHROPIC_API_KEY;
-  if (!key) {
+  const provider = pickProvider();
+  if (!provider) {
     res.setHeader('Cache-Control', 'no-store');
-    return res.status(501).json({ error: 'Analysis is not enabled (no ANTHROPIC_API_KEY configured).' });
+    return res.status(501).json({ error: 'Analysis is not enabled (set OPENROUTER_API_KEY or ANTHROPIC_API_KEY).' });
   }
 
   const ip = clientIp(req.headers as Record<string, string | string[] | undefined>);
@@ -161,27 +198,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
   try {
-    const r = await fetch('https://api.anthropic.com/v1/messages', {
+    const prompt = buildPrompt(title, artist, items);
+    const r = await fetch(provider.url, {
       method: 'POST',
       signal: controller.signal,
-      headers: {
-        'content-type': 'application/json',
-        'x-api-key': key,
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify({
-        model: MODEL,
-        max_tokens: 800,
-        messages: [{ role: 'user', content: buildPrompt(title, artist, items) }],
-      }),
+      headers: provider.headers,
+      body: JSON.stringify(provider.body(prompt)),
     });
     if (!r.ok) {
       const detail = await r.text();
       res.setHeader('Cache-Control', 'no-store');
       return res.status(502).json({ error: `LLM error ${r.status}`, detail: detail.slice(0, 200) });
     }
-    const data = await r.json() as { content?: Array<{ text?: unknown }> };
-    const analysis = s(data.content?.[0]?.text).trim();
+    const data = await r.json();
+    const analysis = provider.extract(data).trim();
     if (!analysis) {
       res.setHeader('Cache-Control', 'no-store');
       return res.status(502).json({ error: 'Empty analysis' });
