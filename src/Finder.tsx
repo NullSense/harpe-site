@@ -49,7 +49,7 @@ interface ArtItem {
   format: string;
   lossless: boolean;
   downloads: DownloadVariant[];
-  source: 'aic' | 'met' | 'cleveland' | 'commons' | 'wikiart' | 'iiif';
+  source: 'aic' | 'met' | 'cleveland' | 'commons' | 'wikiart' | 'vam' | 'iiif';
   isPublicDomain: boolean;
 }
 
@@ -274,7 +274,7 @@ function ScanCard({
 
 function SourceBadge({ source }: { source: ArtItem['source'] }) {
   const labels: Record<ArtItem['source'], string> = {
-    aic: 'AIC', met: 'Met', cleveland: 'Cleveland', commons: 'Commons', wikiart: 'WikiArt', iiif: 'IIIF',
+    aic: 'AIC', met: 'Met', cleveland: 'Cleveland', commons: 'Commons', wikiart: 'WikiArt', vam: 'V&A', iiif: 'IIIF',
   };
   return (
     <span className="rounded-sm bg-bronze/15 px-1.5 py-0.5 font-mono text-[.65rem] text-bronze">

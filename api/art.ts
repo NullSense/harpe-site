@@ -36,7 +36,8 @@ import { GuardError, rateLimit, clientIp } from './_guard.js';
 const UA =
   'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 const TIMEOUT_MS = 8_000;
-const MAX_ITEMS = 30;
+const MAX_ITEMS = 36;
+const MAX_PER_SOURCE = 8; // keep any one source from crowding the others out
 
 // ─── Response types ───────────────────────────────────────────────────────────
 
@@ -63,7 +64,7 @@ interface ArtItem {
   format: string;       // format of the primary download
   lossless: boolean;    // true if ANY download variant is lossless
   downloads: Download[];
-  source: 'aic' | 'met' | 'cleveland' | 'commons' | 'wikiart';
+  source: 'aic' | 'met' | 'cleveland' | 'commons' | 'wikiart' | 'vam';
   isPublicDomain: boolean;
 }
 
@@ -458,6 +459,57 @@ async function fetchWikiArt(q: string): Promise<ArtItem[]> {
   }
 }
 
+// ─── Victoria & Albert Museum (UK; keyless v2 API, IIIF images) ───────────────
+
+async function fetchVam(q: string): Promise<ArtItem[]> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+
+  try {
+    const url =
+      `https://api.vam.ac.uk/v2/objects/search` +
+      `?q=${encodeURIComponent(q)}&images_exist=1&page_size=15`;
+    const res = await timedFetch(url, controller.signal);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+    const json = await res.json() as {
+      records?: Array<{
+        systemNumber?: unknown;
+        _primaryTitle?: unknown;
+        objectType?: unknown;
+        _primaryMaker?: { name?: unknown };
+        _primaryDate?: unknown;
+        _images?: { _iiif_image_base_url?: unknown };
+      }>;
+    };
+
+    const items: ArtItem[] = [];
+    for (const r of json.records ?? []) {
+      const base = str(r._images?._iiif_image_base_url).replace(/\/$/, '');
+      if (!base) continue;
+      const date = str(r._primaryDate);
+      const full = `${base}/full/full/0/default.jpg`;
+      items.push({
+        id: `vam-${str(r.systemNumber)}`,
+        title: (str(r._primaryTitle) || str(r.objectType) || 'Untitled') + (date ? ` (${date})` : ''),
+        artist: str(r._primaryMaker?.name),
+        dimensions: '',
+        thumbUrl: `${base}/full/!843,843/0/default.jpg`,
+        previewUrl: `${base}/full/!1600,1600/0/default.jpg`,
+        fullUrl: full,
+        format: 'jpeg',
+        lossless: false,
+        downloads: [{ label: 'Full JPEG', url: full, format: 'jpeg', lossless: false }],
+        source: 'vam',
+        isPublicDomain: false, // V&A images are mixed-rights — badge a caution
+      });
+    }
+    return items;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // ─── Handler ─────────────────────────────────────────────────────────────────
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -494,6 +546,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     ['Cleveland', fetchCleveland(q)],
     ['Commons', fetchCommons(q)],
     ['WikiArt', fetchWikiArt(q)],
+    ['V&A', fetchVam(q)],
   ];
   const settled = await Promise.allSettled(sources.map(([, p]) => p));
 
@@ -514,7 +567,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   // then public-domain, then source order. This is the fix for "Rodin Thinker"
   // returning other Rodin works instead of The Thinker.
   const toks = queryTokens(q);
-  const SOURCE_ORDER: Record<string, number> = { aic: 0, met: 1, cleveland: 2, wikiart: 3, commons: 4 };
+  const SOURCE_ORDER: Record<string, number> = { aic: 0, met: 1, cleveland: 2, vam: 3, wikiart: 4, commons: 5 };
   items.sort((a, b) => {
     const ra = relevance(a, toks);
     const rb = relevance(b, toks);
@@ -523,8 +576,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return (SOURCE_ORDER[a.source] ?? 9) - (SOURCE_ORDER[b.source] ?? 9);
   });
 
-  // Cap total
-  const capped = items.slice(0, MAX_ITEMS);
+  // Cap per source (so one prolific source can't crowd the others out), then total.
+  const perSource: Record<string, number> = {};
+  const balanced = items.filter((it) => {
+    perSource[it.source] = (perSource[it.source] ?? 0) + 1;
+    return perSource[it.source] <= MAX_PER_SOURCE;
+  });
+  const capped = balanced.slice(0, MAX_ITEMS);
 
   res.setHeader('Cache-Control', 'public, s-maxage=3600, stale-while-revalidate=86400');
   return res.status(200).json({ items: capped, warnings });

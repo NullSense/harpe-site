@@ -242,8 +242,11 @@ let _upstashRatelimit: { limit: (key: string) => Promise<{ success: boolean }> }
 async function getUpstashRatelimit() {
   if (_upstashRatelimit !== undefined) return _upstashRatelimit;
 
-  const url = process.env.UPSTASH_REDIS_REST_URL;
-  const token = process.env.UPSTASH_REDIS_REST_TOKEN;
+  // Accept both the native Upstash names and the KV_* aliases that the Vercel
+  // Marketplace "Upstash for Redis" integration injects — so wiring it up is a
+  // one-click install with no code change.
+  const url = process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL;
+  const token = process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN;
 
   if (!url || !token) {
     _upstashRatelimit = null;
