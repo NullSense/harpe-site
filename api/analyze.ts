@@ -49,7 +49,16 @@ interface Provider {
 function pickProvider(): Provider | null {
   const ork = process.env.OPENROUTER_API_KEY;
   if (ork) {
-    const model = process.env.HARPE_ANALYZE_MODEL || 'google/gemini-2.0-flash-exp:free';
+    // Primary model + free fallbacks: OpenRouter tries them in order, so a
+    // rate-limited/unavailable free model auto-falls-through to the next.
+    const primary = process.env.HARPE_ANALYZE_MODEL || 'google/gemini-2.0-flash-exp:free';
+    const models = [...new Set([
+      primary,
+      'meta-llama/llama-3.3-70b-instruct:free',
+      'mistralai/mistral-small-3.1-24b-instruct:free',
+    ])];
+    // Opt-in Exa-powered web search to enrich the analysis with live context.
+    const web = process.env.HARPE_ANALYZE_WEB === '1';
     return {
       url: 'https://openrouter.ai/api/v1/chat/completions',
       headers: {
@@ -58,7 +67,12 @@ function pickProvider(): Provider | null {
         'HTTP-Referer': 'https://harpe-site.vercel.app',
         'X-Title': 'Harpe',
       },
-      body: (prompt) => ({ model, max_tokens: 800, messages: [{ role: 'user', content: prompt }] }),
+      body: (prompt) => ({
+        models,
+        max_tokens: 800,
+        messages: [{ role: 'user', content: prompt }],
+        ...(web ? { plugins: [{ id: 'web', max_results: 3 }] } : {}),
+      }),
       extract: (d) => s((d as { choices?: Array<{ message?: { content?: unknown } }> })?.choices?.[0]?.message?.content),
     };
   }

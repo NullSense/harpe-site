@@ -82,6 +82,10 @@ Set **either** provider (OpenRouter is checked first):
 | `OPENROUTER_API_KEY` | **free** inference via OpenRouter `:free` models (default `google/gemini-2.0-flash-exp:free`) |
 | `ANTHROPIC_API_KEY` | Claude (used if no OpenRouter key); default `claude-haiku-4-5-20251001` |
 | `HARPE_ANALYZE_MODEL` | optional model override for whichever provider is active |
+| `HARPE_ANALYZE_WEB` | set to `1` to let OpenRouter's Exa-powered web plugin add live context (OpenRouter only) |
+
+OpenRouter requests send a `models` fallback list (the chosen model + two free
+models), so a rate-limited free model auto-falls-through to the next.
 
 Without the key, the button is hidden and `/api/analyze` returns 501. Results are
 cached in Upstash (30 days) keyed by artwork, so each work is synthesized once.
