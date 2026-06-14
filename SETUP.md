@@ -50,5 +50,6 @@ The art search runs 7 keyless museum sources out of the box (AIC, The Met, Cleve
 | Europeana (3,000+ EU institutions) | `EUROPEANA_API_KEY` | https://pro.europeana.eu/pages/get-api |
 | Harvard Art Museums | `HARVARD_API_KEY` | https://harvardartmuseums.org/collections/api |
 | Smithsonian (Open Access, CC0) | `SMITHSONIAN_API_KEY` | https://api.data.gov/signup |
+| Paris Musées (14 Paris museums) | `PARIS_MUSEES_TOKEN` | https://apicollections.parismusees.paris.fr/en/user/register → My Account → Auth Tokens |
 
 Add each in the Vercel dashboard (**Settings → Environment Variables**) or via `vercel env add <NAME> production`, then redeploy. Because `/api/art` is public, your key is consumed indirectly by site visitors — but the per-IP rate limit + 1-hour edge cache keep usage low, and if a key's quota is exhausted that one source just degrades to a warning (nothing breaks).

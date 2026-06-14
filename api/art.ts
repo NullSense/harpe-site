@@ -63,7 +63,7 @@ interface ArtItem {
   format: string;       // format of the primary download
   lossless: boolean;    // true if ANY download variant is lossless
   downloads: Download[];
-  source: 'aic' | 'met' | 'cleveland' | 'commons' | 'wikiart' | 'vam' | 'wellcome' | 'smk' | 'nasjonalmuseet' | 'digitalnz' | 'wikidata' | 'europeana' | 'harvard' | 'si';
+  source: 'aic' | 'met' | 'cleveland' | 'commons' | 'wikiart' | 'vam' | 'wellcome' | 'smk' | 'nasjonalmuseet' | 'digitalnz' | 'wikidata' | 'europeana' | 'harvard' | 'si' | 'parismusees';
   isPublicDomain: boolean;
 }
 
@@ -917,6 +917,58 @@ async function fetchSmithsonian(q: string): Promise<ArtItem[]> {
   }
 }
 
+// Paris Musées (14 Paris museums; GraphQL, free token). PARIS_MUSEES_TOKEN
+// NOTE: GraphQL search syntax is best-effort — verify once the token is live.
+async function fetchParisMusees(q: string): Promise<ArtItem[]> {
+  const token = process.env.PARIS_MUSEES_TOKEN!;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  try {
+    const query =
+      `{ nodeQuery(filter: {conditions: [` +
+      `{field: "type", value: "oeuvre"}, ` +
+      `{field: "title", operator: CONTAINS, value: ${JSON.stringify(q)}}` +
+      `]}, limit: 15) { entities { entityLabel ... on NodeOeuvre {` +
+      ` title fieldVisuels { entity { publicUrl vignette } } } } } }`;
+    const res = await fetch('https://apicollections.parismusees.paris.fr/graphql', {
+      method: 'POST',
+      signal: controller.signal,
+      headers: { 'Content-Type': 'application/json', 'auth-token': token, 'User-Agent': UA },
+      body: JSON.stringify({ query }),
+    }) as unknown as Response;
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const json = await res.json() as {
+      data?: { nodeQuery?: { entities?: Array<{
+        entityLabel?: unknown; title?: unknown;
+        fieldVisuels?: Array<{ entity?: { publicUrl?: unknown; vignette?: unknown } }>;
+      }> } };
+    };
+    const items: ArtItem[] = [];
+    for (const e of json.data?.nodeQuery?.entities ?? []) {
+      const v = e.fieldVisuels?.[0]?.entity;
+      const img = str(v?.publicUrl) || str(v?.vignette);
+      if (!img) continue;
+      items.push({
+        id: `parismusees-${str(e.entityLabel)}-${items.length}`,
+        title: str(e.title) || str(e.entityLabel) || 'Untitled',
+        artist: '',
+        dimensions: '',
+        thumbUrl: str(v?.vignette) || img,
+        previewUrl: img,
+        fullUrl: img,
+        format: fmtFromUrl(img),
+        lossless: false,
+        downloads: [{ label: 'Full image', url: img, format: fmtFromUrl(img), lossless: false }],
+        source: 'parismusees',
+        isPublicDomain: true,
+      });
+    }
+    return items;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // ─── Handler ─────────────────────────────────────────────────────────────────
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -964,6 +1016,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (process.env.EUROPEANA_API_KEY) sources.push(['Europeana', fetchEuropeana(q)]);
   if (process.env.HARVARD_API_KEY) sources.push(['Harvard', fetchHarvard(q)]);
   if (process.env.SMITHSONIAN_API_KEY) sources.push(['Smithsonian', fetchSmithsonian(q)]);
+  if (process.env.PARIS_MUSEES_TOKEN) sources.push(['ParisMusées', fetchParisMusees(q)]);
   const settled = await Promise.allSettled(sources.map(([, p]) => p));
 
   const items: ArtItem[] = [];
@@ -985,7 +1038,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const toks = queryTokens(q);
   const SOURCE_ORDER: Record<string, number> = {
     aic: 0, met: 1, cleveland: 2, vam: 3, wellcome: 4, smk: 5, nasjonalmuseet: 6,
-    harvard: 7, europeana: 8, si: 9, wikidata: 10, digitalnz: 11, wikiart: 12, commons: 13,
+    parismusees: 7, harvard: 8, europeana: 9, si: 10, wikidata: 11, digitalnz: 12, wikiart: 13, commons: 14,
   };
   // Round-robin rank: 0 = each source's top result, 1 = its second, etc.
   // (items arrive grouped by source, each in that API's own relevance order).
