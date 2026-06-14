@@ -313,13 +313,9 @@ function MetaChips({ item }: { item: ArtItem }) {
           {item.width}×{item.height}
         </span>
       )}
-      {item.lossless ? (
+      {item.lossless && (
         <span className="rounded-sm border border-bronze/40 bg-bronze/10 px-1.5 py-0.5 font-mono text-[.62rem] text-bronze-bright">
           ◆ lossless
-        </span>
-      ) : (
-        <span className="rounded-sm border border-line px-1.5 py-0.5 font-mono text-[.62rem] text-muted/60">
-          lossy
         </span>
       )}
     </div>
