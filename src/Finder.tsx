@@ -616,7 +616,8 @@ export default function Finder() {
         ))}
       </div>
       <p className="mt-3 text-center font-mono text-[.68rem] tracking-[0.04em] text-muted/55">
-        art search spans the Met · Art Institute of Chicago · Cleveland · V&amp;A · Wellcome · SMK · Nasjonalmuseet · DigitalNZ · WikiArt · Wikimedia Commons
+        millions of works across 14 open collections — the Met · Art Institute of Chicago · Cleveland · V&amp;A ·
+        Wellcome · Harvard · Smithsonian · SMK · Nasjonalmuseet · Europeana · Wikidata · DigitalNZ · WikiArt · Wikimedia Commons
       </p>
 
       {/* ── results ── */}

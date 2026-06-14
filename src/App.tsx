@@ -10,7 +10,7 @@ const MODES = [
   ['▰', 'Video & audio', 'yt-dlp under the hood, forced to true max bitrate — 1800+ sites.'],
   ['▦', 'Galleries', "gallery-dl's native extractors for hundreds of sites — originals, not thumbnails."],
   ['⊞', 'Page of images', 'scan any page, rank by real resolution, pick what you want in a visual grid.'],
-  ['◈', 'Museum art', 'federated search across AIC, the Met, Cleveland, V&A, Wikidata IIIF & more.'],
+  ['◈', 'Museum art', 'federated search across 14 open collections — the Met, AIC, Cleveland, V&A, Harvard, Smithsonian, Europeana, Wikidata & more.'],
   ['⟲', 'Reverse image', 'find the source and the highest-resolution copy — no engine to pick.'],
   ['⌗', 'Frontend-agnostic', 'JSON in, JSON out — drive the engine from a browser extension or a GUI.'],
 ] as const;
@@ -218,8 +218,8 @@ export default function App() {
               A hooked blade for the web — <em className="not-italic text-bronze-bright">enter, catch, retrieve.</em>
             </p>
             <p className="mx-auto mt-3 max-w-[560px] text-[clamp(.92rem,1.6vw,1.02rem)] text-ink/70">
-              Pull a whole page of images, or high-res artwork from the world's museums — right here, no
-              install.
+              Pull a whole page of images, or high-res artwork from 14 of the world's open museum
+              collections — right here, no install.
             </p>
           </div>
 
