@@ -6,3 +6,7 @@ dist/
 .vercel
 pnpm-lock.yaml
 demo/video/
+
+# generated demo media (regenerate with demo/record-web.mjs)
+demo/web.gif
+demo/web.mp4

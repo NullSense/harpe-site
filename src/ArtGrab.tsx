@@ -5,28 +5,68 @@
  *   GET /api/art?q=<query>           → { items: ArtworkResult[], warnings: string[] }
  *   GET /api/fetch?url=<img>          → streams image bytes as a download
  *
- * The /api/art endpoint federates AIC, Met, and Cleveland server-side and
- * normalises all fields (including Cleveland's object-shaped `dimensions`) to
- * strings, so no object-as-React-child error (#31) can occur.
+ * The /api/art endpoint federates AIC, Met, Cleveland, Wikimedia Commons and
+ * WikiArt server-side and normalises every field (including Cleveland's
+ * object-shaped `dimensions`) to strings, so no object-as-React-child error
+ * (#31) can occur. Each result carries its available download variants
+ * (format + lossless flag), a renderable preview image, and pixel dimensions
+ * when the source reports them.
+ *
+ * Click any thumbnail to open a zoomable lightbox (yet-another-react-lightbox).
  *
  * IIIF: pasted IIIF manifest / info.json URLs are still detected and resolved
  * client-side (no auth needed, CORS-open servers) to the largest /full/full
  * derivative, then offered for download through the server proxy.
  */
 
-import { useCallback, useId, useRef, useState } from 'react';
+import { useCallback, useId, useMemo, useRef, useState } from 'react';
+import Lightbox from 'yet-another-react-lightbox';
+import Zoom from 'yet-another-react-lightbox/plugins/zoom';
+import Captions from 'yet-another-react-lightbox/plugins/captions';
+import Counter from 'yet-another-react-lightbox/plugins/counter';
+import Download from 'yet-another-react-lightbox/plugins/download';
+import 'yet-another-react-lightbox/styles.css';
+import 'yet-another-react-lightbox/plugins/captions.css';
+import 'yet-another-react-lightbox/plugins/counter.css';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
+
+interface DownloadVariant {
+  label: string;
+  url: string;
+  format: string;
+  lossless: boolean;
+}
 
 interface ArtworkResult {
   id: string;            // source:id
   title: string;
   artist: string;
-  dimensions?: string;   // always a string from the server, or undefined
-  thumbUrl: string;
-  fullUrl: string;
+  dimensions?: string;   // physical dimensions string (museum metadata)
+  thumbUrl: string;      // small grid image
+  previewUrl: string;    // larger renderable image for the lightbox
+  fullUrl: string;       // primary download URL
+  width?: number;        // pixel width when known
+  height?: number;       // pixel height when known
+  format: string;        // primary download format
+  lossless: boolean;     // a lossless variant exists
+  downloads: DownloadVariant[];
   source: 'aic' | 'met' | 'cleveland' | 'commons' | 'wikiart' | 'iiif';
   isPublicDomain: boolean;
+}
+
+// ─── Format helpers ────────────────────────────────────────────────────────────
+
+const LOSSLESS_FORMATS = new Set(['png', 'tiff', 'gif', 'bmp']);
+
+function extFor(format: string): string {
+  if (format === 'jpeg') return 'jpg';
+  if (format === 'tiff') return 'tiff';
+  return format || 'jpg';
+}
+
+function proxyUrl(url: string): string {
+  return `/api/fetch?url=${encodeURIComponent(url)}`;
 }
 
 // ─── IIIF detection & resolution ─────────────────────────────────────────────
@@ -64,8 +104,8 @@ async function resolveIIIF(rawUrl: string): Promise<ArtworkResult | null> {
     if (!infoRes.ok) return null;
     const info = await infoRes.json();
     const id: string = info['@id'] || info.id || infoUrl.replace('/info.json', '');
-    const fullUrl = `${id.replace(/\/$/, '')}/full/full/0/default.jpg`;
-    const thumbUrl = `${id.replace(/\/$/, '')}/full/400,/0/default.jpg`;
+    const base = id.replace(/\/$/, '');
+    const fullUrl = `${base}/full/full/0/default.jpg`;
     const label = info.label;
     const title =
       typeof label === 'string'
@@ -75,8 +115,12 @@ async function resolveIIIF(rawUrl: string): Promise<ArtworkResult | null> {
       id: `iiif:${id}`,
       title: typeof title === 'string' ? title : 'IIIF image',
       artist: '',
-      thumbUrl,
+      thumbUrl: `${base}/full/400,/0/default.jpg`,
+      previewUrl: `${base}/full/1200,/0/default.jpg`,
       fullUrl,
+      format: 'jpeg',
+      lossless: false,
+      downloads: [{ label: 'Full JPEG', url: fullUrl, format: 'jpeg', lossless: false }],
       source: 'iiif',
       isPublicDomain: true,
     };
@@ -89,10 +133,10 @@ async function resolveIIIF(rawUrl: string): Promise<ArtworkResult | null> {
 
 /**
  * Fetch the image through the server proxy (/api/fetch) and trigger a download.
- * This avoids CORS issues for museum image hosts.
+ * This avoids CORS issues for museum image hosts and forces attachment.
  */
 async function downloadViaProxy(url: string, filename: string): Promise<void> {
-  const res = await fetch(`/api/fetch?url=${encodeURIComponent(url)}`);
+  const res = await fetch(proxyUrl(url));
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const blob = await res.blob();
   const blobUrl = URL.createObjectURL(blob);
@@ -143,6 +187,30 @@ function SourceBadge({ source }: { source: ArtworkResult['source'] }) {
   );
 }
 
+function MetaChips({ item }: { item: ArtworkResult }) {
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      <span className="rounded-sm border border-line px-1.5 py-0.5 font-mono text-[.62rem] uppercase text-muted">
+        {item.format}
+      </span>
+      {item.width && item.height && (
+        <span className="rounded-sm border border-line px-1.5 py-0.5 font-mono text-[.62rem] text-muted">
+          {item.width}×{item.height}
+        </span>
+      )}
+      {item.lossless ? (
+        <span className="rounded-sm border border-bronze/40 bg-bronze/10 px-1.5 py-0.5 font-mono text-[.62rem] text-bronze-bright">
+          ◆ lossless
+        </span>
+      ) : (
+        <span className="rounded-sm border border-line px-1.5 py-0.5 font-mono text-[.62rem] text-muted/60">
+          lossy
+        </span>
+      )}
+    </div>
+  );
+}
+
 function Spinner() {
   return (
     <span
@@ -153,15 +221,23 @@ function Spinner() {
   );
 }
 
-function ArtCard({ item }: { item: ArtworkResult }) {
+function ArtCard({
+  item,
+  onPreview,
+}: {
+  item: ArtworkResult;
+  onPreview: () => void;
+}) {
   const [dl, setDl] = useState<DownloadState>('idle');
+  const [activeLabel, setActiveLabel] = useState<string>('');
 
-  const handleDownload = async () => {
+  const handleDownload = async (variant: DownloadVariant) => {
     if (dl === 'fetching') return;
     setDl('fetching');
+    setActiveLabel(variant.label);
     try {
-      const filename = safeName(item.title, item.artist);
-      await downloadViaProxy(item.fullUrl, filename);
+      const filename = safeName(item.title, item.artist, extFor(variant.format));
+      await downloadViaProxy(variant.url, filename);
       setDl('done');
       setTimeout(() => setDl('idle'), 3500);
     } catch {
@@ -170,27 +246,25 @@ function ArtCard({ item }: { item: ArtworkResult }) {
     }
   };
 
-  const btnLabel =
-    dl === 'fetching'
-      ? 'Fetching…'
-      : dl === 'done'
-        ? 'Saved ✓'
-        : dl === 'error'
-          ? 'Error — retry?'
-          : 'Download full res';
-
   // Defensively coerce all rendered values to strings
   const safeTitle = typeof item.title === 'string' ? item.title : String(item.title || 'Untitled');
   const safeArtist = typeof item.artist === 'string' ? item.artist : String(item.artist || '');
   const safeDimensions =
-    typeof item.dimensions === 'string' && item.dimensions
-      ? item.dimensions
-      : undefined;
+    typeof item.dimensions === 'string' && item.dimensions ? item.dimensions : undefined;
+
+  const downloads = item.downloads?.length
+    ? item.downloads
+    : [{ label: 'Download', url: item.fullUrl, format: item.format || 'jpeg', lossless: item.lossless }];
 
   return (
     <article className="group flex flex-col overflow-hidden rounded-xl border border-line bg-[rgba(16,11,8,.6)] transition hover:-translate-y-0.5 hover:border-bronze/60 hover:shadow-[0_8px_32px_-12px_rgba(216,153,33,.18)]">
-      {/* thumbnail */}
-      <div className="relative aspect-[4/3] overflow-hidden bg-[rgba(10,8,6,.8)]">
+      {/* thumbnail — opens the lightbox */}
+      <button
+        type="button"
+        onClick={onPreview}
+        aria-label={`Preview ${safeTitle}`}
+        className="relative aspect-[4/3] cursor-zoom-in overflow-hidden bg-[rgba(10,8,6,.8)] outline-none focus-visible:ring-2 focus-visible:ring-bronze/60"
+      >
         <img
           src={item.thumbUrl}
           alt={`${safeTitle}${safeArtist ? `, by ${safeArtist}` : ''}`}
@@ -201,12 +275,17 @@ function ArtCard({ item }: { item: ArtworkResult }) {
             (e.currentTarget as HTMLImageElement).style.display = 'none';
           }}
         />
+        <span className="pointer-events-none absolute inset-0 flex items-center justify-center opacity-0 transition group-hover:opacity-100">
+          <span className="rounded-full bg-[rgba(10,8,6,.7)] px-2.5 py-1 font-mono text-[.66rem] text-bronze-bright backdrop-blur-sm">
+            ⤢ preview
+          </span>
+        </span>
         {!item.isPublicDomain && (
           <span className="absolute left-2 top-2 rounded-sm bg-[rgba(10,8,6,.82)] px-1.5 py-0.5 font-mono text-[.62rem] text-muted">
             © rights may apply
           </span>
         )}
-      </div>
+      </button>
 
       {/* info */}
       <div className="flex flex-1 flex-col gap-1.5 p-3.5">
@@ -216,24 +295,47 @@ function ArtCard({ item }: { item: ArtworkResult }) {
           </h3>
           <SourceBadge source={item.source} />
         </div>
-        {safeArtist && (
-          <p className="text-[.82rem] text-muted">{safeArtist}</p>
-        )}
+        {safeArtist && <p className="text-[.82rem] text-muted">{safeArtist}</p>}
         {safeDimensions && (
-          <p className="font-mono text-[.72rem] text-muted/70">
-            {safeDimensions}
-          </p>
+          <p className="font-mono text-[.72rem] text-muted/70">{safeDimensions}</p>
         )}
 
-        <button
-          onClick={handleDownload}
-          disabled={dl === 'fetching'}
-          aria-label={`${btnLabel} — ${safeTitle}`}
-          className="mt-auto flex items-center justify-center gap-2 rounded-md border border-line px-3 py-1.5 font-mono text-[.75rem] text-muted transition hover:border-bronze/60 hover:text-bronze-bright disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          {dl === 'fetching' && <Spinner />}
-          {btnLabel}
-        </button>
+        <div className="mt-0.5">
+          <MetaChips item={item} />
+        </div>
+
+        {/* one button per download variant (e.g. High-res JPEG + Original TIFF) */}
+        <div className="mt-auto flex flex-col gap-1.5 pt-2">
+          {downloads.map((v, i) => {
+            const busy = dl === 'fetching' && activeLabel === v.label;
+            const label = busy
+              ? 'Fetching…'
+              : dl === 'done' && activeLabel === v.label
+                ? 'Saved ✓'
+                : dl === 'error' && activeLabel === v.label
+                  ? 'Error — retry?'
+                  : v.label + (v.lossless ? ' · lossless' : '');
+            const primary = i === 0;
+            return (
+              <button
+                key={v.label}
+                onClick={() => handleDownload(v)}
+                disabled={dl === 'fetching'}
+                aria-label={`Download ${v.label} — ${safeTitle}`}
+                className={
+                  'flex items-center justify-center gap-2 rounded-md px-3 py-1.5 font-mono text-[.74rem] transition disabled:cursor-not-allowed disabled:opacity-50 ' +
+                  (primary
+                    ? 'border border-bronze/45 bg-bronze/10 text-bronze-bright hover:border-bronze hover:bg-bronze/20'
+                    : 'border border-line text-muted hover:border-bronze/60 hover:text-bronze')
+                }
+              >
+                {busy && <Spinner />}
+                {!busy && <span aria-hidden>⬇</span>}
+                {label}
+              </button>
+            );
+          })}
+        </div>
       </div>
     </article>
   );
@@ -260,6 +362,8 @@ function SkeletonCard() {
 export default function ArtGrab() {
   const [query, setQuery] = useState('');
   const [state, setState] = useState<State>({ phase: 'idle' });
+  const [losslessOnly, setLosslessOnly] = useState(false);
+  const [lightboxIndex, setLightboxIndex] = useState(-1);
   const inputId = useId();
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -267,18 +371,14 @@ export default function ArtGrab() {
     const q = raw.trim();
     if (!q) return;
 
+    setLightboxIndex(-1);
     setState({ phase: 'loading' });
 
     // ── IIIF / direct URL path ────────────────────────────────────────────
     if (isURL(q) && IIIF_MANIFEST_RE.test(q)) {
       const result = await resolveIIIF(q);
       if (result) {
-        setState({
-          phase: 'results',
-          items: [result],
-          query: q,
-          warnings: [],
-        });
+        setState({ phase: 'results', items: [result], query: q, warnings: [] });
       } else {
         setState({
           phase: 'error',
@@ -296,10 +396,7 @@ export default function ArtGrab() {
       const json: { items?: unknown[]; warnings?: string[]; error?: string } = await res.json();
 
       if (!res.ok) {
-        setState({
-          phase: 'error',
-          message: json.error ?? `Server error ${res.status}`,
-        });
+        setState({ phase: 'error', message: json.error ?? `Server error ${res.status}` });
         return;
       }
 
@@ -309,15 +406,35 @@ export default function ArtGrab() {
       // strings, but we guard every field so no object can ever crash render.
       const items: ArtworkResult[] = (json.items ?? []).map((raw: unknown): ArtworkResult => {
         const d = raw as Record<string, unknown>;
+        const fmt = typeof d.format === 'string' ? d.format : 'jpeg';
+        const rawDownloads = Array.isArray(d.downloads) ? d.downloads : [];
+        const downloads: DownloadVariant[] = rawDownloads
+          .map((x: unknown): DownloadVariant => {
+            const v = x as Record<string, unknown>;
+            const f = typeof v.format === 'string' ? v.format : 'jpeg';
+            return {
+              label: typeof v.label === 'string' ? v.label : 'Download',
+              url: typeof v.url === 'string' ? v.url : '',
+              format: f,
+              lossless: typeof v.lossless === 'boolean' ? v.lossless : LOSSLESS_FORMATS.has(f),
+            };
+          })
+          .filter((v) => v.url);
+        const thumbUrl = typeof d.thumbUrl === 'string' ? d.thumbUrl : String(d.thumbUrl ?? '');
+        const fullUrl = typeof d.fullUrl === 'string' ? d.fullUrl : String(d.fullUrl ?? '');
         return {
           id: typeof d.id === 'string' ? d.id : String(d.id ?? ''),
           title: typeof d.title === 'string' ? d.title : String(d.title ?? 'Untitled'),
           artist: typeof d.artist === 'string' ? d.artist : String(d.artist ?? ''),
-          dimensions: typeof d.dimensions === 'string' && d.dimensions
-            ? d.dimensions
-            : undefined,
-          thumbUrl: typeof d.thumbUrl === 'string' ? d.thumbUrl : String(d.thumbUrl ?? ''),
-          fullUrl: typeof d.fullUrl === 'string' ? d.fullUrl : String(d.fullUrl ?? ''),
+          dimensions: typeof d.dimensions === 'string' && d.dimensions ? d.dimensions : undefined,
+          thumbUrl,
+          previewUrl: typeof d.previewUrl === 'string' && d.previewUrl ? d.previewUrl : fullUrl || thumbUrl,
+          fullUrl,
+          width: typeof d.width === 'number' ? d.width : undefined,
+          height: typeof d.height === 'number' ? d.height : undefined,
+          format: fmt,
+          lossless: typeof d.lossless === 'boolean' ? d.lossless : downloads.some((v) => v.lossless),
+          downloads: downloads.length ? downloads : [{ label: 'Download', url: fullUrl, format: fmt, lossless: false }],
           source: (d.source as ArtworkResult['source']) || 'aic',
           isPublicDomain: Boolean(d.isPublicDomain),
         };
@@ -329,10 +446,7 @@ export default function ArtGrab() {
         setState({ phase: 'results', items, query: q, warnings });
       }
     } catch (e) {
-      setState({
-        phase: 'error',
-        message: e instanceof Error ? e.message : 'Network error',
-      });
+      setState({ phase: 'error', message: e instanceof Error ? e.message : 'Network error' });
     }
   }, []);
 
@@ -354,12 +468,35 @@ export default function ArtGrab() {
     'Rodin Thinker',
   ];
 
+  // Items currently shown (after the lossless-only filter). The lightbox slides
+  // are built from the SAME list so click-indices line up.
+  const visibleItems = useMemo(() => {
+    if (state.phase !== 'results') return [];
+    return losslessOnly ? state.items.filter((i) => i.lossless) : state.items;
+  }, [state, losslessOnly]);
+
+  const slides = useMemo(
+    () =>
+      visibleItems.map((it) => {
+        const best = it.downloads[0] ?? { url: it.fullUrl, format: it.format, label: 'Download' };
+        return {
+          src: it.previewUrl || it.fullUrl,
+          title: it.title,
+          description: [it.artist, it.dimensions].filter(Boolean).join(' · '),
+          // Route the lightbox download through the proxy → forces attachment,
+          // bypasses CORS, and serves the same high-res/lossless file as the card.
+          downloadUrl: proxyUrl(best.url),
+          downloadFilename: safeName(it.title, it.artist, extFor(best.format)),
+        };
+      }),
+    [visibleItems],
+  );
+
+  const losslessCount =
+    state.phase === 'results' ? state.items.filter((i) => i.lossless).length : 0;
+
   return (
-    <section
-      id="try-it"
-      aria-label="Try museum art search"
-      className="py-10"
-    >
+    <section id="try-it" aria-label="Try museum art search" className="py-10">
       {/* heading */}
       <div className="mb-10 text-center">
         <span className="mb-3 block font-mono text-[.8rem] tracking-[0.12em] text-bronze">
@@ -368,18 +505,16 @@ export default function ArtGrab() {
         <h2 className="font-display text-[clamp(1.3rem,3vw,1.9rem)] font-medium">
           Find &amp; download museum art — no install
         </h2>
-        <p className="mx-auto mt-3 max-w-[540px] text-[.95rem] text-muted">
-          Searches the Art Institute of Chicago, The Met, and Cleveland Museum
-          directly from your browser. Public-domain works download as full-resolution
-          files. Paste a IIIF URL to grab any zoomable image.
+        <p className="mx-auto mt-3 max-w-[560px] text-[.95rem] text-muted">
+          Searches the Art Institute of Chicago, The Met, Cleveland, Wikimedia
+          Commons &amp; WikiArt. Click any work to preview it; download the
+          high-res JPEG or, where offered, the lossless original. Paste a IIIF URL
+          to grab any zoomable image.
         </p>
       </div>
 
       {/* search form */}
-      <form
-        onSubmit={handleSubmit}
-        className="mx-auto mb-4 flex max-w-[620px] gap-2"
-      >
+      <form onSubmit={handleSubmit} className="mx-auto mb-4 flex max-w-[620px] gap-2">
         <label htmlFor={inputId} className="sr-only">
           Artwork title, artist, or IIIF URL
         </label>
@@ -484,19 +619,49 @@ export default function ArtGrab() {
             </div>
           ) : (
             <>
-              <p className="mb-4 text-center font-mono text-[.78rem] text-muted/70">
-                {state.items.length} work{state.items.length !== 1 ? 's' : ''} found
-                {state.items.some((i) => !i.isPublicDomain) &&
-                  ' · ⚠ some works may have rights restrictions'}
-              </p>
-              <div className="grid grid-cols-[repeat(auto-fill,minmax(210px,1fr))] gap-4">
-                {state.items.map((item) => (
-                  <ArtCard
-                    key={item.id}
-                    item={item}
-                  />
-                ))}
+              {/* results meta + lossless filter */}
+              <div className="mb-4 flex flex-wrap items-center justify-center gap-x-4 gap-y-2">
+                <p className="font-mono text-[.78rem] text-muted/70">
+                  {visibleItems.length} work{visibleItems.length !== 1 ? 's' : ''}
+                  {losslessOnly && ` of ${state.items.length}`} shown
+                  {!losslessOnly && state.items.some((i) => !i.isPublicDomain) &&
+                    ' · ⚠ some may have rights restrictions'}
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setLosslessOnly((v) => !v)}
+                  disabled={losslessCount === 0}
+                  aria-pressed={losslessOnly}
+                  className={
+                    'rounded-full border px-3 py-1 font-mono text-[.72rem] transition disabled:cursor-not-allowed disabled:opacity-40 ' +
+                    (losslessOnly
+                      ? 'border-bronze/60 bg-bronze/15 text-bronze-bright'
+                      : 'border-line text-muted hover:border-bronze/60 hover:text-bronze')
+                  }
+                >
+                  {losslessOnly ? '◆ lossless only ✓' : `◆ lossless only (${losslessCount})`}
+                </button>
               </div>
+
+              {visibleItems.length === 0 ? (
+                <p className="text-center font-mono text-[.82rem] text-muted/60">
+                  No lossless originals in these results.{' '}
+                  <button
+                    type="button"
+                    onClick={() => setLosslessOnly(false)}
+                    className="text-bronze hover:text-bronze-bright"
+                  >
+                    Show all →
+                  </button>
+                </p>
+              ) : (
+                <div className="grid grid-cols-[repeat(auto-fill,minmax(210px,1fr))] gap-4">
+                  {visibleItems.map((item, i) => (
+                    <ArtCard key={item.id} item={item} onPreview={() => setLightboxIndex(i)} />
+                  ))}
+                </div>
+              )}
+
               <p className="mt-8 text-center font-mono text-[.74rem] text-muted/50">
                 Want gigapixel tile-stitching, V&amp;A, Rijksmuseum &amp; 1,800+ other sites?{' '}
                 <a
@@ -510,6 +675,18 @@ export default function ArtGrab() {
           )}
         </div>
       )}
+
+      {/* Lightbox — click a thumbnail to open; zoom, captions, counter, download */}
+      <Lightbox
+        open={lightboxIndex >= 0}
+        index={lightboxIndex < 0 ? 0 : lightboxIndex}
+        close={() => setLightboxIndex(-1)}
+        slides={slides}
+        plugins={[Zoom, Captions, Counter, Download]}
+        carousel={{ finite: true }}
+        zoom={{ maxZoomPixelRatio: 4 }}
+        styles={{ container: { backgroundColor: 'rgba(8,6,4,.94)' } }}
+      />
     </section>
   );
 }

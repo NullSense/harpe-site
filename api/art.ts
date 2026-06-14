@@ -40,13 +40,29 @@ const MAX_ITEMS = 30;
 
 // ─── Response types ───────────────────────────────────────────────────────────
 
+// A single downloadable file variant for a work. Sources often expose more than
+// one (e.g. a high-res JPEG and a lossless TIFF original) — we surface them all
+// so the UI can show format/quality and let the user choose.
+interface Download {
+  label: string;     // "High-res JPEG", "Original TIFF" …
+  url: string;       // direct upstream URL (downloaded via /api/fetch proxy)
+  format: string;    // 'jpeg' | 'png' | 'tiff' | 'webp' | 'gif'
+  lossless: boolean; // true for png/tiff/gif/bmp originals
+}
+
 interface ArtItem {
   id: string;
   title: string;
   artist: string;
   dimensions: string;
-  thumbUrl: string;
-  fullUrl: string;
+  thumbUrl: string;     // small image for the grid card
+  previewUrl: string;   // larger BROWSER-RENDERABLE image for the lightbox
+  fullUrl: string;      // primary/default download URL
+  width?: number;       // pixel width when the source reports it
+  height?: number;      // pixel height when the source reports it
+  format: string;       // format of the primary download
+  lossless: boolean;    // true if ANY download variant is lossless
+  downloads: Download[];
   source: 'aic' | 'met' | 'cleveland' | 'commons' | 'wikiart';
   isPublicDomain: boolean;
 }
@@ -60,6 +76,28 @@ function str(v: unknown): string {
   // Objects / arrays: do NOT pass through — coerce to empty string to prevent
   // React error #31 ("Objects are not valid as a React child").
   return '';
+}
+
+// Lossless raster formats — JPEG/WEBP(lossy) are NOT here.
+const LOSSLESS_FORMATS = new Set(['png', 'tiff', 'gif', 'bmp']);
+
+function fmtFromMime(mime: string): string {
+  const m = mime.toLowerCase();
+  if (m.includes('png')) return 'png';
+  if (m.includes('tiff')) return 'tiff';
+  if (m.includes('webp')) return 'webp';
+  if (m.includes('gif')) return 'gif';
+  if (m.includes('bmp')) return 'bmp';
+  return 'jpeg';
+}
+
+function fmtFromUrl(url: string): string {
+  const m = url.toLowerCase().match(/\.(jpe?g|png|tiff?|webp|gif|bmp)(?:[?#]|$)/);
+  if (!m) return 'jpeg';
+  const ext = m[1];
+  if (ext === 'jpg' || ext === 'jpeg') return 'jpeg';
+  if (ext === 'tif' || ext === 'tiff') return 'tiff';
+  return ext;
 }
 
 // Query-relevance ranking (mirrors the CLI's harpe.rank): score each result by
@@ -121,13 +159,19 @@ async function fetchAic(q: string): Promise<ArtItem[]> {
       const imageId = str(d.image_id);
       if (!imageId) continue;
 
+      const base = `${iiif}/${imageId}`;
+      const fullUrl = `${base}/full/full/0/default.jpg`;
       items.push({
         id: `aic-${str(d.id)}`,
         title: str(d.title) || 'Untitled',
         artist: str(d.artist_title),
         dimensions: String(d.dimensions ?? ''),
-        thumbUrl: `${iiif}/${imageId}/full/843,/0/default.jpg`,
-        fullUrl: `${iiif}/${imageId}/full/full/0/default.jpg`,
+        thumbUrl: `${base}/full/843,/0/default.jpg`,
+        previewUrl: `${base}/full/1686,/0/default.jpg`,
+        fullUrl,
+        format: 'jpeg',
+        lossless: false,
+        downloads: [{ label: 'Full JPEG', url: fullUrl, format: 'jpeg', lossless: false }],
         source: 'aic',
         isPublicDomain: Boolean(d.is_public_domain),
       });
@@ -193,7 +237,11 @@ async function fetchMet(q: string): Promise<ArtItem[]> {
         artist,
         dimensions: String(d.dimensions ?? ''),
         thumbUrl,
+        previewUrl: primaryImage,
         fullUrl: primaryImage,
+        format: 'jpeg',
+        lossless: false,
+        downloads: [{ label: 'Full JPEG', url: primaryImage, format: 'jpeg', lossless: false }],
         source: 'met',
         isPublicDomain: Boolean(d.isPublicDomain),
       });
@@ -232,19 +280,35 @@ async function fetchCleveland(q: string): Promise<ArtItem[]> {
         dimensions?: unknown;
         measurements?: unknown;
         images?: {
-          full?: { url?: unknown };
           web?: { url?: unknown };
+          print?: { url?: unknown };
+          full?: { url?: unknown };
         };
       }>;
     };
 
     const items: ArtItem[] = [];
     for (const d of json.data ?? []) {
-      const images = d.images ?? {};
-      const imageUrl =
-        str((images as { full?: { url?: unknown } }).full?.url) ||
-        str((images as { web?: { url?: unknown } }).web?.url);
-      if (!imageUrl) continue;
+      const images = (d.images ?? {}) as {
+        web?: { url?: unknown };
+        print?: { url?: unknown };
+        full?: { url?: unknown };
+      };
+      // Cleveland exposes 3 variants: `web` JPEG (~250KB), `print` JPEG (~3MB),
+      // and `full` TIFF (lossless original, tens of MB). Browsers can't render
+      // TIFF, so it is NEVER used for display — only offered as a download.
+      const webUrl = str(images.web?.url);
+      const printUrl = str(images.print?.url);
+      const tifUrl = str(images.full?.url);
+      const thumbUrl = webUrl || printUrl;
+      const previewUrl = printUrl || webUrl; // JPEG — renderable in the lightbox
+      if (!thumbUrl) continue;
+
+      const downloads: Download[] = [];
+      if (printUrl) downloads.push({ label: 'High-res JPEG', url: printUrl, format: 'jpeg', lossless: false });
+      else if (webUrl) downloads.push({ label: 'JPEG', url: webUrl, format: 'jpeg', lossless: false });
+      if (tifUrl) downloads.push({ label: 'Original TIFF', url: tifUrl, format: 'tiff', lossless: true });
+      const fullUrl = downloads[0]?.url ?? thumbUrl;
 
       const artist =
         (d.creators?.[0] !== undefined ? str(d.creators[0].description) : '') || '';
@@ -258,8 +322,12 @@ async function fetchCleveland(q: string): Promise<ArtItem[]> {
         title: str(d.title) || 'Untitled',
         artist,
         dimensions,
-        thumbUrl: imageUrl,
-        fullUrl: imageUrl,
+        thumbUrl,
+        previewUrl,
+        fullUrl,
+        format: 'jpeg',
+        lossless: downloads.some((dl) => dl.lossless),
+        downloads,
         source: 'cleveland',
         isPublicDomain: str(d.share_license_status).toUpperCase() === 'CC0',
       });
@@ -281,7 +349,7 @@ async function fetchCommons(q: string): Promise<ArtItem[]> {
     const url =
       `https://commons.wikimedia.org/w/api.php?action=query&format=json` +
       `&generator=search&gsrsearch=${encodeURIComponent(q)}&gsrnamespace=6&gsrlimit=15` +
-      `&prop=imageinfo&iiprop=url%7Csize%7Cmime&iiurlwidth=843`;
+      `&prop=imageinfo&iiprop=url%7Csize%7Cmime&iiurlwidth=1024`;
 
     const res = await timedFetch(url, controller.signal);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -302,19 +370,31 @@ async function fetchCommons(q: string): Promise<ArtItem[]> {
     for (const p of Object.values(json.query?.pages ?? {})) {
       const ii = p.imageinfo?.[0];
       if (!ii) continue;
-      if (!/^image\/(jpeg|png|tiff|webp)/.test(str(ii.mime))) continue;
+      const mime = str(ii.mime);
+      if (!/^image\/(jpeg|png|tiff|webp)/.test(mime)) continue;
       const full = str(ii.url);
       if (!full) continue;
       const w = Number(ii.width) || 0;
       const h = Number(ii.height) || 0;
       const title = str(p.title).replace(/^File:/, '').replace(/\.[A-Za-z0-9]+$/, '');
+      // The rendered thumbnail (`thumburl`) is always a browser-renderable JPEG/PNG
+      // even when the original is a TIFF, so it's safe for both the card and lightbox.
+      const rendered = str(ii.thumburl) || full;
+      const format = fmtFromMime(mime);
+      const lossless = LOSSLESS_FORMATS.has(format);
       items.push({
         id: `commons-${title}`,
         title: title || 'Untitled',
         artist: '',
         dimensions: w && h ? `${w} × ${h} px` : '',
-        thumbUrl: str(ii.thumburl) || full,
+        thumbUrl: rendered,
+        previewUrl: rendered,
         fullUrl: full,
+        width: w || undefined,
+        height: h || undefined,
+        format,
+        lossless,
+        downloads: [{ label: `Original ${format.toUpperCase()}`, url: full, format, lossless }],
         source: 'commons',
         isPublicDomain: true, // Commons hosts freely-licensed / PD media
       });
@@ -352,13 +432,21 @@ async function fetchWikiArt(q: string): Promise<ArtItem[]> {
       const year = d.completitionYear ? ` (${str(d.completitionYear)})` : '';
       const w = Number(d.width) || 0;
       const h = Number(d.height) || 0;
+      const original = image.replace(/!.*$/, ''); // strip variant suffix → original
+      const format = fmtFromUrl(original);
       items.push({
         id: `wikiart-${str(d.id)}`,
         title: (str(d.title) || 'Untitled') + year,
         artist: str(d.artistName),
         dimensions: w && h ? `${w} × ${h} px` : '',
         thumbUrl: image, // the "!Large.jpg" variant
-        fullUrl: image.replace(/!.*$/, ''), // strip variant suffix → original
+        previewUrl: image,
+        fullUrl: original,
+        width: w || undefined,
+        height: h || undefined,
+        format,
+        lossless: LOSSLESS_FORMATS.has(format),
+        downloads: [{ label: `Original ${format.toUpperCase()}`, url: original, format, lossless: LOSSLESS_FORMATS.has(format) }],
         source: 'wikiart',
         isPublicDomain: false, // WikiArt is mixed-rights; badge a rights caution
       });

@@ -11,32 +11,42 @@
  *   - SSRF guard via _guard.ts (private IP / bad scheme / bad port rejection)
  *   - Redirect following with per-hop SSRF re-validation (max 3 hops)
  *   - REQUIRES response Content-Type to start with "image/"
- *   - Body capped at ~25 MB
- *   - 10 second total fetch timeout
+ *   - Body streamed (not buffered) with an 80 MB DoS cap — large enough for
+ *     lossless TIFF originals (e.g. Cleveland's ~50 MB full-res scans)
+ *   - 20 second total fetch timeout
  *   - Rate limiting: shared 30 req/min/IP with scan.ts (in-memory, best-effort)
  */
 
 import type { VercelRequest, VercelResponse } from './_vercel.js';
 import { fetch } from 'undici';
+import type { Response as UndiciResponse } from 'undici';
 import { GuardError, guardUrl, pinnedAgent, rateLimit, clientIp } from './_guard.js';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const UA =
   'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
-const MAX_BYTES = 25 * 1024 * 1024; // 25 MB
-const TIMEOUT_MS = 10_000;
+const MAX_BYTES = 80 * 1024 * 1024; // 80 MB — fits lossless TIFF originals
+const TIMEOUT_MS = 20_000;
 const MAX_REDIRECTS = 3;
 
-// ─── Fetch with redirect guard ────────────────────────────────────────────────
+// The underlying Vercel response IS a Node ServerResponse; our minimal
+// VercelResponse type omits the streaming methods, so we narrow to them here.
+interface NodeWritable {
+  write(chunk: Uint8Array, cb?: (err?: Error | null) => void): boolean;
+  end(cb?: () => void): void;
+  once(event: 'drain', cb: () => void): void;
+  destroy(err?: Error): void;
+}
+
+// ─── Fetch with redirect guard (returns the un-read upstream response) ─────────
 
 async function safeFetchImage(
   startUrl: string,
+  controller: AbortController,
   referer?: string,
-): Promise<{ data: Uint8Array; contentType: string }> {
+): Promise<{ upstream: UndiciResponse; contentType: string; contentLength?: number }> {
   let currentUrl = startUrl;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
 
   const headers: Record<string, string> = {
     'User-Agent': UA,
@@ -46,66 +56,71 @@ async function safeFetchImage(
     headers['Referer'] = referer;
   }
 
-  try {
-    for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
-      // Re-validate on each hop (prevents open-redirect SSRF) and pin the
-      // connection to the validated IP (closes DNS-rebinding TOCTOU).
-      const { url, ip, family } = await guardUrl(currentUrl);
+  for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
+    // Re-validate on each hop (prevents open-redirect SSRF) and pin the
+    // connection to the validated IP (closes DNS-rebinding TOCTOU).
+    const { url, ip, family } = await guardUrl(currentUrl);
 
-      const res = await fetch(url, {
-        dispatcher: pinnedAgent(ip, family),
-        redirect: 'manual',
-        signal: controller.signal,
-        headers,
-      });
+    const res = await fetch(url, {
+      dispatcher: pinnedAgent(ip, family),
+      redirect: 'manual',
+      signal: controller.signal,
+      headers,
+    });
 
-      // Follow redirects manually so we can guard each hop
-      if (res.status >= 300 && res.status < 400) {
-        const location = res.headers.get('location');
-        if (!location) throw new GuardError(502, 'Redirect with no Location header');
-        if (hop === MAX_REDIRECTS) throw new GuardError(502, 'Too many redirects');
-        currentUrl = new URL(location, currentUrl).toString();
-        continue;
-      }
-
-      if (!res.ok) {
-        throw new GuardError(502, `Upstream returned ${res.status}`);
-      }
-
-      const ct = (res.headers.get('content-type') ?? '').split(';')[0].trim().toLowerCase();
-      if (!ct.startsWith('image/')) {
-        throw new GuardError(415, 'URL did not return an image — only image/* responses are proxied');
-      }
-
-      // Stream body with size cap
-      const reader = res.body?.getReader();
-      if (!reader) throw new GuardError(502, 'Empty response body');
-      const chunks: Uint8Array[] = [];
-      let total = 0;
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        total += value.byteLength;
-        if (total > MAX_BYTES) {
-          reader.cancel();
-          throw new GuardError(413, 'Image exceeds 25 MB limit');
-        }
-        chunks.push(value);
-      }
-
-      const combined = new Uint8Array(total);
-      let offset = 0;
-      for (const chunk of chunks) {
-        combined.set(chunk, offset);
-        offset += chunk.byteLength;
-      }
-
-      return { data: combined, contentType: ct };
+    // Follow redirects manually so we can guard each hop
+    if (res.status >= 300 && res.status < 400) {
+      const location = res.headers.get('location');
+      if (!location) throw new GuardError(502, 'Redirect with no Location header');
+      if (hop === MAX_REDIRECTS) throw new GuardError(502, 'Too many redirects');
+      await res.body?.cancel();
+      currentUrl = new URL(location, currentUrl).toString();
+      continue;
     }
-    throw new GuardError(502, 'Too many redirects');
-  } finally {
-    clearTimeout(timer);
+
+    if (!res.ok) {
+      await res.body?.cancel();
+      throw new GuardError(502, `Upstream returned ${res.status}`);
+    }
+
+    const ct = (res.headers.get('content-type') ?? '').split(';')[0].trim().toLowerCase();
+    if (!ct.startsWith('image/')) {
+      await res.body?.cancel();
+      throw new GuardError(415, 'URL did not return an image — only image/* responses are proxied');
+    }
+
+    const lenHeader = Number(res.headers.get('content-length'));
+    const contentLength = Number.isFinite(lenHeader) && lenHeader > 0 ? lenHeader : undefined;
+    if (contentLength && contentLength > MAX_BYTES) {
+      await res.body?.cancel();
+      throw new GuardError(413, 'Image exceeds 80 MB limit');
+    }
+
+    return { upstream: res, contentType: ct, contentLength };
   }
+  throw new GuardError(502, 'Too many redirects');
+}
+
+// Stream the upstream body to the Node response, enforcing the byte cap as we go
+// so a lying/absent Content-Length can't blow past MAX_BYTES.
+async function streamToResponse(upstream: UndiciResponse, out: NodeWritable): Promise<void> {
+  const reader = upstream.body?.getReader();
+  if (!reader) throw new GuardError(502, 'Empty response body');
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > MAX_BYTES) {
+      await reader.cancel();
+      out.destroy(new Error('size cap exceeded'));
+      throw new GuardError(413, 'Image exceeds 80 MB limit');
+    }
+    // Respect backpressure so we never buffer the whole file in memory.
+    const ok = out.write(value);
+    if (!ok) await new Promise<void>((resolve) => out.once('drain', resolve));
+  }
+  await new Promise<void>((resolve) => out.end(resolve));
 }
 
 // ─── Filename derivation ──────────────────────────────────────────────────────
@@ -196,29 +211,43 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
   }
 
-  try {
-    const { data, contentType } = await safeFetchImage(rawUrl, safeReferer);
-    const filename = deriveFilename(rawUrl, contentType);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
 
-    res.setHeader('Content-Type', contentType);
-    res.setHeader(
-      'Content-Disposition',
-      `attachment; filename="${filename.replace(/"/g, '_')}"`,
-    );
-    res.setHeader('Content-Length', data.byteLength);
-    res.setHeader('Cache-Control', 'public, s-maxage=86400, stale-while-revalidate=604800');
-    return res.status(200).send(Buffer.from(data));
+  // ── Phase 1: connect + validate (errors here can still send a clean JSON body)
+  let connected: { upstream: UndiciResponse; contentType: string; contentLength?: number };
+  try {
+    connected = await safeFetchImage(rawUrl, controller, safeReferer);
   } catch (e) {
+    clearTimeout(timer);
     if (e instanceof GuardError) {
       res.setHeader('Cache-Control', 'no-store');
       return res.status(e.status).json({ error: e.message });
     }
     if (e instanceof Error && e.name === 'AbortError') {
       res.setHeader('Cache-Control', 'no-store');
-      return res.status(502).json({ error: 'Image fetch timed out (10s)' });
+      return res.status(502).json({ error: 'Image fetch timed out (20s)' });
     }
     console.error('[fetch] unexpected error', e);
     res.setHeader('Cache-Control', 'no-store');
     return res.status(502).json({ error: 'Failed to fetch image' });
+  }
+
+  // ── Phase 2: commit headers + stream (headers are sent — on error we can only
+  //    destroy the socket, not send a JSON error).
+  const { upstream, contentType, contentLength } = connected;
+  const filename = deriveFilename(rawUrl, contentType);
+  res.setHeader('Content-Type', contentType);
+  res.setHeader('Content-Disposition', `attachment; filename="${filename.replace(/"/g, '_')}"`);
+  if (contentLength) res.setHeader('Content-Length', contentLength);
+  res.setHeader('Cache-Control', 'public, s-maxage=86400, stale-while-revalidate=604800');
+  res.status(200);
+  try {
+    await streamToResponse(upstream, res as unknown as NodeWritable);
+  } catch (e) {
+    console.error('[fetch] stream aborted', e);
+    (res as unknown as NodeWritable).destroy();
+  } finally {
+    clearTimeout(timer);
   }
 }
