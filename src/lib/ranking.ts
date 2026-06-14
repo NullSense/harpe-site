@@ -36,6 +36,27 @@ export function stripHtml(s: string): string {
     .trim();
 }
 
+// ─── Faceted-filter helpers (medium / date) ────────────────────────────────────
+
+export type MediumCat = 'painting' | 'print' | 'photo' | 'drawing' | 'sculpture' | 'textile' | 'other';
+
+export function mediumCategory(medium = ''): MediumCat {
+  const m = medium.toLowerCase();
+  if (/\b(oil|tempera|acrylic|gouache|fresco|watercolou?r|painting|canvas|panel)\b/.test(m)) return 'painting';
+  if (/\b(photograph|photo|gelatin silver|albumen|daguerreotype|negative|transparency|collotype)\b/.test(m)) return 'photo';
+  if (/\b(lithograph|etching|engraving|woodcut|mezzotint|screen ?print|serigraph|aquatint|woodblock|\bprint\b|poster)\b/.test(m)) return 'print';
+  if (/\b(drawing|chalk|charcoal|graphite|pencil|pen and ink|\bink\b|pastel|sketch|crayon)\b/.test(m)) return 'drawing';
+  if (/\b(sculpt|bronze|marble|plaster|terracotta|statue|relief|carv|cast)\b/.test(m)) return 'sculpture';
+  if (/\b(textile|tapestry|embroidery|silk|cotton|\bwool\b|woven|weav|garment|costume|lace)\b/.test(m)) return 'textile';
+  return 'other';
+}
+
+/** First 3–4 digit year in a free-text date ("ca. 1665" → 1665, "-630" → -630). */
+export function yearOf(date = ''): number | null {
+  const m = /(-?\d{3,4})/.exec(date);
+  return m ? parseInt(m[1], 10) : null;
+}
+
 export function qualityScore(item: RankableItem, query = ''): number {
   let s = 0;
   const med = (item.medium || '').toLowerCase();

@@ -353,9 +353,9 @@ async function fetchCleveland(q: string): Promise<ArtItem[]> {
     const items: ArtItem[] = [];
     for (const d of json.data ?? []) {
       const images = (d.images ?? {}) as {
-        web?: { url?: unknown };
-        print?: { url?: unknown };
-        full?: { url?: unknown };
+        web?: { url?: unknown; width?: unknown; height?: unknown };
+        print?: { url?: unknown; width?: unknown; height?: unknown };
+        full?: { url?: unknown; width?: unknown; height?: unknown };
       };
       // Cleveland exposes 3 variants: `web` JPEG (~250KB), `print` JPEG (~3MB),
       // and `full` TIFF (lossless original, tens of MB). Browsers can't render
@@ -379,6 +379,8 @@ async function fetchCleveland(q: string): Promise<ArtItem[]> {
       // Cleveland's `dimensions` field is an OBJECT — do NOT use it.
       // Use `measurements` (a string field) when available; otherwise empty string.
       const dimensions = typeof d.measurements === 'string' ? d.measurements : '';
+      // Pixel size of the largest available variant (TIFF original → print → web).
+      const px = images.full ?? images.print ?? images.web ?? {};
 
       items.push({
         id: `cleveland-${str(d.id)}`,
@@ -388,6 +390,8 @@ async function fetchCleveland(q: string): Promise<ArtItem[]> {
         thumbUrl,
         previewUrl,
         fullUrl,
+        width: Number(px.width) || undefined,
+        height: Number(px.height) || undefined,
         format: 'jpeg',
         lossless: downloads.some((dl) => dl.lossless),
         downloads,
@@ -651,6 +655,8 @@ async function fetchSmk(q: string): Promise<ArtItem[]> {
         artist?: unknown;
         image_thumbnail?: unknown;
         image_iiif_id?: unknown;
+        image_width?: unknown;
+        image_height?: unknown;
         public_domain?: unknown;
       }>;
     };
@@ -671,6 +677,8 @@ async function fetchSmk(q: string): Promise<ArtItem[]> {
         thumbUrl: thumb0 || `${iiif}/full/!843,/0/default.jpg`,
         previewUrl: iiif ? `${iiif}/full/!1600,/0/default.jpg` : thumb0,
         fullUrl: full,
+        width: Number(it.image_width) || undefined,
+        height: Number(it.image_height) || undefined,
         format: 'jpeg',
         lossless: false,
         downloads: [{ label: 'Full JPEG', url: full, format: 'jpeg', lossless: false }],

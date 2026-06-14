@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { stripHtml, qualityScore } from './ranking';
+import { stripHtml, qualityScore, mediumCategory, yearOf } from './ranking';
 
 describe('stripHtml', () => {
   it('removes tags', () => {
@@ -47,5 +47,30 @@ describe('qualityScore', () => {
     const painting = qualityScore(art('oil on canvas', 'aic'), 'starry night');
     const photo = qualityScore(art('photograph', 'digitalnz'), 'starry night');
     expect(painting).toBeGreaterThan(photo);
+  });
+});
+
+describe('mediumCategory', () => {
+  it('classifies common media', () => {
+    expect(mediumCategory('Oil on canvas')).toBe('painting');
+    expect(mediumCategory('gelatin silver print')).toBe('photo');
+    expect(mediumCategory('Lithograph in black')).toBe('print');
+    expect(mediumCategory('charcoal and chalk')).toBe('drawing');
+    expect(mediumCategory('Bronze, cast')).toBe('sculpture');
+    expect(mediumCategory('silk tapestry')).toBe('textile');
+    expect(mediumCategory('teapot, porcelain')).toBe('other');
+    expect(mediumCategory('')).toBe('other');
+  });
+});
+
+describe('yearOf', () => {
+  it('extracts a year from free text', () => {
+    expect(yearOf('1889')).toBe(1889);
+    expect(yearOf('ca. 1665')).toBe(1665);
+    expect(yearOf('1850-70')).toBe(1850);
+    expect(yearOf('c. 1480s')).toBe(1480);
+    expect(yearOf('-630')).toBe(-630);
+    expect(yearOf('8 x 10 in.')).toBeNull();
+    expect(yearOf('')).toBeNull();
   });
 });

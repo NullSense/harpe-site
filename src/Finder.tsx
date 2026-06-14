@@ -17,7 +17,7 @@ import { createPortal } from 'react-dom';
 import DownloadMenu from './components/DownloadMenu';
 import { streamArt } from './lib/useArtStream';
 import { fitsScreen } from './lib/resolutions';
-import { qualityScore, stripHtml } from './lib/ranking';
+import { qualityScore, stripHtml, mediumCategory, yearOf } from './lib/ranking';
 import {
   type DownloadVariant,
   LOSSLESS_FORMATS,
@@ -566,6 +566,10 @@ export default function Finder() {
   const [losslessOnly, setLosslessOnly] = useState(false);
   const [pdOnly, setPdOnly] = useState(false);
   const [sourceFilter, setSourceFilter] = useState<Set<string>>(new Set());
+  const [mediumFilter, setMediumFilter] = useState<Set<string>>(new Set());
+  const [minRes, setMinRes] = useState(0);            // 0 | 1920 | 3840
+  const [yearMin, setYearMin] = useState('');
+  const [yearMax, setYearMax] = useState('');
   const [query, setQuery] = useState('');
   const [streaming, setStreaming] = useState(false);   // SSE search in progress
   const [shown, setShown] = useState(SHOWN_STEP);       // infinite-scroll window
@@ -662,6 +666,7 @@ export default function Finder() {
     streamCancelRef.current?.();         // abort any in-flight stream
     setQuery(q); setArtItems([]); setWarnings([]); setShown(SHOWN_STEP); setStreaming(true);
     setSourceFilter(new Set()); setPdOnly(false); setLosslessOnly(false); setDetailId(null);
+    setMediumFilter(new Set()); setMinRes(0); setYearMin(''); setYearMax('');
     const acc: ArtItem[] = [];
     let gotBatch = false;
     const cancel = streamArt(q, {
@@ -793,8 +798,23 @@ export default function Finder() {
     if (losslessOnly) r = r.filter((i) => i.lossless);
     if (pdOnly) r = r.filter((i) => i.isPublicDomain);
     if (sourceFilter.size) r = r.filter((i) => sourceFilter.has(i.source));
+    if (mediumFilter.size) r = r.filter((i) => mediumFilter.has(mediumCategory(i.medium)));
+    if (minRes) r = r.filter((i) => { const le = Math.max(i.width || 0, i.height || 0); return le === 0 || le >= minRes; });
+    const ymin = yearMin === '' ? null : Number(yearMin);
+    const ymax = yearMax === '' ? null : Number(yearMax);
+    if (ymin != null && !Number.isNaN(ymin)) r = r.filter((i) => { const y = yearOf(i.date); return y == null || y >= ymin; });
+    if (ymax != null && !Number.isNaN(ymax)) r = r.filter((i) => { const y = yearOf(i.date); return y == null || y <= ymax; });
     return r;
-  }, [artItems, losslessOnly, pdOnly, sourceFilter]);
+  }, [artItems, losslessOnly, pdOnly, sourceFilter, mediumFilter, minRes, yearMin, yearMax]);
+  const mediumCounts = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const it of artItems) { const c = mediumCategory(it.medium); m.set(c, (m.get(c) ?? 0) + 1); }
+    const order = ['painting', 'print', 'drawing', 'photo', 'sculpture', 'textile', 'other'];
+    return [...m.entries()].sort((a, b) => order.indexOf(a[0]) - order.indexOf(b[0]));
+  }, [artItems]);
+  const toggleMedium = useCallback((c: string) => {
+    setMediumFilter((prev) => { const n = new Set(prev); n.has(c) ? n.delete(c) : n.add(c); return n; });
+  }, []);
   const losslessCount = useMemo(() => artItems.filter((i) => i.lossless).length, [artItems]);
   const pdCount = useMemo(() => artItems.filter((i) => i.isPublicDomain).length, [artItems]);
   // sources present in the current results, with counts, ordered by SOURCE_ORDER
@@ -1087,7 +1107,9 @@ export default function Finder() {
                 (active
                   ? 'border-bronze/60 bg-bronze/15 text-bronze-bright'
                   : 'border-line text-muted hover:border-bronze/60 hover:text-bronze');
-              const hasFilters = losslessOnly || pdOnly || sourceFilter.size > 0;
+              const hasFilters = losslessOnly || pdOnly || sourceFilter.size > 0 || mediumFilter.size > 0 || minRes > 0 || yearMin !== '' || yearMax !== '';
+              const clearFilters = () => { setLosslessOnly(false); setPdOnly(false); setSourceFilter(new Set()); setMediumFilter(new Set()); setMinRes(0); setYearMin(''); setYearMax(''); };
+              const MED_LABEL: Record<string, string> = { painting: 'Paintings', print: 'Prints', drawing: 'Drawings', photo: 'Photos', sculpture: 'Sculpture', textile: 'Textiles', other: 'Other' };
               return (
                 <>
                   <div className="mb-3 flex flex-wrap items-center justify-center gap-x-3 gap-y-2">
@@ -1106,10 +1128,29 @@ export default function Finder() {
                       ⧉ share
                     </button>
                     {hasFilters && (
-                      <button type="button" onClick={() => { setLosslessOnly(false); setPdOnly(false); setSourceFilter(new Set()); }} className="font-mono text-[.72rem] text-bronze/80 underline-offset-2 hover:text-bronze-bright hover:underline">
+                      <button type="button" onClick={clearFilters} className="font-mono text-[.72rem] text-bronze/80 underline-offset-2 hover:text-bronze-bright hover:underline">
                         clear filters
                       </button>
                     )}
+                  </div>
+
+                  {/* type + resolution + date */}
+                  <div className="mb-2 flex flex-wrap items-center justify-center gap-1.5">
+                    {mediumCounts.filter(([, n]) => n > 0).map(([c, n]) => (
+                      <button key={c} type="button" onClick={() => toggleMedium(c)} aria-pressed={mediumFilter.has(c)} className={chip(mediumFilter.has(c))}>
+                        {MED_LABEL[c] ?? c} <span className="opacity-50">{n}</span>
+                      </button>
+                    ))}
+                  </div>
+                  <div className="mb-5 flex flex-wrap items-center justify-center gap-1.5 font-mono text-[.72rem]">
+                    <span className="text-muted/50">res</span>
+                    {([[0, 'any'], [1920, '≥1080p'], [3840, '≥4K']] as [number, string][]).map(([r, lbl]) => (
+                      <button key={r} type="button" onClick={() => setMinRes(r)} aria-pressed={minRes === r} className={chip(minRes === r)}>{lbl}</button>
+                    ))}
+                    <span className="ml-2 text-muted/50">years</span>
+                    <input type="number" inputMode="numeric" value={yearMin} onChange={(e) => setYearMin(e.target.value)} placeholder="from" className="w-16 rounded-full border border-line bg-transparent px-2 py-1 text-center text-muted outline-none focus:border-bronze/60" />
+                    <span className="text-muted/40">–</span>
+                    <input type="number" inputMode="numeric" value={yearMax} onChange={(e) => setYearMax(e.target.value)} placeholder="to" className="w-16 rounded-full border border-line bg-transparent px-2 py-1 text-center text-muted outline-none focus:border-bronze/60" />
                   </div>
 
                   {sourceCounts.length > 1 && (
@@ -1125,7 +1166,7 @@ export default function Finder() {
                   {visibleArt.length === 0 ? (
                     <p className="text-center font-mono text-[.82rem] text-muted/60">
                       No works match these filters.{' '}
-                      <button type="button" onClick={() => { setLosslessOnly(false); setPdOnly(false); setSourceFilter(new Set()); }} className="text-bronze hover:text-bronze-bright">Clear filters →</button>
+                      <button type="button" onClick={clearFilters} className="text-bronze hover:text-bronze-bright">Clear filters →</button>
                     </p>
                   ) : (
                     <>
