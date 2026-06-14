@@ -11,7 +11,9 @@
  * and every download goes through the same /api/fetch proxy.
  */
 
+import type React from 'react';
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import MediaLightbox from './components/MediaLightbox';
 import DownloadMenu from './components/DownloadMenu';
 import { streamArt } from './lib/useArtStream';
@@ -359,100 +361,179 @@ function SourceBadge({ source }: { source: ArtItem['source'] }) {
   );
 }
 
-function ArtCard({
-  item, onPreview, onAnalyze, onShare, siblings, analyzeEnabled,
-}: {
-  item: ArtItem;
-  onPreview: () => void;
-  onAnalyze: () => void;
-  onShare: () => void;
-  siblings: number;      // how many sources (incl. this) describe the same work
-  analyzeEnabled: boolean;
-}) {
-  // Masonry tile: the image renders at its NATURAL aspect (no crop) inside a
-  // CSS-columns layout. Heavy metadata (description, credit, full chips) lives in
-  // the lightbox/detail; the tile keeps just the essentials + quick actions.
+function ArtCard({ item, onOpen }: { item: ArtItem; onOpen: () => void }) {
+  // SMK-style tile: image-dominant, natural aspect (no crop), minimal label.
+  // The whole tile opens the detail view, where the full-size zoom, every field
+  // of metadata, and all actions (download / analyse / share) live.
   return (
-    <article className="group relative mb-4 break-inside-avoid overflow-hidden rounded-lg bg-[rgba(16,11,8,.45)] ring-1 ring-line/30 transition hover:ring-bronze/50">
-      <button
-        type="button"
-        onClick={onPreview}
-        aria-label={`Preview ${item.title}`}
-        className="relative block w-full cursor-zoom-in bg-[rgba(10,8,6,.8)] outline-none focus-visible:ring-2 focus-visible:ring-bronze/60"
-      >
+    <button
+      type="button"
+      onClick={onOpen}
+      aria-label={`Open ${item.title}`}
+      className="group relative mb-4 block w-full break-inside-avoid overflow-hidden rounded-lg bg-[rgba(16,11,8,.4)] text-left outline-none ring-1 ring-line/25 transition hover:ring-bronze/50 focus-visible:ring-2 focus-visible:ring-bronze/60"
+    >
+      <div className="relative bg-[rgba(10,8,6,.8)]">
         <img
           src={displaySrc(item.thumbUrl)}
           alt={`${item.title}${item.artist ? `, by ${item.artist}` : ''}`}
           loading="lazy"
           decoding="async"
-          className="block h-auto w-full transition-transform duration-500 group-hover:scale-[1.02]"
+          className="block h-auto w-full transition-transform duration-500 group-hover:scale-[1.03]"
           onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }}
         />
         <PreviewBadge />
         {!item.isPublicDomain && (
-          <span className="absolute left-2 top-2 rounded-sm bg-[rgba(10,8,6,.82)] px-1.5 py-0.5 font-mono text-[.62rem] text-muted">
-            © rights may apply
-          </span>
+          <span className="absolute left-2 top-2 rounded-sm bg-[rgba(10,8,6,.82)] px-1.5 py-0.5 font-mono text-[.6rem] text-muted">© rights</span>
         )}
         {item.width && item.height && fitsScreen(item.width, item.height) && (
-          <span
-            title="Big enough for a crisp wallpaper at your screen resolution"
-            className="absolute bottom-2 left-2 rounded-sm bg-[rgba(10,8,6,.82)] px-1.5 py-0.5 font-mono text-[.6rem] text-bronze-bright"
-          >
-            ▣ wallpaper-ready
-          </span>
+          <span title="Big enough for a crisp wallpaper at your screen resolution" className="absolute bottom-2 left-2 rounded-sm bg-[rgba(10,8,6,.82)] px-1.5 py-0.5 font-mono text-[.58rem] text-bronze-bright">▣ wallpaper</span>
         )}
-      </button>
+      </div>
+      <div className="flex items-start justify-between gap-2 px-2.5 py-2">
+        <div className="min-w-0">
+          <h3 className="line-clamp-2 font-display text-[.84rem] font-medium leading-snug text-ink" title={item.title}>{item.title}</h3>
+          {item.artist && <p className="mt-0.5 truncate text-[.74rem] text-muted">{item.artist}</p>}
+        </div>
+        <SourceBadge source={item.source} />
+      </div>
+    </button>
+  );
+}
 
-      {/* hover action overlay (top-right) */}
-      <div className="absolute right-2 top-2 flex gap-1 opacity-0 transition group-hover:opacity-100 focus-within:opacity-100">
-        {analyzeEnabled && (
-          <button
-            type="button"
-            onClick={onAnalyze}
-            title={siblings > 1 ? `Synthesize ${siblings} sources` : 'Deep analysis'}
-            aria-label="Deep analysis"
-            className="rounded-full border border-bronze/50 bg-[rgba(10,8,6,.8)] px-2 py-0.5 font-mono text-[.7rem] text-bronze-bright transition hover:bg-bronze/25"
-          >
-            ✦{siblings > 1 ? ` ${siblings}` : ''}
+// ─── Art detail (combo: full-size zoom + ALL metadata + actions) ───────────────
+
+function ArtDetail({
+  items, index, onClose, onIndex, onAnalyze, onShare, onSearch, analyzeEnabled, similarFor,
+}: {
+  items: ArtItem[];
+  index: number;               // -1 = closed
+  onClose: () => void;
+  onIndex: (i: number) => void;
+  onAnalyze: (it: ArtItem) => void;
+  onShare: (id: string) => void;
+  onSearch: (q: string) => void;
+  analyzeEnabled: boolean;
+  similarFor: (it: ArtItem) => ArtItem[];
+}) {
+  const open = index >= 0 && index < items.length;
+  const [z, setZ] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const drag = useRef<null | { sx: number; sy: number; px: number; py: number }>(null);
+
+  useEffect(() => { setZ(1); setPan({ x: 0, y: 0 }); }, [index]);
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+      else if (e.key === 'ArrowRight' && index < items.length - 1) onIndex(index + 1);
+      else if (e.key === 'ArrowLeft' && index > 0) onIndex(index - 1);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [open, index, items.length, onClose, onIndex]);
+
+  if (!open) return null;
+  const item = items[index];
+  const facts = [item.date, item.medium, item.culture, item.dimensions].filter(Boolean) as string[];
+  const similar = similarFor(item);
+  const onWheel = (e: React.WheelEvent) => {
+    const next = Math.min(6, Math.max(1, z * (e.deltaY < 0 ? 1.15 : 1 / 1.15)));
+    setZ(next);
+    if (next === 1) setPan({ x: 0, y: 0 });
+  };
+
+  return createPortal(
+    <div role="dialog" aria-modal="true" aria-label={item.title} className="fixed inset-0 z-[70] flex flex-col bg-[rgba(8,6,4,.96)] backdrop-blur-sm lg:flex-row">
+      {/* image stage */}
+      <div
+        className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden"
+        onWheel={onWheel}
+        onDoubleClick={() => { setZ((v) => (v > 1 ? 1 : 2.4)); setPan({ x: 0, y: 0 }); }}
+        onPointerDown={(e) => { if (z > 1) { drag.current = { sx: e.clientX, sy: e.clientY, px: pan.x, py: pan.y }; (e.target as HTMLElement).setPointerCapture?.(e.pointerId); } }}
+        onPointerMove={(e) => { if (drag.current) setPan({ x: drag.current.px + (e.clientX - drag.current.sx), y: drag.current.py + (e.clientY - drag.current.sy) }); }}
+        onPointerUp={() => { drag.current = null; }}
+        style={{ cursor: z > 1 ? (drag.current ? 'grabbing' : 'grab') : 'zoom-in' }}
+      >
+        <img
+          src={displaySrc(item.previewUrl || item.fullUrl)}
+          alt={item.title}
+          draggable={false}
+          className="max-h-full max-w-full select-none object-contain transition-transform duration-100"
+          style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${z})` }}
+        />
+        {/* prev / next */}
+        {index > 0 && (
+          <button type="button" onClick={() => onIndex(index - 1)} aria-label="Previous" className="absolute left-3 top-1/2 -translate-y-1/2 rounded-full border border-line bg-[rgba(10,8,6,.7)] px-3 py-2 text-ink/80 transition hover:border-bronze/60 hover:text-bronze-bright">‹</button>
+        )}
+        {index < items.length - 1 && (
+          <button type="button" onClick={() => onIndex(index + 1)} aria-label="Next" className="absolute right-3 top-1/2 -translate-y-1/2 rounded-full border border-line bg-[rgba(10,8,6,.7)] px-3 py-2 text-ink/80 transition hover:border-bronze/60 hover:text-bronze-bright">›</button>
+        )}
+        {/* zoom controls + counter */}
+        <div className="absolute bottom-3 left-3 flex items-center gap-1 font-mono text-[.72rem]">
+          <button type="button" onClick={() => { const n = Math.max(1, z / 1.4); setZ(n); if (n === 1) setPan({ x: 0, y: 0 }); }} className="rounded border border-line bg-[rgba(10,8,6,.7)] px-2 py-1 text-muted hover:text-bronze-bright">−</button>
+          <button type="button" onClick={() => setZ((v) => Math.min(6, v * 1.4))} className="rounded border border-line bg-[rgba(10,8,6,.7)] px-2 py-1 text-muted hover:text-bronze-bright">+</button>
+          <span className="ml-2 rounded bg-[rgba(10,8,6,.7)] px-2 py-1 text-muted/70">{index + 1} / {items.length}</span>
+        </div>
+      </div>
+
+      {/* metadata rail */}
+      <aside className="flex max-h-[42vh] w-full shrink-0 flex-col gap-3 overflow-y-auto border-t border-line bg-[rgba(14,10,7,.92)] p-5 lg:max-h-none lg:w-[380px] lg:border-l lg:border-t-0">
+        <div className="flex items-start justify-between gap-2">
+          <h2 className="font-display text-[1.15rem] font-medium leading-snug text-ink">{item.title}</h2>
+          <button type="button" onClick={onClose} aria-label="Close" className="shrink-0 rounded-md border border-line px-2 py-0.5 font-mono text-muted transition hover:border-bronze/60 hover:text-bronze-bright">✕</button>
+        </div>
+        {item.artist && (
+          <button type="button" onClick={() => onSearch(item.artist)} className="text-left text-[.92rem] text-bronze/90 transition hover:text-bronze-bright" title={`More by ${item.artist}`}>
+            {item.artist}
           </button>
         )}
-        <button
-          type="button"
-          onClick={onShare}
-          title="Copy a shareable link to this work"
-          aria-label="Copy a shareable link to this work"
-          className="rounded-full border border-line bg-[rgba(10,8,6,.8)] px-2 py-0.5 font-mono text-[.7rem] text-muted transition hover:border-bronze/60 hover:text-bronze-bright"
-        >
-          ⧉
-        </button>
-      </div>
-
-      <div className="flex flex-col gap-1 p-2.5">
-        <div className="flex items-start justify-between gap-2">
-          <h3 className="line-clamp-3 flex-1 font-display text-[.86rem] font-medium leading-snug text-ink" title={item.title}>{item.title}</h3>
+        <div className="flex flex-wrap items-center gap-1.5">
           <SourceBadge source={item.source} />
+          <span className={'rounded-sm px-1.5 py-0.5 font-mono text-[.62rem] ' + (item.isPublicDomain ? 'bg-bronze/15 text-bronze' : 'border border-line text-muted')}>
+            {item.isPublicDomain ? 'Public domain' : '© rights may apply'}
+          </span>
+          {item.lossless && <span className="rounded-sm border border-bronze/40 bg-bronze/10 px-1.5 py-0.5 font-mono text-[.62rem] text-bronze-bright">◆ lossless</span>}
         </div>
-        {item.artist && <p className="truncate text-[.78rem] text-muted">{item.artist}</p>}
-        {(item.date || item.medium || item.culture) && (
-          <p className="line-clamp-1 text-[.72rem] text-muted/70">{[item.date, item.medium, item.culture].filter(Boolean).join(' · ')}</p>
+        {facts.length > 0 && (
+          <dl className="space-y-1 text-[.82rem]">
+            {item.date && <div className="flex gap-2"><dt className="w-20 shrink-0 text-muted/60">Date</dt><dd className="text-ink/85">{item.date}</dd></div>}
+            {item.medium && <div className="flex gap-2"><dt className="w-20 shrink-0 text-muted/60">Medium</dt><dd className="text-ink/85">{item.medium}</dd></div>}
+            {item.culture && <div className="flex gap-2"><dt className="w-20 shrink-0 text-muted/60">Origin</dt><dd className="text-ink/85">{item.culture}</dd></div>}
+            {item.dimensions && <div className="flex gap-2"><dt className="w-20 shrink-0 text-muted/60">Size</dt><dd className="text-ink/85">{item.dimensions}</dd></div>}
+          </dl>
         )}
-        <div className="mt-1.5 flex items-center gap-2">
+        {item.description && <p className="text-[.86rem] leading-relaxed text-muted">{item.description}</p>}
+        {item.creditLine && <p className="text-[.76rem] italic leading-snug text-muted/60">{item.creditLine}</p>}
+
+        <div className="flex flex-wrap items-center gap-2 pt-1">
           <DownloadMenu fullUrl={item.fullUrl} title={item.title} artist={item.artist} />
-          {item.sourceUrl && (
-            <a
-              href={item.sourceUrl}
-              target="_blank"
-              rel="noopener"
-              title="View at source"
-              className="font-mono text-[.72rem] text-bronze/80 transition hover:text-bronze-bright"
-            >
-              ↗
-            </a>
+          {analyzeEnabled && (
+            <button type="button" onClick={() => onAnalyze(item)} className="rounded border border-bronze/40 bg-bronze/[.07] px-3 py-1.5 font-mono text-[.74rem] text-bronze-bright transition hover:border-bronze hover:bg-bronze/15">✦ Analyse</button>
           )}
+          <button type="button" onClick={() => onShare(item.id)} title="Copy a shareable link" className="rounded border border-line px-2.5 py-1.5 font-mono text-[.78rem] text-muted transition hover:border-bronze/60 hover:text-bronze-bright">⧉</button>
         </div>
-      </div>
-    </article>
+        {item.sourceUrl && (
+          <a href={item.sourceUrl} target="_blank" rel="noopener" className="font-mono text-[.76rem] text-bronze/80 transition hover:text-bronze-bright">↗ view at source</a>
+        )}
+
+        {similar.length > 0 && (
+          <div className="mt-2 border-t border-line pt-3">
+            <p className="mb-2 font-mono text-[.7rem] uppercase tracking-wider text-muted/60">More like this</p>
+            <div className="grid grid-cols-3 gap-2">
+              {similar.map((s) => {
+                const i = items.indexOf(s);
+                return (
+                  <button key={s.id} type="button" onClick={() => i >= 0 && onIndex(i)} className="overflow-hidden rounded ring-1 ring-line/40 transition hover:ring-bronze/60" title={s.title}>
+                    <img src={displaySrc(s.thumbUrl)} alt={s.title} loading="lazy" className="aspect-square w-full object-cover" />
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+      </aside>
+    </div>,
+    document.body,
   );
 }
 
@@ -484,7 +565,8 @@ export default function Finder() {
   const sentinelRef = useRef<HTMLDivElement>(null);
 
   // shared lightbox (index into the currently-visible list)
-  const [lightboxIndex, setLightboxIndex] = useState(-1);
+  const [lightboxIndex, setLightboxIndex] = useState(-1);   // scan mode viewer
+  const [detailIndex, setDetailIndex] = useState(-1);       // art mode detail view
 
   // reverse-image search (SauceNAO) — scan mode
   const [sauceEnabled, setSauceEnabled] = useState(false);
@@ -544,7 +626,7 @@ export default function Finder() {
     // Plain text → museum search, STREAMED per-source (with /api/art fallback).
     streamCancelRef.current?.();         // abort any in-flight stream
     setQuery(q); setArtItems([]); setWarnings([]); setShown(SHOWN_STEP); setStreaming(true);
-    setSourceFilter(new Set()); setPdOnly(false); setLosslessOnly(false);
+    setSourceFilter(new Set()); setPdOnly(false); setLosslessOnly(false); setDetailIndex(-1);
     const acc: ArtItem[] = [];
     let gotBatch = false;
     const cancel = streamArt(q, {
@@ -682,6 +764,20 @@ export default function Finder() {
     return m;
   }, [artItems]);
 
+  // "More like this" (free, heuristic): same artist first, then title-token
+  // overlap, then same source — from the items already on screen. Embedding-based
+  // similarity comes with the planned semantic feature.
+  const similarFor = useCallback((item: ArtItem): ArtItem[] => {
+    const seen = new Set([item.id]);
+    const out: ArtItem[] = [];
+    const push = (it: ArtItem) => { if (!seen.has(it.id)) { seen.add(it.id); out.push(it); } };
+    if (item.artist) for (const it of visibleArt) if (it.artist === item.artist) push(it);
+    const toks = qTokens(item.title);
+    if (toks.length) for (const it of visibleArt) if (toks.some((t) => it.title.toLowerCase().includes(t))) push(it);
+    for (const it of visibleArt) if (it.source === item.source) push(it);
+    return out.slice(0, 6);
+  }, [visibleArt]);
+
   const analyzeWork = useCallback(async (item: ArtItem) => {
     const group = siblingsByKey.get(workKey(item)) ?? [item];
     setAnalysis({ phase: 'loading', title: item.title });
@@ -797,17 +893,18 @@ export default function Finder() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Once results are in, open the deep-linked slide (works while streaming, too).
+  // Once results are in, open the deep-linked item (works while streaming, too).
+  // Art opens the detail view; scan opens the lightbox.
   useEffect(() => {
     const v = pendingViewRef.current;
     if (!v) return;
-    const idx =
-      mode === 'art'
-        ? visibleArt.findIndex((it) => it.id === v)
-        : mode === 'scan'
-          ? visibleScan.findIndex(([img]) => img.url === v)
-          : -1;
-    if (idx >= 0) { setLightboxIndex(idx); pendingViewRef.current = null; }
+    if (mode === 'art') {
+      const idx = visibleArt.findIndex((it) => it.id === v);
+      if (idx >= 0) { setDetailIndex(idx); pendingViewRef.current = null; }
+    } else if (mode === 'scan') {
+      const idx = visibleScan.findIndex(([img]) => img.url === v);
+      if (idx >= 0) { setLightboxIndex(idx); pendingViewRef.current = null; }
+    }
   }, [mode, visibleArt, visibleScan]);
 
   // Keep the address bar in sync (replaceState → no history spam during streaming).
@@ -816,12 +913,13 @@ export default function Finder() {
     const term = mode === 'scan' ? pageUrl : query;
     if (!term) return;
     const params = new URLSearchParams({ q: term });
-    if (lightboxIndex >= 0) {
-      const id = slideShareId(lightboxIndex);
+    const openIdx = mode === 'art' ? detailIndex : lightboxIndex;
+    if (openIdx >= 0) {
+      const id = slideShareId(openIdx);
       if (id) params.set('v', id);
     }
     window.history.replaceState(null, '', `${window.location.pathname}?${params.toString()}`);
-  }, [mode, query, pageUrl, lightboxIndex, slideShareId]);
+  }, [mode, query, pageUrl, lightboxIndex, detailIndex, slideShareId]);
 
   // Infinite scroll: reveal more cards as the sentinel nears the viewport.
   useEffect(() => {
@@ -974,9 +1072,9 @@ export default function Finder() {
           </div>
         )}
 
-        {/* ART results */}
+        {/* ART results — break out of the page's narrow column to a full-width wall */}
         {mode === 'art' && (
-          <div aria-live="polite">
+          <div aria-live="polite" className="relative left-1/2 right-1/2 -ml-[50vw] -mr-[50vw] w-screen max-w-[100vw] overflow-x-clip px-4 sm:px-6 lg:px-10">
             {warnings.length > 0 && (
               <p className="mb-4 text-center font-mono text-[.75rem] text-amber/80">
                 Partial results — some sources failed: {warnings.join(' · ')}
@@ -1030,16 +1128,12 @@ export default function Finder() {
                     </p>
                   ) : (
                     <>
-                      <div className="columns-2 gap-4 md:columns-3 lg:columns-4 xl:columns-5">
+                      <div className="columns-2 gap-4 sm:columns-3 lg:columns-4 2xl:columns-5">
                         {visibleArt.slice(0, shown).map((item, i) => (
                           <ArtCard
                             key={item.id}
                             item={item}
-                            onPreview={() => setLightboxIndex(i)}
-                            onAnalyze={() => analyzeWork(item)}
-                            onShare={() => copyShare(item.id)}
-                            siblings={siblingsByKey.get(workKey(item))?.length ?? 1}
-                            analyzeEnabled={analyzeEnabled}
+                            onOpen={() => setDetailIndex(i)}
                           />
                         ))}
                       </div>
@@ -1060,8 +1154,21 @@ export default function Finder() {
         )}
       </div>
 
-      {/* the one viewer, shared by both result kinds */}
+      {/* scan viewer (URL-grab mode) */}
       <MediaLightbox slides={slides} index={lightboxIndex} onClose={() => setLightboxIndex(-1)} />
+
+      {/* art detail: full-size zoom + all metadata + actions + more-like-this */}
+      <ArtDetail
+        items={visibleArt}
+        index={detailIndex}
+        onClose={() => setDetailIndex(-1)}
+        onIndex={setDetailIndex}
+        onAnalyze={analyzeWork}
+        onShare={copyShare}
+        onSearch={(qq) => { setInput(qq); setDetailIndex(-1); run(qq); }}
+        analyzeEnabled={analyzeEnabled}
+        similarFor={similarFor}
+      />
 
       {/* share-link toast */}
       {shareMsg && (
