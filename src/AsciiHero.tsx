@@ -12,6 +12,12 @@ import { useEffect, useRef } from 'react';
  * per-image contrast stretch so the figure is legible. Respects reduced-motion.
  */
 const RAMP = ' .:-=+*#%@';
+// Crop the source statue before ASCII-ifying: trim the lower portion (Perseus's
+// legs/plinth) so the figure sits closer and reads larger/more intensely. Tune
+// CROP_BOTTOM upward to zoom in more; CROP_TOP/SIDE trim the other edges.
+const CROP_TOP = 0.02;
+const CROP_BOTTOM = 0.34;   // drop the bottom third — the legs
+const CROP_SIDE = 0.06;     // shave the empty margins so the torso fills more width
 const FONT_PX = 12;
 const CELL_H = 10;          // < FONT_PX so rows overlap into a dense field (no scanlines)
 const CELL_W = 7;
@@ -63,16 +69,22 @@ export default function AsciiHero() {
       cols = Math.ceil(w / CELL_W);
       rows = Math.ceil(h / CELL_H);
 
-      // contain-fit the whole figure, centered (Prometheus puts the subject behind
-      // the content, sides empty) — NOT cover, which would zoom/crop into the torso.
+      // contain-fit the figure, centered (subject behind the content, sides empty)
+      // — but first crop the source to the upper figure (drop the legs/plinth and
+      // shave the side margins) so it reads closer and more intensely than a full
+      // contain of the whole statue would.
       const off = document.createElement('canvas');
       off.width = cols; off.height = rows;
       const octx = off.getContext('2d')!;
       octx.fillStyle = '#000'; octx.fillRect(0, 0, cols, rows);
-      const ir = img.width / img.height, gr = cols / rows;
+      const sx = img.width * CROP_SIDE;
+      const sy = img.height * CROP_TOP;
+      const sw = img.width * (1 - CROP_SIDE * 2);
+      const sh = img.height * (1 - CROP_TOP - CROP_BOTTOM);
+      const ir = sw / sh, gr = cols / rows;
       let dw = cols, dh = rows;
       if (ir > gr) { dh = cols / ir; } else { dw = rows * ir; }
-      octx.drawImage(img, (cols - dw) / 2, (rows - dh) / 2, dw, dh);
+      octx.drawImage(img, sx, sy, sw, sh, (cols - dw) / 2, (rows - dh) / 2, dw, dh);
       const data = octx.getImageData(0, 0, cols, rows).data;
 
       const lum = new Float32Array(cols * rows);
