@@ -51,6 +51,19 @@ interface ArtItem {
   downloads: DownloadVariant[];
   source: 'aic' | 'met' | 'cleveland' | 'commons' | 'wikiart' | 'vam' | 'wellcome' | 'smk' | 'nasjonalmuseet' | 'digitalnz' | 'wikidata' | 'europeana' | 'harvard' | 'si' | 'parismusees' | 'iiif';
   isPublicDomain: boolean;
+  date?: string;
+  medium?: string;
+  culture?: string;
+  creditLine?: string;
+  description?: string;
+  sourceUrl?: string;
+}
+
+// Normalize a (title, artist) into a key for grouping the same work across sources.
+function workKey(it: { title: string; artist: string }): string {
+  const t = it.title.toLowerCase().replace(/\s*\([^)]*\)\s*$/, '').replace(/[^a-z0-9]+/g, ' ').trim();
+  const a = it.artist.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  return `${t}|${a}`;
 }
 
 type Mode = 'idle' | 'loading' | 'scan' | 'art' | 'empty' | 'error';
@@ -142,6 +155,12 @@ function normalizeArt(raw: unknown): ArtItem {
     downloads: downloads.length ? downloads : [{ label: 'Download', url: fullUrl, format: fmt, lossless: false }],
     source: (d.source as ArtItem['source']) || 'aic',
     isPublicDomain: Boolean(d.isPublicDomain),
+    date: typeof d.date === 'string' && d.date ? d.date : undefined,
+    medium: typeof d.medium === 'string' && d.medium ? d.medium : undefined,
+    culture: typeof d.culture === 'string' && d.culture ? d.culture : undefined,
+    creditLine: typeof d.creditLine === 'string' && d.creditLine ? d.creditLine : undefined,
+    description: typeof d.description === 'string' && d.description ? d.description : undefined,
+    sourceUrl: typeof d.sourceUrl === 'string' && d.sourceUrl ? d.sourceUrl : undefined,
   };
 }
 
@@ -307,7 +326,15 @@ function MetaChips({ item }: { item: ArtItem }) {
   );
 }
 
-function ArtCard({ item, onPreview }: { item: ArtItem; onPreview: () => void }) {
+function ArtCard({
+  item, onPreview, onAnalyze, siblings, analyzeEnabled,
+}: {
+  item: ArtItem;
+  onPreview: () => void;
+  onAnalyze: () => void;
+  siblings: number;      // how many sources (incl. this) describe the same work
+  analyzeEnabled: boolean;
+}) {
   const [dl, setDl] = useState<'idle' | 'fetching' | 'done' | 'error'>('idle');
   const [activeLabel, setActiveLabel] = useState('');
 
@@ -359,9 +386,35 @@ function ArtCard({ item, onPreview }: { item: ArtItem; onPreview: () => void }) 
           <SourceBadge source={item.source} />
         </div>
         {item.artist && <p className="text-[.82rem] text-muted">{item.artist}</p>}
+        {(item.date || item.medium) && (
+          <p className="text-[.74rem] text-muted/80">{[item.date, item.medium].filter(Boolean).join(' · ')}</p>
+        )}
         {item.dimensions && <p className="font-mono text-[.72rem] text-muted/70">{item.dimensions}</p>}
+        {item.description && (
+          <p className="line-clamp-3 text-[.76rem] leading-snug text-muted/75">{item.description}</p>
+        )}
+        {item.sourceUrl && (
+          <a
+            href={item.sourceUrl}
+            target="_blank"
+            rel="noopener"
+            className="font-mono text-[.7rem] text-bronze/80 transition hover:text-bronze-bright"
+          >
+            ↗ view at source
+          </a>
+        )}
 
         <div className="mt-0.5"><MetaChips item={item} /></div>
+
+        {analyzeEnabled && (
+          <button
+            type="button"
+            onClick={onAnalyze}
+            className="flex items-center justify-center gap-1.5 rounded-md border border-bronze/40 bg-bronze/[.07] px-3 py-1.5 font-mono text-[.72rem] text-bronze-bright transition hover:border-bronze hover:bg-bronze/15"
+          >
+            ✦ {siblings > 1 ? `Synthesize ${siblings} sources` : 'Deep analysis'}
+          </button>
+        )}
 
         <div className="mt-auto flex flex-col gap-1.5 pt-2">
           {downloads.map((v, i) => {
@@ -423,6 +476,13 @@ export default function Finder() {
   // shared lightbox (index into the currently-visible list)
   const [lightboxIndex, setLightboxIndex] = useState(-1);
 
+  // cross-source synthesis ("mega-analysis")
+  const [analyzeEnabled, setAnalyzeEnabled] = useState(false);
+  const [analysis, setAnalysis] = useState<
+    | null
+    | { phase: 'loading' | 'done' | 'error'; title: string; text?: string; contributors?: string[]; cached?: boolean; message?: string }
+  >(null);
+
   const inputId = useId();
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -467,10 +527,11 @@ export default function Finder() {
     setQuery(q);
     try {
       const res = await fetch(`/api/art?q=${encodeURIComponent(q)}`);
-      const json: { items?: unknown[]; warnings?: string[]; error?: string } = await res.json();
+      const json: { items?: unknown[]; warnings?: string[]; error?: string; analyzeEnabled?: boolean } = await res.json();
       if (!res.ok) { setError(json.error ?? `Server error ${res.status}`); setMode('error'); return; }
       const w: string[] = Array.isArray(json.warnings) ? json.warnings : [];
       const items = (json.items ?? []).map(normalizeArt);
+      setAnalyzeEnabled(Boolean(json.analyzeEnabled));
       setWarnings(w);
       if (items.length === 0) { setMode('empty'); return; }
       setArtItems(items);
@@ -538,6 +599,43 @@ export default function Finder() {
   );
   const losslessCount = useMemo(() => artItems.filter((i) => i.lossless).length, [artItems]);
 
+  // group items that describe the same work (across sources) for synthesis
+  const siblingsByKey = useMemo(() => {
+    const m = new Map<string, ArtItem[]>();
+    for (const it of artItems) {
+      const k = workKey(it);
+      (m.get(k) ?? m.set(k, []).get(k)!).push(it);
+    }
+    return m;
+  }, [artItems]);
+
+  const analyzeWork = useCallback(async (item: ArtItem) => {
+    const group = siblingsByKey.get(workKey(item)) ?? [item];
+    setAnalysis({ phase: 'loading', title: item.title });
+    try {
+      const res = await fetch('/api/analyze', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          title: item.title.replace(/\s*\([^)]*\)\s*$/, ''),
+          artist: item.artist,
+          items: group.map((g) => ({
+            source: g.source, date: g.date, medium: g.medium, culture: g.culture,
+            creditLine: g.creditLine, description: g.description, sourceUrl: g.sourceUrl,
+          })),
+        }),
+      });
+      const json = await res.json();
+      if (!res.ok) {
+        setAnalysis({ phase: 'error', title: item.title, message: json.error ?? `Error ${res.status}` });
+        return;
+      }
+      setAnalysis({ phase: 'done', title: item.title, text: json.analysis, contributors: json.contributors, cached: json.cached });
+    } catch (e) {
+      setAnalysis({ phase: 'error', title: item.title, message: e instanceof Error ? e.message : 'Network error' });
+    }
+  }, [siblingsByKey]);
+
   // ── lightbox slides (built from whichever list is showing) ──
   const slides: LightboxSlide[] = useMemo(() => {
     if (mode === 'scan') {
@@ -551,10 +649,11 @@ export default function Finder() {
     if (mode === 'art') {
       return visibleArt.map((it) => {
         const best = it.downloads[0] ?? { url: it.fullUrl, format: it.format, label: 'Download' };
+        const facts = [it.artist, it.date, it.medium, it.culture].filter(Boolean).join(' · ');
         return {
           src: it.previewUrl || it.fullUrl,
           title: it.title,
-          description: [it.artist, it.dimensions].filter(Boolean).join(' · '),
+          description: [facts, it.description].filter(Boolean).join('\n\n'),
           downloadUrl: proxyUrl(best.url),
           downloadFilename: safeName(it.title, it.artist, extFor(best.format)),
         };
@@ -737,7 +836,14 @@ export default function Finder() {
             ) : (
               <div className="grid grid-cols-[repeat(auto-fill,minmax(210px,1fr))] gap-4">
                 {visibleArt.map((item, i) => (
-                  <ArtCard key={item.id} item={item} onPreview={() => setLightboxIndex(i)} />
+                  <ArtCard
+                    key={item.id}
+                    item={item}
+                    onPreview={() => setLightboxIndex(i)}
+                    onAnalyze={() => analyzeWork(item)}
+                    siblings={siblingsByKey.get(workKey(item))?.length ?? 1}
+                    analyzeEnabled={analyzeEnabled}
+                  />
                 ))}
               </div>
             )}
@@ -752,6 +858,53 @@ export default function Finder() {
 
       {/* the one viewer, shared by both result kinds */}
       <MediaLightbox slides={slides} index={lightboxIndex} onClose={() => setLightboxIndex(-1)} />
+
+      {/* cross-source synthesis modal */}
+      {analysis && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Synthesized analysis"
+          onClick={() => setAnalysis(null)}
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-[rgba(8,6,4,.8)] p-4 backdrop-blur-sm"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="max-h-[85vh] w-[min(620px,100%)] overflow-y-auto rounded-xl border border-bronze/40 bg-[rgba(16,11,8,.97)] p-6 shadow-[0_30px_80px_-30px_rgba(0,0,0,.8)]"
+          >
+            <div className="mb-3 flex items-start justify-between gap-3">
+              <div>
+                <span className="block font-mono text-[.7rem] tracking-[0.12em] text-bronze">✦ SYNTHESIZED ACROSS SOURCES</span>
+                <h3 className="mt-1 font-display text-[1.1rem] font-medium text-ink">{analysis.title}</h3>
+              </div>
+              <button
+                onClick={() => setAnalysis(null)}
+                aria-label="Close"
+                className="rounded-md border border-line px-2 py-0.5 font-mono text-muted transition hover:border-bronze/60 hover:text-bronze-bright"
+              >✕</button>
+            </div>
+
+            {analysis.phase === 'loading' && (
+              <p className="flex items-center gap-2 py-6 font-mono text-[.85rem] text-muted"><Spinner /> Merging sources &amp; synthesizing…</p>
+            )}
+            {analysis.phase === 'error' && (
+              <p className="py-4 text-[.88rem] text-amber/90">{analysis.message}</p>
+            )}
+            {analysis.phase === 'done' && (
+              <>
+                <p className="whitespace-pre-wrap text-[.9rem] leading-relaxed text-ink/90">{analysis.text}</p>
+                {analysis.contributors && analysis.contributors.length > 0 && (
+                  <p className="mt-4 border-t border-line pt-3 font-mono text-[.7rem] text-muted/70">
+                    Synthesized from: {analysis.contributors.join(' · ')}
+                    {analysis.cached ? ' · cached' : ''}
+                  </p>
+                )}
+                <p className="mt-2 font-mono text-[.66rem] text-muted/50">AI-generated from the sources' metadata — may contain errors.</p>
+              </>
+            )}
+          </div>
+        </div>
+      )}
     </section>
   );
 }

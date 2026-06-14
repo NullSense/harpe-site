@@ -52,4 +52,18 @@ The art search runs 7 keyless museum sources out of the box (AIC, The Met, Cleve
 | Smithsonian (Open Access, CC0) | `SMITHSONIAN_API_KEY` | https://api.data.gov/signup |
 | Paris Musées (14 Paris museums) | `PARIS_MUSEES_TOKEN` | https://apicollections.parismusees.paris.fr/en/user/register → My Account → Auth Tokens |
 
-Add each in the Vercel dashboard (**Settings → Environment Variables**) or via `vercel env add <NAME> production`, then redeploy. Because `/api/art` is public, your key is consumed indirectly by site visitors — but the per-IP rate limit + 1-hour edge cache keep usage low, and if a key's quota is exhausted that one source just degrades to a warning (nothing breaks).
+Add each in the Vercel dashboard (**Settings → Environment Variables**) or via `vercel env add <NAME> production`, then redeploy.
+
+## Cross-source AI synthesis (the "deep analysis")
+
+`POST /api/analyze` merges every source's metadata + descriptions for one artwork
+and asks an LLM to synthesize a single account. **Dormant until you set a key:**
+
+| Env var | Purpose |
+|---|---|
+| `ANTHROPIC_API_KEY` | enables the "✦ Synthesize" button (server-only; never sent to the browser) |
+| `HARPE_ANALYZE_MODEL` | optional model override (default `claude-haiku-4-5-20251001`) |
+
+Without the key, the button is hidden and `/api/analyze` returns 501. Results are
+cached in Upstash (30 days) keyed by artwork, so each work is synthesized once.
+The endpoint is rate-limited per IP and capped at 12 source records per request. Because `/api/art` is public, your key is consumed indirectly by site visitors — but the per-IP rate limit + 1-hour edge cache keep usage low, and if a key's quota is exhausted that one source just degrades to a warning (nothing breaks).

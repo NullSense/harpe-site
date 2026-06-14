@@ -65,6 +65,13 @@ interface ArtItem {
   downloads: Download[];
   source: 'aic' | 'met' | 'cleveland' | 'commons' | 'wikiart' | 'vam' | 'wellcome' | 'smk' | 'nasjonalmuseet' | 'digitalnz' | 'wikidata' | 'europeana' | 'harvard' | 'si' | 'parismusees';
   isPublicDomain: boolean;
+  // ── Enrichment (optional; the union "mega-model" beyond the basics above) ──
+  date?: string;        // display date, e.g. "1642" / "ca. 1665"
+  medium?: string;      // materials/technique, e.g. "Oil on canvas"
+  culture?: string;     // culture / place of origin
+  creditLine?: string;  // acquisition / credit line
+  description?: string; // prose description / curatorial note (source-provided)
+  sourceUrl?: string;   // canonical page for this work at the source
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -135,7 +142,7 @@ async function fetchAic(q: string): Promise<ArtItem[]> {
   try {
     const url =
       `https://api.artic.edu/api/v1/artworks/search` +
-      `?q=${encodeURIComponent(q)}&fields=id,title,artist_title,image_id,is_public_domain,dimensions&limit=12`;
+      `?q=${encodeURIComponent(q)}&fields=id,title,artist_title,image_id,is_public_domain,dimensions,date_display,medium_display,description,place_of_origin,credit_line&limit=12`;
 
     const res = await timedFetch(url, controller.signal);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -148,6 +155,11 @@ async function fetchAic(q: string): Promise<ArtItem[]> {
         image_id?: unknown;
         is_public_domain?: unknown;
         dimensions?: unknown;
+        date_display?: unknown;
+        medium_display?: unknown;
+        description?: unknown;
+        place_of_origin?: unknown;
+        credit_line?: unknown;
       }>;
       config?: { iiif_url?: unknown };
     };
@@ -174,6 +186,12 @@ async function fetchAic(q: string): Promise<ArtItem[]> {
         downloads: [{ label: 'Full JPEG', url: fullUrl, format: 'jpeg', lossless: false }],
         source: 'aic',
         isPublicDomain: Boolean(d.is_public_domain),
+        date: str(d.date_display),
+        medium: str(d.medium_display),
+        culture: str(d.place_of_origin),
+        creditLine: str(d.credit_line),
+        description: str(d.description).replace(/<[^>]+>/g, ''), // strip HTML
+        sourceUrl: `https://www.artic.edu/artworks/${str(d.id)}`,
       });
     }
 
@@ -223,6 +241,10 @@ async function fetchMet(q: string): Promise<ArtItem[]> {
         primaryImage?: unknown;
         primaryImageSmall?: unknown;
         isPublicDomain?: unknown;
+        objectDate?: unknown;
+        medium?: unknown;
+        creditLine?: unknown;
+        objectURL?: unknown;
       };
 
       const primaryImage = str(d.primaryImage);
@@ -243,6 +265,11 @@ async function fetchMet(q: string): Promise<ArtItem[]> {
         lossless: false,
         downloads: [{ label: 'Full JPEG', url: primaryImage, format: 'jpeg', lossless: false }],
         source: 'met',
+        date: str(d.objectDate),
+        medium: str(d.medium),
+        culture: str(d.culture),
+        creditLine: str(d.creditLine),
+        sourceUrl: str(d.objectURL),
         isPublicDomain: Boolean(d.isPublicDomain),
       });
     }
@@ -279,6 +306,12 @@ async function fetchCleveland(q: string): Promise<ArtItem[]> {
         // unknown to force explicit handling below; never pass through raw.
         dimensions?: unknown;
         measurements?: unknown;
+        description?: unknown;
+        tombstone?: unknown;
+        creation_date?: unknown;
+        technique?: unknown;
+        culture?: unknown[];
+        url?: unknown;
         images?: {
           web?: { url?: unknown };
           print?: { url?: unknown };
@@ -330,6 +363,11 @@ async function fetchCleveland(q: string): Promise<ArtItem[]> {
         downloads,
         source: 'cleveland',
         isPublicDomain: str(d.share_license_status).toUpperCase() === 'CC0',
+        date: str(d.creation_date),
+        medium: str(d.technique),
+        culture: Array.isArray(d.culture) ? d.culture.map(str).filter(Boolean).join(', ') : '',
+        description: str(d.description) || str(d.tombstone),
+        sourceUrl: str(d.url),
       });
     }
 
@@ -449,6 +487,7 @@ async function fetchWikiArt(q: string): Promise<ArtItem[]> {
         downloads: [{ label: `Original ${format.toUpperCase()}`, url: original, format, lossless: LOSSLESS_FORMATS.has(format) }],
         source: 'wikiart',
         isPublicDomain: false, // WikiArt is mixed-rights; badge a rights caution
+        date: str(d.completitionYear),
       });
     }
 
@@ -501,6 +540,9 @@ async function fetchVam(q: string): Promise<ArtItem[]> {
         downloads: [{ label: 'Full JPEG', url: full, format: 'jpeg', lossless: false }],
         source: 'vam',
         isPublicDomain: false, // V&A images are mixed-rights — badge a caution
+        date,
+        medium: str(r.objectType),
+        sourceUrl: `https://collections.vam.ac.uk/item/${str(r.systemNumber)}`,
       });
     }
     return items;
@@ -552,6 +594,7 @@ async function fetchWellcome(q: string): Promise<ArtItem[]> {
         downloads: [{ label: 'Full JPEG', url: full, format: 'jpeg', lossless: false }],
         source: 'wellcome',
         isPublicDomain: true, // Wellcome Collection is open access (CC0/CC-BY/PD)
+        sourceUrl: `https://wellcomecollection.org/works/${str(w.id)}`,
       });
     }
     return items;
@@ -603,6 +646,7 @@ async function fetchSmk(q: string): Promise<ArtItem[]> {
         downloads: [{ label: 'Full JPEG', url: full, format: 'jpeg', lossless: false }],
         source: 'smk',
         isPublicDomain: Boolean(it.public_domain),
+        sourceUrl: `https://open.smk.dk/en/artwork/image/${str(it.object_number)}`,
       });
     }
     return items;
@@ -679,6 +723,7 @@ async function fetchDigitalNZ(q: string): Promise<ArtItem[]> {
       search?: { results?: Array<{
         id?: unknown; title?: unknown; creator?: unknown;
         thumbnail_url?: unknown; large_thumbnail_url?: unknown;
+        description?: unknown; date?: unknown; landing_url?: unknown; display_content_partner?: unknown;
       }> };
     };
     const items: ArtItem[] = [];
@@ -699,6 +744,10 @@ async function fetchDigitalNZ(q: string): Promise<ArtItem[]> {
         downloads: [{ label: 'Image', url: large, format: 'jpeg', lossless: false }],
         source: 'digitalnz',
         isPublicDomain: false, // mixed rights — badge a caution
+        date: first(r.date),
+        description: first(r.description),
+        culture: str(r.display_content_partner),
+        sourceUrl: first(r.landing_url),
       });
     }
     return items;
@@ -719,13 +768,14 @@ async function fetchWikidata(q: string): Promise<ArtItem[]> {
   try {
     const safe = q.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/[\n\r]/g, ' ');
     const sparql =
-      `SELECT ?item ?itemLabel ?image ?creatorLabel ?collectionLabel WHERE {` +
+      `SELECT ?item ?itemLabel ?itemDescription ?image ?creatorLabel ?collectionLabel ?inception WHERE {` +
       ` SERVICE wikibase:mwapi { bd:serviceParam wikibase:endpoint "www.wikidata.org";` +
       ` wikibase:api "EntitySearch"; mwapi:search "${safe}"; mwapi:language "en".` +
       ` ?item wikibase:apiOutputItem mwapi:item. }` +
       ` ?item wdt:P18 ?image.` +
       ` OPTIONAL { ?item wdt:P170 ?creator. }` +
       ` OPTIONAL { ?item wdt:P195 ?collection. }` +
+      ` OPTIONAL { ?item wdt:P571 ?inception. }` +
       ` SERVICE wikibase:label { bd:serviceParam wikibase:language "en". } } LIMIT 25`;
     const url = `https://query.wikidata.org/sparql?format=json&query=${encodeURIComponent(sparql)}`;
     const res = await timedFetch(url, controller.signal);
@@ -759,6 +809,10 @@ async function fetchWikidata(q: string): Promise<ArtItem[]> {
         downloads: [{ label: 'Full image', url: fileBase, format: fmtFromUrl(fileBase), lossless: false }],
         source: 'wikidata',
         isPublicDomain: true, // P18 images live on Commons (freely licensed)
+        date: str(b.inception?.value).slice(0, 4),
+        culture: collection,
+        description: str(b.itemDescription?.value),
+        sourceUrl: itemUri,
       });
     }
     return items;
@@ -793,6 +847,7 @@ async function fetchEuropeana(q: string): Promise<ArtItem[]> {
       items?: Array<{
         title?: unknown; dcCreator?: unknown; edmPreview?: unknown;
         edmIsShownBy?: unknown; isShownBy?: unknown; guid?: unknown; id?: unknown;
+        dcDescription?: unknown; year?: unknown; dataProvider?: unknown; edmIsShownAt?: unknown;
       }>;
     };
     const items: ArtItem[] = [];
@@ -813,6 +868,10 @@ async function fetchEuropeana(q: string): Promise<ArtItem[]> {
         downloads: [{ label: 'Full image', url: full || thumb, format: fmtFromUrl(full || thumb), lossless: false }],
         source: 'europeana',
         isPublicDomain: true, // reusability=open filter
+        date: first(it.year),
+        culture: first(it.dataProvider),
+        description: first(it.dcDescription),
+        sourceUrl: first(it.edmIsShownAt) || str(it.guid),
       });
     }
     return items;
@@ -837,6 +896,7 @@ async function fetchHarvard(q: string): Promise<ArtItem[]> {
         id?: unknown; title?: unknown; dated?: unknown;
         people?: Array<{ name?: unknown; role?: unknown }>;
         primaryimageurl?: unknown; iiifbaseuri?: unknown; imagepermissionlevel?: unknown;
+        description?: unknown; medium?: unknown; culture?: unknown; creditline?: unknown; url?: unknown;
       }>;
     };
     const items: ArtItem[] = [];
@@ -861,6 +921,12 @@ async function fetchHarvard(q: string): Promise<ArtItem[]> {
         downloads: [{ label: 'Full JPEG', url: primary, format: 'jpeg', lossless: false }],
         source: 'harvard',
         isPublicDomain: true, // imagepermissionlevel 0
+        date,
+        medium: str(r.medium),
+        culture: str(r.culture),
+        creditLine: str(r.creditline),
+        description: str(r.description),
+        sourceUrl: str(r.url),
       });
     }
     return items;
@@ -1071,5 +1137,5 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const capped = items.slice(0, MAX_ITEMS);
 
   res.setHeader('Cache-Control', 'public, s-maxage=3600, stale-while-revalidate=86400');
-  return res.status(200).json({ items: capped, warnings });
+  return res.status(200).json({ items: capped, warnings, analyzeEnabled: Boolean(process.env.ANTHROPIC_API_KEY) });
 }
