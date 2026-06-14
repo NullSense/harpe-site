@@ -1052,7 +1052,9 @@ async function fetchParisMusees(q: string): Promise<ArtItem[]> {
 async function fetchDumps(q: string): Promise<ArtItem[]> {
   const dataset = process.env.HARPE_DUMP_DATASET!;
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  // HF's /search can be slow when its index is cold — give it more headroom than
+  // the per-museum timeout so it doesn't abort on the first hit after idle.
+  const timer = setTimeout(() => controller.abort(), 13_000);
   try {
     const url =
       `https://datasets-server.huggingface.co/search?dataset=${encodeURIComponent(dataset)}` +

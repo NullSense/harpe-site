@@ -2,9 +2,14 @@
  * DownloadMenu — a bronze-themed "⬇ Download ▾" button with a popover that
  * lets the user pick a format (JPEG / PNG / WebP) and a resolution preset
  * before triggering a server-side converted download via /api/fetch.
+ *
+ * The popover is rendered in a PORTAL (document.body, position: fixed) so it is
+ * never clipped by an ancestor's `overflow-hidden` (e.g. the masonry card) and
+ * always paints above the grid. Position is computed from the trigger's rect.
  */
 
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useLayoutEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { FORMATS, RESOLUTION_PRESETS, screenPreset, buildFetchUrl } from '../lib/resolutions';
 import type { ResolutionPreset } from '../lib/resolutions';
 import { safeName } from '../lib/media';
@@ -19,9 +24,10 @@ export default function DownloadMenu({ fullUrl, title, artist }: DownloadMenuPro
   const [open, setOpen] = useState(false);
   const [fmt, setFmt] = useState('jpeg');
   const [downloading, setDownloading] = useState(false);
-  const menuRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const popRef = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
 
-  // Prepend screen preset when available (client-side only)
   const [screenRes, setScreenRes] = useState<ResolutionPreset | null>(null);
   useEffect(() => {
     const sp = screenPreset();
@@ -32,26 +38,44 @@ export default function DownloadMenu({ fullUrl, title, artist }: DownloadMenuPro
     ? [screenRes, ...RESOLUTION_PRESETS]
     : RESOLUTION_PRESETS;
 
-  // Close on outside click
+  // Position the portal popover under the trigger (right-aligned), clamped to the
+  // viewport. Recomputed on open and on scroll/resize.
+  const place = useCallback(() => {
+    const t = triggerRef.current;
+    if (!t) return;
+    const r = t.getBoundingClientRect();
+    const W = 224; // w-56
+    const left = Math.max(8, Math.min(r.right - W, window.innerWidth - W - 8));
+    const top = Math.min(r.bottom + 6, window.innerHeight - 8);
+    setPos({ top, left });
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    place();
+    const onScroll = () => place();
+    window.addEventListener('scroll', onScroll, true);
+    window.addEventListener('resize', onScroll);
+    return () => {
+      window.removeEventListener('scroll', onScroll, true);
+      window.removeEventListener('resize', onScroll);
+    };
+  }, [open, place]);
+
   useEffect(() => {
     if (!open) return;
     function onPointerDown(e: PointerEvent) {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
-        setOpen(false);
-      }
+      const tgt = e.target as Node;
+      if (popRef.current?.contains(tgt) || triggerRef.current?.contains(tgt)) return;
+      setOpen(false);
     }
+    function onKey(e: KeyboardEvent) { if (e.key === 'Escape') setOpen(false); }
     document.addEventListener('pointerdown', onPointerDown);
-    return () => document.removeEventListener('pointerdown', onPointerDown);
-  }, [open]);
-
-  // Close on Escape
-  useEffect(() => {
-    if (!open) return;
-    function onKey(e: KeyboardEvent) {
-      if (e.key === 'Escape') setOpen(false);
-    }
     document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown);
+      document.removeEventListener('keydown', onKey);
+    };
   }, [open]);
 
   const handleDownload = useCallback(
@@ -83,9 +107,9 @@ export default function DownloadMenu({ fullUrl, title, artist }: DownloadMenuPro
   );
 
   return (
-    <div ref={menuRef} className="relative inline-block">
-      {/* Trigger button */}
+    <>
       <button
+        ref={triggerRef}
         type="button"
         aria-expanded={open}
         aria-haspopup="true"
@@ -108,18 +132,15 @@ export default function DownloadMenu({ fullUrl, title, artist }: DownloadMenuPro
         )}
       </button>
 
-      {/* Popover */}
-      {open && (
+      {open && pos && createPortal(
         <div
+          ref={popRef}
           role="dialog"
           aria-label="Download options"
-          className="absolute right-0 top-full z-50 mt-1.5 w-56 rounded border border-line p-3 shadow-xl"
-          style={{ background: 'rgba(16,11,8,.97)' }}
+          style={{ position: 'fixed', top: pos.top, left: pos.left, width: 224, background: 'rgba(16,11,8,.98)' }}
+          className="z-[80] rounded border border-line p-3 shadow-2xl"
         >
-          {/* Format row */}
-          <p className="mb-1.5 font-mono text-[.68rem] uppercase tracking-wider text-muted">
-            Format
-          </p>
+          <p className="mb-1.5 font-mono text-[.68rem] uppercase tracking-wider text-muted">Format</p>
           <div className="mb-3 flex flex-wrap gap-1">
             {FORMATS.map((f) => (
               <button
@@ -137,11 +158,7 @@ export default function DownloadMenu({ fullUrl, title, artist }: DownloadMenuPro
               </button>
             ))}
           </div>
-
-          {/* Resolution list */}
-          <p className="mb-1 font-mono text-[.68rem] uppercase tracking-wider text-muted">
-            Resolution
-          </p>
+          <p className="mb-1 font-mono text-[.68rem] uppercase tracking-wider text-muted">Resolution</p>
           <ul className="space-y-0.5">
             {allPresets.map((preset) => (
               <li key={preset.label}>
@@ -155,8 +172,9 @@ export default function DownloadMenu({ fullUrl, title, artist }: DownloadMenuPro
               </li>
             ))}
           </ul>
-        </div>
+        </div>,
+        document.body,
       )}
-    </div>
+    </>
   );
 }

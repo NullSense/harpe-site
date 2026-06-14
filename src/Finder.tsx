@@ -348,42 +348,14 @@ function ScanCard({
 
 // ─── Art card (search mode: per-variant downloads + metadata, click to preview) ─
 
+const SOURCE_LABELS: Record<string, string> = {
+  aic: 'AIC', met: 'Met', cleveland: 'Cleveland', commons: 'Commons', wikiart: 'WikiArt', vam: 'V&A', wellcome: 'Wellcome', smk: 'SMK', nasjonalmuseet: 'Nasjonalmus.', digitalnz: 'DigitalNZ', wikidata: 'Wikidata', europeana: 'Europeana', harvard: 'Harvard', si: 'Smithsonian', parismusees: 'Paris Musées', moma: 'MoMA', nga: 'NGA', mia: 'MIA', loc: 'Library of Congress', nypl: 'NYPL', dumps: 'Open data', iiif: 'IIIF',
+};
 function SourceBadge({ source }: { source: ArtItem['source'] }) {
-  const labels: Record<ArtItem['source'], string> = {
-    aic: 'AIC', met: 'Met', cleveland: 'Cleveland', commons: 'Commons', wikiart: 'WikiArt', vam: 'V&A', wellcome: 'Wellcome', smk: 'SMK', nasjonalmuseet: 'Nasjonalmus.', digitalnz: 'DigitalNZ', wikidata: 'Wikidata', europeana: 'Europeana', harvard: 'Harvard', si: 'Smithsonian', parismusees: 'Paris Musées', moma: 'MoMA', nga: 'NGA', mia: 'MIA', loc: 'Library of Congress', nypl: 'NYPL', dumps: 'Open data', iiif: 'IIIF',
-  };
   return (
-    <span className="rounded-sm bg-bronze/15 px-1.5 py-0.5 font-mono text-[.65rem] text-bronze">
-      {labels[source]}
+    <span className="shrink-0 rounded-sm bg-bronze/15 px-1.5 py-0.5 font-mono text-[.65rem] text-bronze">
+      {SOURCE_LABELS[source] ?? source}
     </span>
-  );
-}
-
-function MetaChips({ item }: { item: ArtItem }) {
-  return (
-    <div className="flex flex-wrap items-center gap-1.5">
-      <span className="rounded-sm border border-line px-1.5 py-0.5 font-mono text-[.62rem] uppercase text-muted">
-        {item.format}
-      </span>
-      {item.width && item.height && (
-        <span className="rounded-sm border border-line px-1.5 py-0.5 font-mono text-[.62rem] text-muted">
-          {item.width}×{item.height}
-        </span>
-      )}
-      {item.lossless && (
-        <span className="rounded-sm border border-bronze/40 bg-bronze/10 px-1.5 py-0.5 font-mono text-[.62rem] text-bronze-bright">
-          ◆ lossless
-        </span>
-      )}
-      {item.width && item.height && fitsScreen(item.width, item.height) && (
-        <span
-          title="Big enough for a crisp wallpaper at your screen resolution"
-          className="rounded-sm border border-bronze/40 bg-bronze/10 px-1.5 py-0.5 font-mono text-[.62rem] text-bronze-bright"
-        >
-          ▣ wallpaper-ready
-        </span>
-      )}
-    </div>
   );
 }
 
@@ -397,20 +369,23 @@ function ArtCard({
   siblings: number;      // how many sources (incl. this) describe the same work
   analyzeEnabled: boolean;
 }) {
+  // Masonry tile: the image renders at its NATURAL aspect (no crop) inside a
+  // CSS-columns layout. Heavy metadata (description, credit, full chips) lives in
+  // the lightbox/detail; the tile keeps just the essentials + quick actions.
   return (
-    <article className="group flex flex-col overflow-hidden rounded-xl border border-line bg-[rgba(16,11,8,.6)] transition hover:-translate-y-0.5 hover:border-bronze/60 hover:shadow-[0_8px_32px_-12px_rgba(216,153,33,.18)]">
+    <article className="group relative mb-4 break-inside-avoid overflow-hidden rounded-lg bg-[rgba(16,11,8,.45)] ring-1 ring-line/30 transition hover:ring-bronze/50">
       <button
         type="button"
         onClick={onPreview}
         aria-label={`Preview ${item.title}`}
-        className="relative aspect-[4/3] cursor-zoom-in overflow-hidden bg-[rgba(10,8,6,.8)] outline-none focus-visible:ring-2 focus-visible:ring-bronze/60"
+        className="relative block w-full cursor-zoom-in bg-[rgba(10,8,6,.8)] outline-none focus-visible:ring-2 focus-visible:ring-bronze/60"
       >
         <img
           src={displaySrc(item.thumbUrl)}
           alt={`${item.title}${item.artist ? `, by ${item.artist}` : ''}`}
           loading="lazy"
           decoding="async"
-          className="h-full w-full object-contain transition-transform duration-500 group-hover:scale-[1.03]"
+          className="block h-auto w-full transition-transform duration-500 group-hover:scale-[1.02]"
           onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }}
         />
         <PreviewBadge />
@@ -419,58 +394,62 @@ function ArtCard({
             © rights may apply
           </span>
         )}
+        {item.width && item.height && fitsScreen(item.width, item.height) && (
+          <span
+            title="Big enough for a crisp wallpaper at your screen resolution"
+            className="absolute bottom-2 left-2 rounded-sm bg-[rgba(10,8,6,.82)] px-1.5 py-0.5 font-mono text-[.6rem] text-bronze-bright"
+          >
+            ▣ wallpaper-ready
+          </span>
+        )}
       </button>
 
-      <div className="flex flex-1 flex-col gap-1.5 p-3.5">
-        <div className="flex items-start justify-between gap-2">
-          <h3 className="flex-1 font-display text-[.9rem] font-medium leading-snug text-ink">{item.title}</h3>
-          <SourceBadge source={item.source} />
-        </div>
-        {item.artist && <p className="text-[.82rem] text-muted">{item.artist}</p>}
-        {(item.date || item.medium || item.culture) && (
-          <p className="text-[.74rem] text-muted/80">{[item.date, item.medium, item.culture].filter(Boolean).join(' · ')}</p>
-        )}
-        {item.dimensions && <p className="font-mono text-[.72rem] text-muted/70">{item.dimensions}</p>}
-        {item.description && (
-          <p className="line-clamp-3 text-[.76rem] leading-snug text-muted/75">{item.description}</p>
-        )}
-        {item.creditLine && (
-          <p className="text-[.7rem] italic leading-snug text-muted/55">{item.creditLine}</p>
-        )}
-        {item.sourceUrl && (
-          <a
-            href={item.sourceUrl}
-            target="_blank"
-            rel="noopener"
-            className="font-mono text-[.7rem] text-bronze/80 transition hover:text-bronze-bright"
-          >
-            ↗ view at source
-          </a>
-        )}
-
-        <div className="mt-0.5"><MetaChips item={item} /></div>
-
+      {/* hover action overlay (top-right) */}
+      <div className="absolute right-2 top-2 flex gap-1 opacity-0 transition group-hover:opacity-100 focus-within:opacity-100">
         {analyzeEnabled && (
           <button
             type="button"
             onClick={onAnalyze}
-            className="flex items-center justify-center gap-1.5 rounded-md border border-bronze/40 bg-bronze/[.07] px-3 py-1.5 font-mono text-[.72rem] text-bronze-bright transition hover:border-bronze hover:bg-bronze/15"
+            title={siblings > 1 ? `Synthesize ${siblings} sources` : 'Deep analysis'}
+            aria-label="Deep analysis"
+            className="rounded-full border border-bronze/50 bg-[rgba(10,8,6,.8)] px-2 py-0.5 font-mono text-[.7rem] text-bronze-bright transition hover:bg-bronze/25"
           >
-            ✦ {siblings > 1 ? `Synthesize ${siblings} sources` : 'Deep analysis'}
+            ✦{siblings > 1 ? ` ${siblings}` : ''}
           </button>
         )}
+        <button
+          type="button"
+          onClick={onShare}
+          title="Copy a shareable link to this work"
+          aria-label="Copy a shareable link to this work"
+          className="rounded-full border border-line bg-[rgba(10,8,6,.8)] px-2 py-0.5 font-mono text-[.7rem] text-muted transition hover:border-bronze/60 hover:text-bronze-bright"
+        >
+          ⧉
+        </button>
+      </div>
 
-        <div className="mt-auto flex items-center gap-2 pt-2">
+      <div className="flex flex-col gap-1 p-2.5">
+        <div className="flex items-start justify-between gap-2">
+          <h3 className="flex-1 font-display text-[.86rem] font-medium leading-snug text-ink">{item.title}</h3>
+          <SourceBadge source={item.source} />
+        </div>
+        {item.artist && <p className="truncate text-[.78rem] text-muted">{item.artist}</p>}
+        {(item.date || item.medium || item.culture) && (
+          <p className="line-clamp-1 text-[.72rem] text-muted/70">{[item.date, item.medium, item.culture].filter(Boolean).join(' · ')}</p>
+        )}
+        <div className="mt-1.5 flex items-center gap-2">
           <DownloadMenu fullUrl={item.fullUrl} title={item.title} artist={item.artist} />
-          <button
-            type="button"
-            onClick={onShare}
-            title="Copy a shareable link to this work"
-            aria-label="Copy a shareable link to this work"
-            className="rounded border border-line px-2.5 py-1.5 font-mono text-[.78rem] text-muted transition hover:border-bronze/60 hover:text-bronze-bright"
-          >
-            ⧉
-          </button>
+          {item.sourceUrl && (
+            <a
+              href={item.sourceUrl}
+              target="_blank"
+              rel="noopener"
+              title="View at source"
+              className="font-mono text-[.72rem] text-bronze/80 transition hover:text-bronze-bright"
+            >
+              ↗
+            </a>
+          )}
         </div>
       </div>
     </article>
@@ -496,6 +475,8 @@ export default function Finder() {
   const [artItems, setArtItems] = useState<ArtItem[]>([]);
   const [warnings, setWarnings] = useState<string[]>([]);
   const [losslessOnly, setLosslessOnly] = useState(false);
+  const [pdOnly, setPdOnly] = useState(false);
+  const [sourceFilter, setSourceFilter] = useState<Set<string>>(new Set());
   const [query, setQuery] = useState('');
   const [streaming, setStreaming] = useState(false);   // SSE search in progress
   const [shown, setShown] = useState(SHOWN_STEP);       // infinite-scroll window
@@ -563,6 +544,7 @@ export default function Finder() {
     // Plain text → museum search, STREAMED per-source (with /api/art fallback).
     streamCancelRef.current?.();         // abort any in-flight stream
     setQuery(q); setArtItems([]); setWarnings([]); setShown(SHOWN_STEP); setStreaming(true);
+    setSourceFilter(new Set()); setPdOnly(false); setLosslessOnly(false);
     const acc: ArtItem[] = [];
     let gotBatch = false;
     const cancel = streamArt(q, {
@@ -665,11 +647,30 @@ export default function Finder() {
   };
 
   // ── art helpers ──
-  const visibleArt = useMemo(
-    () => (losslessOnly ? artItems.filter((i) => i.lossless) : artItems),
-    [artItems, losslessOnly],
-  );
+  const visibleArt = useMemo(() => {
+    let r = artItems;
+    if (losslessOnly) r = r.filter((i) => i.lossless);
+    if (pdOnly) r = r.filter((i) => i.isPublicDomain);
+    if (sourceFilter.size) r = r.filter((i) => sourceFilter.has(i.source));
+    return r;
+  }, [artItems, losslessOnly, pdOnly, sourceFilter]);
   const losslessCount = useMemo(() => artItems.filter((i) => i.lossless).length, [artItems]);
+  const pdCount = useMemo(() => artItems.filter((i) => i.isPublicDomain).length, [artItems]);
+  // sources present in the current results, with counts, ordered by SOURCE_ORDER
+  const sourceCounts = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const it of artItems) m.set(it.source, (m.get(it.source) ?? 0) + 1);
+    return [...m.entries()].sort(
+      (a, b) => (SOURCE_ORDER[a[0]] ?? 99) - (SOURCE_ORDER[b[0]] ?? 99),
+    );
+  }, [artItems]);
+  const toggleSource = useCallback((s: string) => {
+    setSourceFilter((prev) => {
+      const n = new Set(prev);
+      n.has(s) ? n.delete(s) : n.add(s);
+      return n;
+    });
+  }, []);
 
   // group items that describe the same work (across sources) for synthesis
   const siblingsByKey = useMemo(() => {
@@ -734,7 +735,7 @@ export default function Finder() {
     if (mode === 'art') {
       return visibleArt.map((it) => {
         const best = it.downloads[0] ?? { url: it.fullUrl, format: it.format, label: 'Download' };
-        const facts = [it.artist, it.date, it.medium, it.culture].filter(Boolean).join(' · ');
+        const facts = [it.artist, it.date, it.medium, it.culture, it.dimensions].filter(Boolean).join(' · ');
         return {
           src: displaySrc(it.previewUrl || it.fullUrl),
           title: it.title,
@@ -981,61 +982,75 @@ export default function Finder() {
                 Partial results — some sources failed: {warnings.join(' · ')}
               </p>
             )}
-            <div className="mb-4 flex flex-wrap items-center justify-center gap-x-4 gap-y-2">
-              <p className="font-mono text-[.78rem] text-muted/70">
-                {visibleArt.length} work{visibleArt.length !== 1 ? 's' : ''}
-                {losslessOnly && ` of ${artItems.length}`}
-                {streaming && <span className="ml-2 text-bronze">· searching…</span>}
-              </p>
-              <button
-                type="button"
-                onClick={() => setLosslessOnly((v) => !v)}
-                disabled={losslessCount === 0}
-                aria-pressed={losslessOnly}
-                className={
-                  'rounded-full border px-3 py-1 font-mono text-[.72rem] transition disabled:cursor-not-allowed disabled:opacity-40 ' +
-                  (losslessOnly
-                    ? 'border-bronze/60 bg-bronze/15 text-bronze-bright'
-                    : 'border-line text-muted hover:border-bronze/60 hover:text-bronze')
-                }
-              >
-                {losslessOnly ? '◆ lossless only ✓' : `◆ lossless only (${losslessCount})`}
-              </button>
-              <button
-                type="button"
-                onClick={() => copyShare()}
-                title="Copy a shareable link to this search"
-                className="rounded-full border border-line px-3 py-1 font-mono text-[.72rem] text-muted transition hover:border-bronze/60 hover:text-bronze-bright"
-              >
-                ⧉ share search
-              </button>
-            </div>
+            {(() => {
+              const chip = (active: boolean) =>
+                'rounded-full border px-3 py-1 font-mono text-[.72rem] transition disabled:cursor-not-allowed disabled:opacity-40 ' +
+                (active
+                  ? 'border-bronze/60 bg-bronze/15 text-bronze-bright'
+                  : 'border-line text-muted hover:border-bronze/60 hover:text-bronze');
+              const hasFilters = losslessOnly || pdOnly || sourceFilter.size > 0;
+              return (
+                <>
+                  <div className="mb-3 flex flex-wrap items-center justify-center gap-x-3 gap-y-2">
+                    <p className="font-mono text-[.78rem] text-muted/70">
+                      {visibleArt.length} work{visibleArt.length !== 1 ? 's' : ''}
+                      {visibleArt.length !== artItems.length && ` of ${artItems.length}`}
+                      {streaming && <span className="ml-2 text-bronze">· searching…</span>}
+                    </p>
+                    <button type="button" onClick={() => setPdOnly((v) => !v)} disabled={pdCount === 0} aria-pressed={pdOnly} className={chip(pdOnly)}>
+                      {pdOnly ? '✓ public domain' : `public domain (${pdCount})`}
+                    </button>
+                    <button type="button" onClick={() => setLosslessOnly((v) => !v)} disabled={losslessCount === 0} aria-pressed={losslessOnly} className={chip(losslessOnly)}>
+                      {losslessOnly ? '◆ lossless ✓' : `◆ lossless (${losslessCount})`}
+                    </button>
+                    <button type="button" onClick={() => copyShare()} title="Copy a shareable link to this search" className={chip(false)}>
+                      ⧉ share
+                    </button>
+                    {hasFilters && (
+                      <button type="button" onClick={() => { setLosslessOnly(false); setPdOnly(false); setSourceFilter(new Set()); }} className="font-mono text-[.72rem] text-bronze/80 underline-offset-2 hover:text-bronze-bright hover:underline">
+                        clear filters
+                      </button>
+                    )}
+                  </div>
 
-            {visibleArt.length === 0 ? (
-              <p className="text-center font-mono text-[.82rem] text-muted/60">
-                No lossless originals in these results.{' '}
-                <button type="button" onClick={() => setLosslessOnly(false)} className="text-bronze hover:text-bronze-bright">Show all →</button>
-              </p>
-            ) : (
-              <>
-                <div className="grid grid-cols-[repeat(auto-fill,minmax(210px,1fr))] gap-4">
-                  {visibleArt.slice(0, shown).map((item, i) => (
-                    <ArtCard
-                      key={item.id}
-                      item={item}
-                      onPreview={() => setLightboxIndex(i)}
-                      onAnalyze={() => analyzeWork(item)}
-                      onShare={() => copyShare(item.id)}
-                      siblings={siblingsByKey.get(workKey(item))?.length ?? 1}
-                      analyzeEnabled={analyzeEnabled}
-                    />
-                  ))}
-                </div>
-                {shown < visibleArt.length && (
-                  <div ref={sentinelRef} className="h-12" aria-hidden />
-                )}
-              </>
-            )}
+                  {sourceCounts.length > 1 && (
+                    <div className="mb-5 flex flex-wrap items-center justify-center gap-1.5">
+                      {sourceCounts.map(([s, n]) => (
+                        <button key={s} type="button" onClick={() => toggleSource(s)} aria-pressed={sourceFilter.has(s)} className={chip(sourceFilter.has(s))}>
+                          {SOURCE_LABELS[s] ?? s} <span className="opacity-50">{n}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+
+                  {visibleArt.length === 0 ? (
+                    <p className="text-center font-mono text-[.82rem] text-muted/60">
+                      No works match these filters.{' '}
+                      <button type="button" onClick={() => { setLosslessOnly(false); setPdOnly(false); setSourceFilter(new Set()); }} className="text-bronze hover:text-bronze-bright">Clear filters →</button>
+                    </p>
+                  ) : (
+                    <>
+                      <div className="columns-2 gap-4 md:columns-3 lg:columns-4 xl:columns-5">
+                        {visibleArt.slice(0, shown).map((item, i) => (
+                          <ArtCard
+                            key={item.id}
+                            item={item}
+                            onPreview={() => setLightboxIndex(i)}
+                            onAnalyze={() => analyzeWork(item)}
+                            onShare={() => copyShare(item.id)}
+                            siblings={siblingsByKey.get(workKey(item))?.length ?? 1}
+                            analyzeEnabled={analyzeEnabled}
+                          />
+                        ))}
+                      </div>
+                      {shown < visibleArt.length && (
+                        <div ref={sentinelRef} className="h-12" aria-hidden />
+                      )}
+                    </>
+                  )}
+                </>
+              );
+            })()}
 
             <p className="mt-8 text-center font-mono text-[.74rem] text-muted/50">
               Want gigapixel tile-stitching, V&amp;A, Rijksmuseum &amp; 1,800+ other sites?{' '}
