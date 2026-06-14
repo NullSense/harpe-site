@@ -371,8 +371,8 @@ function ArtDetail({
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       viewer = (OSD as any)({
         element: osdRef.current,
-        tileSources: `${iiifBase}/info.json`,
-        crossOriginPolicy: 'Anonymous',
+        // Proxy the info.json for CORS; tiles still load straight from the museum.
+        tileSources: `/api/iiif?url=${encodeURIComponent(`${iiifBase}/info.json`)}`,
         showNavigationControl: false,
         gestureSettingsMouse: { clickToZoom: false, dblClickToZoom: true },
         visibilityRatio: 1,

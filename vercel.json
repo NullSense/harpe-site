@@ -10,6 +10,10 @@
       "maxDuration": 15,
       "memory": 256
     },
+    "api/iiif.ts": {
+      "maxDuration": 10,
+      "memory": 256
+    },
     "api/fetch.ts": {
       "maxDuration": 30,
       "memory": 1024
