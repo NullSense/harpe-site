@@ -16,7 +16,7 @@
  *   - Rate limiting: shared 30 req/min/IP with scan.ts (in-memory, best-effort)
  */
 
-import type { VercelRequest, VercelResponse } from '@vercel/node';
+import type { VercelRequest, VercelResponse } from './_vercel.js';
 import { fetch } from 'undici';
 import { GuardError, guardUrl, pinnedAgent, rateLimit, clientIp } from './_guard.js';
 

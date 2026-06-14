@@ -27,7 +27,7 @@
  *   - 8 second per-source timeout
  */
 
-import type { VercelRequest, VercelResponse } from '@vercel/node';
+import type { VercelRequest, VercelResponse } from './_vercel.js';
 import { fetch } from 'undici';
 import { GuardError, rateLimit, clientIp } from './_guard.js';
 

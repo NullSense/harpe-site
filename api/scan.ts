@@ -14,7 +14,7 @@
  *   - Rate limiting: 30 req/min/IP (in-memory, best-effort; see _guard.ts TODO)
  */
 
-import type { VercelRequest, VercelResponse } from '@vercel/node';
+import type { VercelRequest, VercelResponse } from './_vercel.js';
 import { fetch } from 'undici';
 import { parse as parseHtml } from 'node-html-parser';
 import { GuardError, guardUrl, pinnedAgent, rateLimit, clientIp } from './_guard.js';
