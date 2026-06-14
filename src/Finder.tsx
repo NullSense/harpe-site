@@ -1042,6 +1042,20 @@ export default function Finder() {
               <a href="https://github.com/NullSense/harpe" className="text-bronze hover:text-bronze-bright">Harpe CLI</a>{' '}
               or browser extension.
             </p>
+            {isURL(query || input) && (
+              <p className="mt-3 font-mono text-[.78rem] text-muted/70">
+                Gigapixel / zoomable image (Google Arts &amp; Culture, Zoomify, deep-zoom)?{' '}
+                <a
+                  href={`https://dezoomify.ophir.dev/#${query || input}`}
+                  target="_blank"
+                  rel="noopener"
+                  className="text-bronze hover:text-bronze-bright"
+                >
+                  Open in dezoomify ↗
+                </a>{' '}
+                to stitch the full-resolution image.
+              </p>
+            )}
           </div>
         )}
 
