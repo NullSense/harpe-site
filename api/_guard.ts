@@ -22,6 +22,14 @@
 import dns from 'node:dns/promises';
 import { Agent } from 'undici';
 
+// Vercel's @vercel/node request bridge calls the deprecated url.parse() to build
+// req.query, emitting a DEP0169 warning on every invocation. It's benign (the
+// functions all return 200), but Vercel's log viewer paints stderr deprecation
+// warnings as "error", flooding production logs. Suppress deprecation prints in
+// the serverless runtime — every API function imports this module. (Client/build
+// are unaffected; this only runs inside the function process.)
+process.noDeprecation = true;
+
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 export class GuardError extends Error {

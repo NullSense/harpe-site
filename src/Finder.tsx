@@ -18,6 +18,15 @@ import DownloadMenu from './components/DownloadMenu';
 import { streamArt } from './lib/useArtStream';
 import { fitsScreen } from './lib/resolutions';
 import { qualityScore, stripHtml, mediumCategory, yearOf } from './lib/ranking';
+import { rankResults } from './lib/search';
+import {
+  type DeepZoomDescriptor,
+  osdTileSource,
+  thumbUrl as dzThumbUrl,
+  stitchToBlob,
+  stitchLevel,
+  levelDimensions,
+} from './lib/deepzoom';
 import {
   type DownloadVariant,
   LOSSLESS_FORMATS,
@@ -60,6 +69,9 @@ interface ArtItem {
   creditLine?: string;
   description?: string;
   sourceUrl?: string;
+  /** Present for zoomable/gigapixel images (DZI/Zoomify/IIIF) — drives OSD deep-zoom
+   *  and our in-browser full-resolution tile-stitch download. */
+  deepzoom?: DeepZoomDescriptor;
 }
 
 // Normalize a (title, artist) into a key for grouping the same work across sources.
@@ -84,40 +96,50 @@ type DlStatus = 'downloading' | 'done' | 'error';
 const MIN_WIDTH = 100;
 const SHOWN_STEP = 24; // infinite-scroll page size
 
-// Client-side ranking — mirrors /api/art so streamed results stay relevance-first
-// with sources interleaved (round-robin), instead of arrival order.
-const STOP = new Set(['the','and','of','to','in','on','by','with','from','for','his','her','its','a','an','at','as']);
+// Client-side ranking — mirrors /api/art. Results from many museum APIs are merged
+// with Reciprocal Rank Fusion (shared src/lib/search.ts `fuse`): each source's own
+// ranking is preserved and fused with an IDF-weighted, name-aware, fuzzy relevance
+// leg + a quality prior + a cross-source consensus boost. So the streamed view
+// stays relevance-first instead of arrival order.
+// Stable display order for the source-filter chips (ranking itself is handled by
+// the RRF `fuse`, which preserves each source's own ordering).
 const SOURCE_ORDER: Record<string, number> = {
   aic: 0, met: 1, cleveland: 2, vam: 3, wellcome: 4, smk: 5, nasjonalmuseet: 6,
   parismusees: 7, harvard: 8, europeana: 9, si: 10, moma: 11, nga: 12, mia: 13, loc: 14,
   nypl: 15, dumps: 16, wikidata: 17, digitalnz: 18, wikiart: 19, commons: 20,
 };
-function qTokens(q: string): string[] {
-  return q.toLowerCase().split(/[^a-z0-9]+/).filter((t) => t.length >= 3 && !STOP.has(t));
-}
 
 function rankArt(items: ArtItem[], q: string): ArtItem[] {
-  const toks = qTokens(q);
-  const rel = (it: ArtItem) => {
-    const hay = `${it.title} ${it.artist}`.toLowerCase();
-    return toks.reduce((n, t) => n + (hay.includes(t) ? 1 : 0), 0);
-  };
-  const rr = new Map<ArtItem, number>();
-  const seen: Record<string, number> = {};
-  for (const it of items) { seen[it.source] = (seen[it.source] ?? -1) + 1; rr.set(it, seen[it.source]); }
-  // relevance dominates (×10); quality nudges order within each relevance tier.
-  const score = (it: ArtItem) => rel(it) * 10 + qualityScore(it, q);
-  return [...items].sort((a, b) => {
-    const r = score(b) - score(a); if (r) return r;
-    const d = (rr.get(a) ?? 0) - (rr.get(b) ?? 0); if (d) return d;
-    if (a.isPublicDomain !== b.isPublicDomain) return a.isPublicDomain ? -1 : 1;
-    return (SOURCE_ORDER[a.source] ?? 99) - (SOURCE_ORDER[b.source] ?? 99);
-  });
+  return rankResults(items, q, { qualityOf: (it) => qualityScore(it, q) });
 }
 
 const IIIF_MANIFEST_RE = /https?:\/\/[^/]+(?:\/[^?#]*)?(?:manifest|info\.json)(?:[?#].*)?$/i;
 const IIIF_INFO_RE = /^https?:\/\/.+\/info\.json$/i;
 const IMAGE_URL_RE = /\.(jpe?g|png|webp|gif|avif|tiff?|bmp)(?:[?#]|$)/i;
+// A DeepZoom (.dzi) or Zoomify (ImageProperties.xml) descriptor pasted directly.
+const DEEPZOOM_DESC_RE = /(\.dzi|ImageProperties\.xml)(?:[?#].*)?$/i;
+
+// Turn a detected zoomable-image descriptor into an ArtItem that opens in the
+// OpenSeadragon deep-zoom viewer and offers our in-browser full-res stitch.
+function deepzoomItem(d: DeepZoomDescriptor, pageUrl?: string): ArtItem {
+  return {
+    id: `dz:${d.sourceUrl || d.base}`,
+    title: d.title || 'Zoomable image',
+    artist: '',
+    thumbUrl: dzThumbUrl(d),
+    previewUrl: dzThumbUrl(d),
+    fullUrl: d.sourceUrl || d.base,
+    width: d.width,
+    height: d.height,
+    format: d.format === 'png' ? 'png' : 'jpeg',
+    lossless: d.format === 'png',
+    downloads: [],
+    source: 'iiif',
+    isPublicDomain: true,
+    sourceUrl: pageUrl || d.sourceUrl,
+    deepzoom: d,
+  };
+}
 
 // ─── IIIF resolution (client-side, CORS-open servers) ──────────────────────────
 
@@ -354,40 +376,97 @@ function ArtDetail({
 }) {
   const open = index >= 0 && index < items.length;
   const active = open ? items[index] : undefined;
-  const iiifBase = active ? deriveIIIF(active.fullUrl) : null;
+  // Deep-zoom items (our own DZI/Zoomify/IIIF stitcher) take priority; otherwise
+  // fall back to deriving a IIIF Image-API base from a museum item's full URL.
+  const dz = active?.deepzoom ?? null;
+  const iiifBase = active && !dz ? deriveIIIF(active.fullUrl) : null;
   const [z, setZ] = useState(1);
   const [nat, setNat] = useState<{ w: number; h: number } | null>(null); // measured pixels
-  // OpenSeadragon (tiled deep-zoom) for IIIF items; falls back to <img> on failure.
+  // OpenSeadragon (tiled deep-zoom) for IIIF/DZI/Zoomify items; <img> fallback.
   const osdRef = useRef<HTMLDivElement>(null);
   const [osdFailed, setOsdFailed] = useState(false);
-  const useOsd = open && !!iiifBase && !osdFailed;
+  const useOsd = open && (!!iiifBase || !!dz) && !osdFailed;
+  const dzKey = dz ? `${dz.protocol}:${dz.base}` : '';
   useEffect(() => { setOsdFailed(false); }, [index]);
   useEffect(() => {
-    if (!open || !iiifBase || osdFailed) return;
+    if (!open || (!iiifBase && !dz) || osdFailed) return;
     let viewer: { destroy: () => void; addHandler: (e: string, f: () => void) => void; world: { getItemAt: (i: number) => { getContentSize: () => { x: number; y: number } } | undefined } } | undefined;
     let cancelled = false;
-    import('openseadragon').then(({ default: OSD }) => {
-      if (cancelled || !osdRef.current) return;
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      viewer = (OSD as any)({
-        element: osdRef.current,
-        // Proxy the info.json for CORS; tiles still load straight from the museum.
-        tileSources: `/api/iiif?url=${encodeURIComponent(`${iiifBase}/info.json`)}`,
-        showNavigationControl: false,
-        gestureSettingsMouse: { clickToZoom: false, dblClickToZoom: true },
-        visibilityRatio: 1,
-        minZoomImageRatio: 0.85,
-        maxZoomPixelRatio: 5,
-        animationTime: 0.4,
-      });
-      viewer!.addHandler('open', () => {
-        const t = viewer!.world.getItemAt(0);
-        if (t) { const s = t.getContentSize(); setNat({ w: Math.round(s.x), h: Math.round(s.y) }); }
-      });
-      viewer!.addHandler('open-failed', () => { if (!cancelled) setOsdFailed(true); });
-    }).catch(() => { if (!cancelled) setOsdFailed(true); });
+    (async () => {
+      try {
+        let tileSources: unknown;
+        if (dz) {
+          // DZI/Zoomify → custom tile source straight from the descriptor.
+          tileSources = osdTileSource(dz);
+        } else {
+          // IIIF → fetch the CORS-proxied info.json, then route its TILES through
+          // /api/tile by rewriting @id. Many IIIF servers (e.g. artic.edu) return
+          // 403 for direct cross-origin tile requests (no Referer), which the
+          // browser blocks via ORB → a blank viewer. OSD appends "/region/size/…"
+          // to @id, so pointing @id at /api/tile?url=<base> sends every tile
+          // through our proxy (same-origin: no ORB; proxy adds a Referer: no 403).
+          const info = await fetch(`/api/iiif?url=${encodeURIComponent(`${iiifBase}/info.json`)}`).then((r) => r.json());
+          if (cancelled) return;
+          const proxied = `${location.origin}/api/tile?url=${iiifBase}`;
+          info['@id'] = proxied;
+          info.id = proxied;
+          tileSources = info;
+        }
+        const { default: OSD } = await import('openseadragon');
+        if (cancelled || !osdRef.current) return;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        viewer = (OSD as any)({
+          element: osdRef.current,
+          tileSources,
+          showNavigationControl: false,
+          gestureSettingsMouse: { clickToZoom: false, dblClickToZoom: true },
+          visibilityRatio: 1,
+          minZoomImageRatio: 0.85,
+          maxZoomPixelRatio: 5,
+          animationTime: 0.4,
+        });
+        viewer!.addHandler('open', () => {
+          const t = viewer!.world.getItemAt(0);
+          if (t) { const s = t.getContentSize(); setNat({ w: Math.round(s.x), h: Math.round(s.y) }); }
+        });
+        viewer!.addHandler('open-failed', () => { if (!cancelled) setOsdFailed(true); });
+      } catch {
+        if (!cancelled) setOsdFailed(true);
+      }
+    })();
     return () => { cancelled = true; try { viewer?.destroy(); } catch { /* noop */ } };
-  }, [open, iiifBase, osdFailed, index]);
+  }, [open, iiifBase, dz, dzKey, osdFailed, index]);
+  // ── Full-resolution tile-stitch download (DZI/Zoomify deep-zoom items) ──
+  const [stitch, setStitch] = useState<
+    null | { phase: 'busy' | 'done' | 'error'; done: number; total: number; w?: number; h?: number; msg?: string }
+  >(null);
+  const stitchAbort = useRef<AbortController | null>(null);
+  useEffect(() => { setStitch(null); stitchAbort.current?.abort(); }, [index]);
+  const runStitch = useCallback(async () => {
+    if (!dz) return;
+    stitchAbort.current?.abort();
+    const ac = new AbortController();
+    stitchAbort.current = ac;
+    setStitch({ phase: 'busy', done: 0, total: 0 });
+    try {
+      const { blob, width, height } = await stitchToBlob(dz, {
+        signal: ac.signal,
+        onProgress: (done, total) => setStitch((s) => (s && s.phase === 'busy' ? { ...s, done, total } : s)),
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      const stem = (active?.title || 'image').replace(/[^\w.\- ]+/g, '_').slice(0, 80) || 'image';
+      a.href = url;
+      a.download = `${stem}_${width}x${height}.${dz.format === 'png' ? 'png' : 'jpg'}`;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 15000);
+      setStitch({ phase: 'done', done: 1, total: 1, w: width, h: height });
+    } catch (e) {
+      if (e instanceof DOMException && e.name === 'AbortError') { setStitch(null); return; }
+      setStitch({ phase: 'error', done: 0, total: 0, msg: e instanceof Error ? e.message : 'Stitch failed' });
+    }
+  }, [dz, active]);
+
   // Pan is kept in a ref and applied to the <img> imperatively, so dragging does
   // NOT re-render the whole overlay on every pointer-move (that was the lag).
   const imgRef = useRef<HTMLImageElement>(null);
@@ -451,7 +530,9 @@ function ArtDetail({
       {/* image stage */}
       <div className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden" {...imgHandlers}>
         {useOsd ? (
-          <div ref={osdRef} className="absolute inset-0" />
+          // h-full w-full (not just inset-0): OSD forces position:relative on its
+          // host, which would void inset-0 and collapse the container to 0×0.
+          <div ref={osdRef} className="absolute inset-0 h-full w-full" />
         ) : (
           <img
             ref={imgRef}
@@ -511,7 +592,21 @@ function ArtDetail({
         {item.creditLine && <p className="text-[.76rem] italic leading-snug text-muted/60">{item.creditLine}</p>}
 
         <div className="flex flex-wrap items-center gap-2 pt-1">
-          <DownloadMenu fullUrl={item.fullUrl} title={item.title} artist={item.artist} />
+          {item.deepzoom ? (
+            <button
+              type="button"
+              onClick={runStitch}
+              disabled={stitch?.phase === 'busy'}
+              title="Download the full image by stitching every tile in your browser"
+              className="rounded border border-bronze/45 bg-bronze/10 px-3 py-1.5 font-mono text-[.74rem] text-bronze-bright transition hover:border-bronze hover:bg-bronze/20 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {stitch?.phase === 'busy'
+                ? `Stitching… ${stitch.total ? Math.round((stitch.done / stitch.total) * 100) : 0}%`
+                : '⬇ Download full resolution'}
+            </button>
+          ) : (
+            <DownloadMenu fullUrl={item.fullUrl} title={item.title} artist={item.artist} />
+          )}
           {analyzeEnabled && (
             <button type="button" onClick={() => onAnalyze(item)} className="rounded border border-bronze/40 bg-bronze/[.07] px-3 py-1.5 font-mono text-[.74rem] text-bronze-bright transition hover:border-bronze hover:bg-bronze/15">✦ Analyse</button>
           )}
@@ -520,6 +615,22 @@ function ArtDetail({
             <button type="button" onClick={() => onFindSource(item.fullUrl)} title="Reverse-image search: find the source / a higher-res original" className="rounded border border-line px-2.5 py-1.5 font-mono text-[.78rem] text-muted transition hover:border-bronze/60 hover:text-bronze-bright">🔍</button>
           )}
         </div>
+        {item.deepzoom && (() => {
+          const lvl = stitchLevel(item.deepzoom);
+          const { w, h } = levelDimensions(item.deepzoom, lvl);
+          const capped = w < item.deepzoom.width || h < item.deepzoom.height;
+          return (
+            <p className="font-mono text-[.72rem] leading-snug text-muted/70">
+              {stitch?.phase === 'error' ? (
+                <span className="text-bronze">⊘ {stitch.msg}</span>
+              ) : stitch?.phase === 'done' ? (
+                <span className="text-bronze">✓ stitched {stitch.w}×{stitch.h} — saved</span>
+              ) : (
+                <>Stitches to {w.toLocaleString()}×{h.toLocaleString()} px in your browser{capped && ' (browser canvas cap — use the Harpe CLI for the full pyramid)'}.</>
+              )}
+            </p>
+          );
+        })()}
         {item.sourceUrl && (
           <a href={item.sourceUrl} target="_blank" rel="noopener" className="font-mono text-[.76rem] text-bronze/80 transition hover:text-bronze-bright">↗ view at source</a>
         )}
@@ -545,6 +656,37 @@ function ArtDetail({
   );
 }
 
+// Render the educational analysis: bold the "Section:" labels, paragraph spacing,
+// and turn URLs (e.g. the "Learn more:" Wikipedia link) into clickable links.
+function AnalysisBody({ text }: { text: string }) {
+  const linkify = (str: string) =>
+    str.split(/(https?:\/\/[^\s]+)/g).map((part, i) =>
+      /^https?:\/\//.test(part)
+        ? <a key={i} href={part} target="_blank" rel="noopener" className="break-all text-bronze hover:text-bronze-bright">{part}</a>
+        : <span key={i}>{part}</span>,
+    );
+  // Group lines into paragraphs: a "Label:" line starts a new one; wrapped
+  // continuation lines append. So each section ("The Subject", "Facts", "Learn
+  // more") becomes its own paragraph with a bold label, however the model spaced it.
+  const LABEL = /^([A-Z][A-Za-z ]{1,28}):\s*(.*)$/;
+  const paras: Array<{ label?: string; body: string }> = [];
+  for (const raw of text.trim().split(/\n+/)) {
+    const line = raw.trim();
+    if (!line) continue;
+    const m = LABEL.exec(line);
+    if (m) paras.push({ label: m[1], body: m[2] });
+    else if (paras.length) paras[paras.length - 1].body += ' ' + line;
+    else paras.push({ body: line });
+  }
+  return (
+    <div className="space-y-3 text-[.9rem] leading-relaxed text-ink/90">
+      {paras.map((p, i) => (
+        <p key={i}>{p.label && <strong className="text-bronze-bright">{p.label} </strong>}{linkify(p.body)}</p>
+      ))}
+    </div>
+  );
+}
+
 // ─── Finder ────────────────────────────────────────────────────────────────────
 
 export default function Finder() {
@@ -559,6 +701,8 @@ export default function Finder() {
   const [dlMap, setDlMap] = useState<Map<number, DlStatus>>(new Map());
   const [dlBusy, setDlBusy] = useState(false);
   const [dlDone, setDlDone] = useState(false);
+  // a gigapixel/zoomable image detected on a scanned page (shown alongside images)
+  const [scanDeepzoom, setScanDeepzoom] = useState<DeepZoomDescriptor | null>(null);
 
   // art state
   const [artItems, setArtItems] = useState<ArtItem[]>([]);
@@ -592,7 +736,7 @@ export default function Finder() {
   const [analyzeEnabled, setAnalyzeEnabled] = useState(false);
   const [analysis, setAnalysis] = useState<
     | null
-    | { phase: 'loading' | 'done' | 'error'; title: string; text?: string; contributors?: string[]; cached?: boolean; message?: string }
+    | { phase: 'loading' | 'done' | 'error'; title: string; text?: string; contributors?: string[]; cached?: boolean; message?: string; wikipedia?: { title: string; url: string } }
   >(null);
 
   const inputId = useId();
@@ -613,6 +757,24 @@ export default function Finder() {
       } else {
         setError('Could not resolve a downloadable image from that IIIF URL. Try the Harpe CLI for full tile-stitching support.');
         setMode('error');
+      }
+      return;
+    }
+
+    // A DeepZoom (.dzi) / Zoomify (ImageProperties.xml) descriptor pasted directly
+    // → resolve to a deep-zoom item (our own in-browser viewer + full-res stitch).
+    if (isURL(q) && DEEPZOOM_DESC_RE.test(q)) {
+      try {
+        const res = await fetch(`/api/deepzoom?url=${encodeURIComponent(q)}`);
+        const json: { ok?: boolean; descriptor?: DeepZoomDescriptor; message?: string } = await res.json();
+        if (json.ok && json.descriptor) {
+          setArtItems([deepzoomItem(json.descriptor, q)]); setWarnings([]); setQuery(q);
+          setStreaming(false); setSourceFilter(new Set()); setPdOnly(false); setLosslessOnly(false);
+          setMode('art'); return;
+        }
+        setError(json.message || 'Could not read that zoomable-image descriptor.'); setMode('error');
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'Network error'); setMode('error');
       }
       return;
     }
@@ -646,13 +808,24 @@ export default function Finder() {
     // Any other URL → scan the page for images
     if (isURL(q)) {
       setImages([]); setSelected(new Set()); setDlMap(new Map()); setDlBusy(false); setDlDone(false);
-      setPageUrl(q); setQuery(q);
+      setScanDeepzoom(null); setPageUrl(q); setQuery(q);
       try {
         const res = await fetch(`/api/scan?url=${encodeURIComponent(q)}`);
-        const json: { images?: ImageCandidate[]; error?: string; sauceEnabled?: boolean } = await res.json();
+        const json: { images?: ImageCandidate[]; error?: string; sauceEnabled?: boolean; deepzoom?: DeepZoomDescriptor | null } = await res.json();
         if (!res.ok) { setError(json.error ?? `Server error ${res.status}`); setMode('error'); return; }
         setSauceEnabled(Boolean(json.sauceEnabled));
         const candidates = json.images ?? [];
+        // A zoomable/gigapixel image was detected on the page.
+        if (json.deepzoom) {
+          // No flat images either → it IS a deep-zoom viewer (GA&C-style). Open ours.
+          if (candidates.length === 0) {
+            setArtItems([deepzoomItem(json.deepzoom, q)]); setWarnings([]);
+            setStreaming(false); setSourceFilter(new Set()); setPdOnly(false); setLosslessOnly(false);
+            setMode('art'); return;
+          }
+          // Has flat images too → list them, but offer the gigapixel viewer up top.
+          setScanDeepzoom(json.deepzoom);
+        }
         if (candidates.length === 0) { setMode('empty'); return; }
         setImages(candidates.map((c) => ({ ...c, naturalWidth: -1, loaded: false })));
         setMode('scan');
@@ -699,7 +872,7 @@ export default function Finder() {
       setWarnings(Array.isArray(json.warnings) ? json.warnings : []);
       const items = (json.items ?? []).map(normalizeArt);
       if (items.length === 0) { setMode('empty'); return; }
-      setArtItems(items); setMode('art');
+      setArtItems(rankArt(items, q)); setMode('art');
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Network error'); setMode('error');
     }
@@ -848,6 +1021,15 @@ export default function Finder() {
   const detailIndex = detailId ? detailItems.findIndex((it) => it.id === detailId) : -1;
   const openDetailAt = useCallback((i: number) => setDetailId(detailItems[i]?.id ?? null), [detailItems]);
 
+  // Open a detected gigapixel image in our deep-zoom viewer (from a scanned page).
+  const openDeepzoom = useCallback((d: DeepZoomDescriptor) => {
+    const it = deepzoomItem(d, pageUrl || undefined);
+    setArtItems([it]); setWarnings([]); setStreaming(false);
+    setSourceFilter(new Set()); setPdOnly(false); setLosslessOnly(false);
+    setMediumFilter(new Set()); setMinRes(0); setYearMin(''); setYearMax('');
+    setMode('art'); setDetailId(it.id);
+  }, [pageUrl]);
+
   const analyzeWork = useCallback(async (item: ArtItem) => {
     const group = siblingsByKey.get(workKey(item)) ?? [item];
     setAnalysis({ phase: 'loading', title: item.title });
@@ -873,7 +1055,7 @@ export default function Finder() {
         setAnalysis({ phase: 'error', title: item.title, message });
         return;
       }
-      setAnalysis({ phase: 'done', title: item.title, text: json.analysis, contributors: json.contributors, cached: json.cached });
+      setAnalysis({ phase: 'done', title: item.title, text: json.analysis, contributors: json.contributors, cached: json.cached, wikipedia: json.wikipedia });
     } catch (e) {
       setAnalysis({ phase: 'error', title: item.title, message: e instanceof Error ? e.message : 'Network error' });
     }
@@ -1044,16 +1226,9 @@ export default function Finder() {
             </p>
             {isURL(query || input) && (
               <p className="mt-3 font-mono text-[.78rem] text-muted/70">
-                Gigapixel / zoomable image (Google Arts &amp; Culture, Zoomify, deep-zoom)?{' '}
-                <a
-                  href={`https://dezoomify.ophir.dev/#${query || input}`}
-                  target="_blank"
-                  rel="noopener"
-                  className="text-bronze hover:text-bronze-bright"
-                >
-                  Open in dezoomify ↗
-                </a>{' '}
-                to stitch the full-resolution image.
+                {/(^|\.)artsandculture\.google\.com/i.test(query || input)
+                  ? <>Google Arts &amp; Culture uses proprietary signed tiles that rotate — those need the Harpe CLI (dezoomify-rs). Zoomify, DeepZoom &amp; IIIF viewers stitch right here in the browser.</>
+                  : <>Zoomable / gigapixel images (Zoomify, DeepZoom, IIIF) are detected and opened in the deep-zoom viewer automatically — none was found here.</>}
               </p>
             )}
           </div>
@@ -1079,6 +1254,16 @@ export default function Finder() {
                 {dlBusy && <Spinner small />}
                 {dlDone ? 'Done ✓' : `Download${selected.size > 0 ? ` ${selected.size}` : ''}`}
               </button>
+              {scanDeepzoom && (
+                <button
+                  type="button"
+                  onClick={() => openDeepzoom(scanDeepzoom)}
+                  title="A gigapixel / zoomable image was detected on this page"
+                  className="flex items-center gap-2 rounded-full border border-bronze/45 bg-bronze/10 px-4 py-1 font-mono text-[.72rem] text-bronze-bright transition hover:border-bronze hover:bg-bronze/20"
+                >
+                  ⊕ Open gigapixel viewer
+                </button>
+              )}
             </div>
 
             <div className="columns-2 gap-4 sm:columns-3 lg:columns-4 2xl:columns-5">
@@ -1296,13 +1481,13 @@ export default function Finder() {
       )}
 
       {/* cross-source synthesis modal */}
-      {analysis && (
+      {analysis && createPortal(
         <div
           role="dialog"
           aria-modal="true"
           aria-label="Synthesized analysis"
           onClick={() => setAnalysis(null)}
-          className="fixed inset-0 z-[100] flex items-center justify-center bg-[rgba(8,6,4,.8)] p-4 backdrop-blur-sm"
+          className="fixed inset-0 z-[120] flex items-center justify-center bg-[rgba(8,6,4,.8)] p-4 backdrop-blur-sm"
         >
           <div
             onClick={(e) => e.stopPropagation()}
@@ -1326,20 +1511,27 @@ export default function Finder() {
             {analysis.phase === 'error' && (
               <p className="py-4 text-[.88rem] text-amber/90">{analysis.message}</p>
             )}
-            {analysis.phase === 'done' && (
+            {analysis.phase === 'done' && analysis.text && (
               <>
-                <p className="whitespace-pre-wrap text-[.9rem] leading-relaxed text-ink/90">{analysis.text}</p>
+                <AnalysisBody text={analysis.text} />
+                {analysis.wikipedia?.url && (
+                  <p className="mt-4 border-t border-line pt-3 font-mono text-[.72rem] text-muted/80">
+                    📖 Background from Wikipedia:{' '}
+                    <a href={analysis.wikipedia.url} target="_blank" rel="noopener" className="text-bronze hover:text-bronze-bright">{analysis.wikipedia.title}</a>
+                  </p>
+                )}
                 {analysis.contributors && analysis.contributors.length > 0 && (
-                  <p className="mt-4 border-t border-line pt-3 font-mono text-[.7rem] text-muted/70">
+                  <p className="mt-2 font-mono text-[.7rem] text-muted/70">
                     Synthesized from: {analysis.contributors.join(' · ')}
                     {analysis.cached ? ' · cached' : ''}
                   </p>
                 )}
-                <p className="mt-2 font-mono text-[.66rem] text-muted/50">AI-generated from the sources' metadata — may contain errors.</p>
+                <p className="mt-2 font-mono text-[.66rem] text-muted/50">AI-assisted, grounded in the sources &amp; Wikipedia — may contain errors.</p>
               </>
             )}
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
     </section>
   );

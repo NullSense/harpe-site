@@ -18,6 +18,7 @@ import type { VercelRequest, VercelResponse } from './_vercel.js';
 import { fetch } from 'undici';
 import { parse as parseHtml } from 'node-html-parser';
 import { GuardError, guardUrl, pinnedAgent, rateLimit, clientIp } from './_guard.js';
+import { detectFromHtml, type DeepZoomDescriptor } from './_deepzoom.js';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -345,16 +346,24 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const { finalUrl, html } = await safeFetch(rawUrl);
     let images = extractImages(html, finalUrl);
     let rendered = false;
+    let scannedHtml = html;
+    let scannedUrl = finalUrl;
     // JS-rendered page → nothing in static HTML → try Firecrawl (if configured).
     if (images.length === 0) {
       const fc = await firecrawlScrape(rawUrl);
       if (fc) {
+        scannedHtml = fc.html; scannedUrl = fc.finalUrl;
         const fcImages = extractImages(fc.html, fc.finalUrl);
         if (fcImages.length > 0) { images = fcImages; rendered = true; }
       }
     }
+    // Detect a zoomable-image descriptor (IIIF / DZI / Zoomify) in the same HTML —
+    // cheap when none is present (regex only; no fetch). Lets the client offer our
+    // own in-browser deep-zoom + full-res stitch for gigapixel viewers.
+    let deepzoom: DeepZoomDescriptor | null = null;
+    try { deepzoom = await detectFromHtml(scannedHtml, scannedUrl); } catch { deepzoom = null; }
     res.setHeader('Cache-Control', 'public, s-maxage=1800, stale-while-revalidate=86400');
-    return res.status(200).json({ images, rendered, sauceEnabled: Boolean(process.env.SAUCENAO_API_KEY) });
+    return res.status(200).json({ images, rendered, deepzoom, sauceEnabled: Boolean(process.env.SAUCENAO_API_KEY) });
   } catch (e) {
     if (e instanceof GuardError) {
       res.setHeader('Cache-Control', 'no-store');

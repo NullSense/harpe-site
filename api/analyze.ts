@@ -22,6 +22,10 @@ import { GuardError, rateLimit, clientIp } from './_guard.js';
 
 const TIMEOUT_MS = 25_000;
 const CACHE_TTL_S = 60 * 60 * 24 * 30; // 30 days
+const MAX_TOKENS = 1400;               // ~350-550 words of educational prose
+const WIKI_MAX_CHARS = 5000;           // cap the Wikipedia context fed to the LLM
+const UA = 'HarpeArtSearch/1.0 (https://harpe-site.vercel.app)';
+const ANALYZE_VERSION = 'v2';          // bump to invalidate cached older/shorter analyses
 
 interface SourceRecord {
   source?: string;
@@ -59,7 +63,7 @@ function pickProviders(): Provider[] {
       headers: { 'content-type': 'application/json', 'x-goog-api-key': gem },
       body: (prompt) => ({
         contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: { maxOutputTokens: 900, temperature: 0.4 },
+        generationConfig: { maxOutputTokens: MAX_TOKENS, temperature: 0.4 },
       }),
       extract: (d) => s((d as { candidates?: Array<{ content?: { parts?: Array<{ text?: unknown }> } }> })
         ?.candidates?.[0]?.content?.parts?.map((p) => s(p.text)).join('') ?? ''),
@@ -72,7 +76,7 @@ function pickProviders(): Provider[] {
     out.push({
       url: 'https://api.groq.com/openai/v1/chat/completions',
       headers: { 'content-type': 'application/json', authorization: `Bearer ${groq}` },
-      body: (prompt) => ({ model, max_tokens: 900, messages: [{ role: 'user', content: prompt }] }),
+      body: (prompt) => ({ model, max_tokens: MAX_TOKENS, messages: [{ role: 'user', content: prompt }] }),
       extract: (d) => s((d as { choices?: Array<{ message?: { content?: unknown } }> })?.choices?.[0]?.message?.content),
     });
   }
@@ -101,7 +105,7 @@ function pickProviders(): Provider[] {
       },
       body: (prompt) => ({
         models,
-        max_tokens: 800,
+        max_tokens: MAX_TOKENS,
         messages: [{ role: 'user', content: prompt }],
         ...(web ? { plugins: [{ id: 'web', max_results: 3 }] } : {}),
       }),
@@ -114,7 +118,7 @@ function pickProviders(): Provider[] {
     out.push({
       url: 'https://api.anthropic.com/v1/messages',
       headers: { 'content-type': 'application/json', 'x-api-key': ak, 'anthropic-version': '2023-06-01' },
-      body: (prompt) => ({ model, max_tokens: 800, messages: [{ role: 'user', content: prompt }] }),
+      body: (prompt) => ({ model, max_tokens: MAX_TOKENS, messages: [{ role: 'user', content: prompt }] }),
       extract: (d) => s((d as { content?: Array<{ text?: unknown }> })?.content?.[0]?.text),
     });
   }
@@ -145,12 +149,57 @@ function cacheKey(title: string, artist: string, items: SourceRecord[]): string 
     .map((i) => ({ s: i.source, d: i.date, m: i.medium, c: i.culture, cl: i.creditLine, desc: i.description }))
     .sort((a, b) => (a.s || '').localeCompare(b.s || ''));
   const h = createHash('sha256').update(JSON.stringify(norm)).digest('hex').slice(0, 16);
-  return `analyze:${base}:${h}`;
+  return `analyze:${ANALYZE_VERSION}:${base}:${h}`;
+}
+
+// ─── Wikipedia retrieval (RAG grounding — free, no key) ────────────────────────
+// Find the encyclopedia article for the artwork and pull its plain-text so the LLM
+// can teach real history/iconography/interpretation instead of inventing it. Fixed
+// public host (no user URL → no SSRF surface), best-effort (null on any failure).
+
+export interface WikiContext { title: string; url: string; extract: string; }
+
+const GENERIC_TITLE = /^(untitled|study|sketch|portrait of a (?:man|woman|lady|gentleman)|landscape|still life|no\.?\s*\d+)\b/i;
+
+export async function fetchWikipedia(title: string, artist: string, signal: AbortSignal): Promise<WikiContext | null> {
+  if (!title || title.length < 4 || GENERIC_TITLE.test(title)) return null; // too generic to disambiguate
+  const norm = (x: string) => x.toLowerCase();
+  try {
+    // 1) Find the best-matching page.
+    const q = [title, artist].filter(Boolean).join(' ');
+    const searchUrl = `https://en.wikipedia.org/w/api.php?action=query&format=json&origin=*&list=search&srlimit=5&srprop=&srsearch=${encodeURIComponent(q)}`;
+    const sr = await fetch(searchUrl, { signal, headers: { 'User-Agent': UA, Accept: 'application/json' } });
+    if (!sr.ok) return null;
+    const hits = ((await sr.json()) as { query?: { search?: Array<{ title?: string }> } }).query?.search ?? [];
+    if (!hits.length) return null;
+    const titleWords = new Set(norm(title).split(/\W+/).filter((w) => w.length > 3));
+    const best = hits.find((h) => h.title && [...titleWords].some((w) => norm(h.title!).includes(w)))?.title ?? hits[0].title;
+    if (!best) return null;
+
+    // 2) Fetch the plain-text extract + canonical URL (follow redirects).
+    const exUrl = `https://en.wikipedia.org/w/api.php?action=query&format=json&origin=*&prop=extracts|info&explaintext=1&exsectionformat=plain&inprop=url&redirects=1&titles=${encodeURIComponent(best)}`;
+    const er = await fetch(exUrl, { signal, headers: { 'User-Agent': UA, Accept: 'application/json' } });
+    if (!er.ok) return null;
+    const pages = ((await er.json()) as { query?: { pages?: Record<string, { extract?: string; fullurl?: string; title?: string }> } }).query?.pages ?? {};
+    const page = Object.values(pages)[0];
+    const extract = s(page?.extract).replace(/\n{3,}/g, '\n\n').trim();
+    if (extract.length < 160) return null; // too thin to be useful
+
+    // 3) Guard against grabbing the wrong page: if we know the artist, the article
+    //    should mention their surname — otherwise it's likely a different subject.
+    if (artist) {
+      const surname = norm(artist).split(/\W+/).filter(Boolean).pop() ?? '';
+      if (surname.length > 2 && !norm(extract).includes(surname)) return null;
+    }
+    return { title: s(page?.title) || best, url: s(page?.fullurl), extract: extract.slice(0, WIKI_MAX_CHARS) };
+  } catch {
+    return null;
+  }
 }
 
 // ─── Prompt ────────────────────────────────────────────────────────────────────
 
-function buildPrompt(title: string, artist: string, items: SourceRecord[]): string {
+function buildPrompt(title: string, artist: string, items: SourceRecord[], wiki: WikiContext | null): string {
   const blocks = items.map((it, i) => {
     const lines = [
       `[Source ${i + 1}: ${s(it.source)}]`,
@@ -163,18 +212,37 @@ function buildPrompt(title: string, artist: string, items: SourceRecord[]): stri
     return lines.join('\n');
   }).join('\n\n');
 
+  const wikiBlock = wiki
+    ? `\nENCYCLOPEDIC BACKGROUND (Wikipedia — "${wiki.title}"):\n${wiki.extract}\n`
+    : '';
+
   return (
-    `You are an art historian writing for a curious general audience. Several ` +
-    `museum/collection databases describe what appears to be the SAME artwork. ` +
-    `Synthesize their information into ONE clear, engaging account.\n\n` +
+    `You are an engaging art historian and educator writing for a curious general ` +
+    `audience meeting this artwork for the first time. Teach them about it — make ` +
+    `them understand and want to keep looking.\n\n` +
+    `Write flowing prose under these short plain-text section labels (each on its ` +
+    `own line, in Title Case followed by a colon):\n` +
+    `- The Subject: what is depicted and the story, myth, event, or person behind ` +
+    `it — who the figures are and what moment we are seeing.\n` +
+    `- Context: the artist, when and why it was made, the movement/period, and the ` +
+    `historical moment around it.\n` +
+    `- How to Look: the composition — how the eye is led through the picture, and ` +
+    `the use of light, line, gesture, colour, and focal point, and what those ` +
+    `choices make you feel or understand.\n` +
+    `- Meaning: symbolism, interpretation, any scholarly debate, and why it matters.\n\n` +
     `RULES:\n` +
-    `- Use ONLY the facts in the sources below. Do NOT invent anything.\n` +
-    `- Merge overlapping facts; if sources disagree, note it briefly.\n` +
-    `- If sources are thin, keep it short — never pad with speculation.\n` +
-    `- ~150-220 words of prose, then a short "Facts:" list (date, medium, where held).\n` +
-    `- Plain text, no markdown headers.\n\n` +
-    `ARTWORK: "${title}"${artist ? ` — ${artist}` : ''}\n\n` +
-    `SOURCES:\n${blocks}`
+    `- Ground everything in the context below. Use the encyclopedic background for ` +
+    `history, narrative, and interpretation; use the museum records for catalogue ` +
+    `facts (date, medium, where held).\n` +
+    `- Be vivid and specific, but do NOT invent facts the context doesn't support. ` +
+    `If a section is thin on evidence, keep it brief rather than padding.\n` +
+    `- ~350-550 words total. Plain text (no markdown headers or bullets in the body).\n` +
+    `- End with one line "Facts: <date> · <medium> · <where held>"` +
+    (wiki ? ` and a final line "Learn more: ${wiki.url}".` : `.`) +
+    `\n\n` +
+    `ARTWORK: "${title}"${artist ? ` — ${artist}` : ''}\n` +
+    wikiBlock +
+    `\nMUSEUM RECORDS:\n${blocks}`
   );
 }
 
@@ -243,7 +311,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   // ── LLM synthesis — try each provider in turn; fall through on failure ──
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
-  const prompt = buildPrompt(title, artist, items);
+  // Retrieval-augment with Wikipedia so the analysis can teach real history /
+  // narrative / interpretation. Best-effort: null → metadata-only (still works).
+  const wiki = await fetchWikipedia(title, artist, controller.signal);
+  const prompt = buildPrompt(title, artist, items, wiki);
+  const wikipedia = wiki ? { title: wiki.title, url: wiki.url } : undefined;
   let lastErr = 'no provider succeeded';
   try {
     for (const provider of providers) {
@@ -258,7 +330,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         const analysis = provider.extract(await r.json()).trim();
         if (!analysis) { lastErr = 'empty analysis'; continue; }
 
-        const payload = { analysis, contributors };
+        const payload = { analysis, contributors, wikipedia };
         if (redis) { try { await redis.set(ck, JSON.stringify(payload), { ex: CACHE_TTL_S }); } catch { /* ignore */ } }
         res.setHeader('Cache-Control', 'public, s-maxage=86400');
         return res.status(200).json({ ...payload, cached: false });

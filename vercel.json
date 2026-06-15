@@ -14,6 +14,14 @@
       "maxDuration": 10,
       "memory": 256
     },
+    "api/deepzoom.ts": {
+      "maxDuration": 20,
+      "memory": 256
+    },
+    "api/tile.ts": {
+      "maxDuration": 20,
+      "memory": 256
+    },
     "api/fetch.ts": {
       "maxDuration": 30,
       "memory": 1024

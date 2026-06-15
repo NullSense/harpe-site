@@ -30,6 +30,8 @@
 import type { VercelRequest, VercelResponse } from './_vercel.js';
 import { fetch, Agent } from 'undici';
 import { GuardError, rateLimit, clientIp } from './_guard.js';
+import { rankResults } from '../src/lib/search.js';
+import { qualityScore } from '../src/lib/ranking.js';
 
 // HTTP/2 dispatcher (lazy). NYPL's HTTP/1.1 path returns "HTTP Basic: Access
 // denied" and ignores the Token auth scheme; over HTTP/2 (what curl uses) the
@@ -115,46 +117,9 @@ function fmtFromUrl(url: string): string {
   return ext;
 }
 
-// Query-relevance ranking (mirrors the CLI's harpe.rank): score each result by
-// how many query tokens appear in its title+artist, so the ACTUAL work searched
-// for floats to the top instead of just "other works by the same artist".
-const STOP = new Set([
-  'the', 'and', 'of', 'to', 'in', 'on', 'by', 'with', 'from', 'for',
-  'his', 'her', 'its', 'a', 'an', 'at', 'as',
-]);
-
-function queryTokens(q: string): string[] {
-  return q.toLowerCase().split(/[^a-z0-9]+/).filter((t) => t.length >= 3 && !STOP.has(t));
-}
-
-function relevance(item: ArtItem, toks: string[]): number {
-  const hay = `${item.title} ${item.artist}`.toLowerCase();
-  let r = 0;
-  for (const t of toks) if (hay.includes(t)) r++;
-  return r;
-}
-
-// Quality nudge — MUST stay in sync with src/lib/ranking.ts (different build, so
-// duplicated). Query-aware: never penalise a medium the user explicitly searched.
-const PAINT_RE = /\b(oil|tempera|acrylic|gouache|fresco|distemper|encaustic|watercolou?r|panel|canvas)\b/;
-const REPRO_RE = /\b(photograph|photo|negative|gelatin silver|transparency|lantern|daguerreotype|photomechanical|collotype|halftone|photogravure|lithograph|etching|engraving|woodcut|mezzotint|serigraph|screen ?print|poster|postcard|reproduction|xerography)\b/;
-const BOOK_RE = /\b(book|bound volume|frontispiece|title page|folio|pamphlet|magazine|periodical|leaflet|spine|binding|dust jacket)\b|\b\d{1,4}\s*p\.|leaves of plate|\bp\.\s*illus|\billus\./;
-const WANT_BOOK_RE = /\b(book|magazine|periodical|pamphlet|manuscript|illustration)\b/;
-const SRC_PRIOR: Record<string, number> = { digitalnz: -5, commons: -1, si: -1 };
-function qualityScore(item: ArtItem, query = ''): number {
-  let s = 0;
-  const med = (item.medium || '').toLowerCase();
-  const t = (item.title || '').toLowerCase();
-  const q = query.toLowerCase();
-  const wantsRepro = REPRO_RE.test(q);
-  const wantsBook = WANT_BOOK_RE.test(q);
-  if (PAINT_RE.test(med) && !wantsRepro) s += 4;
-  if (REPRO_RE.test(med) && !wantsRepro) s -= 3;
-  if ((BOOK_RE.test(med) || BOOK_RE.test(t)) && !wantsBook) s -= 4;
-  if (/\bafter [a-z]|reproduction|postcard|photograph of\b/.test(t)) s -= 2;
-  s += SRC_PRIOR[item.source] ?? 0;
-  return s;
-}
+// Relevance, fuzzy matching, the gate, RRF fusion (search.ts) and the quality
+// prior (ranking.ts) all live in shared, unit-tested modules — imported above —
+// so the server and client rank identically with no duplicated logic.
 
 async function timedFetch(url: string, signal: AbortSignal): Promise<Response> {
   return fetch(url, {
@@ -704,8 +669,15 @@ async function fetchNasjonalmuseet(q: string): Promise<ArtItem[]> {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const json = await res.json() as {
       data?: Array<{
-        id?: unknown;
+        uuid?: unknown;
+        nmId?: unknown;
+        inventoryNumber?: unknown;
         mainTitle?: unknown;
+        labelDate?: unknown;
+        objectName?: unknown;
+        materialTechniqueDescription?: unknown;
+        publishableDimensions?: unknown;
+        creditLine?: unknown;
         production?: Array<{ person?: { name?: unknown }; role?: unknown }>;
         multimedia?: Array<{ imageUrl?: unknown; iiifUrl?: unknown; thumbnail?: unknown }>;
       }>;
@@ -724,12 +696,19 @@ async function fetchNasjonalmuseet(q: string): Promise<ArtItem[]> {
         full = iiif;
       }
       if (!thumb) continue;
+      // Stable, UNIQUE id: the API dropped `id`; use uuid → nmId → inventoryNumber.
+      // Without one we'd emit duplicate `nasjonalmuseet-` ids → key collisions and
+      // a detail view that opens the wrong/no item. Skip if none exists.
+      const stableId = str(it.uuid) || str(it.nmId) || str(it.inventoryNumber);
+      if (!stableId) continue;
       const artist = it.production?.find((p) => p.person && str(p.person.name))?.person;
+      const title = str(it.mainTitle) || 'Untitled';
+      const artistName = artist ? str(artist.name) : '';
       items.push({
-        id: `nasjonalmuseet-${str(it.id)}`,
-        title: str(it.mainTitle) || 'Untitled',
-        artist: artist ? str(artist.name) : '',
-        dimensions: '',
+        id: `nasjonalmuseet-${stableId}`,
+        title,
+        artist: artistName,
+        dimensions: str(it.publishableDimensions),
         thumbUrl: thumb,
         previewUrl: preview,
         fullUrl: full,
@@ -738,6 +717,9 @@ async function fetchNasjonalmuseet(q: string): Promise<ArtItem[]> {
         downloads: [{ label: 'Full JPEG', url: full, format: 'jpeg', lossless: false }],
         source: 'nasjonalmuseet',
         isPublicDomain: false, // mixed rights — badge a caution
+        date: str(it.labelDate) || undefined,
+        medium: str(it.materialTechniqueDescription) || str(it.objectName) || undefined,
+        creditLine: str(it.creditLine) || undefined,
       });
     }
     return items;
@@ -768,11 +750,13 @@ async function fetchDigitalNZ(q: string): Promise<ArtItem[]> {
     for (const r of json.search?.results ?? []) {
       const thumb = str(r.thumbnail_url);
       if (!thumb) continue;
+      const title = str(r.title) || 'Untitled';
+      const artist = first(r.creator);
       const large = str(r.large_thumbnail_url) || thumb;
       items.push({
         id: `digitalnz-${str(r.id)}`,
-        title: str(r.title) || 'Untitled',
-        artist: first(r.creator),
+        title,
+        artist,
         dimensions: '',
         thumbUrl: thumb,
         previewUrl: large,
@@ -1365,39 +1349,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(502).json({ error: 'All museum sources failed', warnings });
   }
 
-  // Rank by query relevance FIRST (so the actual work searched for is on top),
-  // then public-domain, then source order. This is the fix for "Rodin Thinker"
-  // returning other Rodin works instead of The Thinker.
-  const toks = queryTokens(q);
-  const SOURCE_ORDER: Record<string, number> = {
-    aic: 0, met: 1, cleveland: 2, vam: 3, wellcome: 4, smk: 5, nasjonalmuseet: 6,
-    parismusees: 7, harvard: 8, europeana: 9, si: 10, moma: 11, nga: 12, mia: 13, loc: 14,
-    nypl: 15, dumps: 16, wikidata: 17, digitalnz: 18, wikiart: 19, commons: 20,
-  };
-  // Round-robin rank: 0 = each source's top result, 1 = its second, etc.
-  // (items arrive grouped by source, each in that API's own relevance order).
-  const rrIndex = new Map<ArtItem, number>();
-  const seen: Record<string, number> = {};
-  for (const it of items) {
-    seen[it.source] = (seen[it.source] ?? -1) + 1;
-    rrIndex.set(it, seen[it.source]);
-  }
-  // Sort: exact matches first (relevance), then INTERLEAVE sources within each
-  // relevance tier (round-robin) so every contributing collection gets shown,
-  // then public-domain, then a stable source order.
-  // relevance dominates (×10); quality nudges order within each relevance tier.
-  const score = (it: ArtItem) => relevance(it, toks) * 10 + qualityScore(it, q);
-  items.sort((a, b) => {
-    const sa = score(a);
-    const sb = score(b);
-    if (sa !== sb) return sb - sa;
-    const da = rrIndex.get(a) ?? 0;
-    const db = rrIndex.get(b) ?? 0;
-    if (da !== db) return da - db;
-    if (a.isPublicDomain !== b.isPublicDomain) return a.isPublicDomain ? -1 : 1;
-    return (SOURCE_ORDER[a.source] ?? 99) - (SOURCE_ORDER[b.source] ?? 99);
-  });
-  const capped = items.slice(0, MAX_ITEMS);
+  // De-dup, gate out non-matching fallback hits, and rank with Reciprocal Rank
+  // Fusion — one shared pipeline (src/lib/search.ts) used identically by the
+  // client. Fixes "Rodin Thinker" → other Rodin works, and "JW Waterhouse" →
+  // unrelated AIC/MoMA fallbacks leaking in.
+  const capped = rankResults(items, q, { qualityOf: (it) => qualityScore(it, q) }).slice(0, MAX_ITEMS);
 
   res.setHeader('Cache-Control', 'public, s-maxage=3600, stale-while-revalidate=86400');
   return res.status(200).json({
