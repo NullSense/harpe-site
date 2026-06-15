@@ -100,6 +100,13 @@ await check('site:/api/x resolves tweet media (public syndication)', false, asyn
   return `${j.media.length} media`;
 });
 
+await check('site:/api/grab reachable (501 until COBALT_API_URL is set)', false, async () => {
+  const r = await get(`${BASE}/api/grab?url=${enc('https://youtube.com/watch?v=dQw4w9WgXcQ')}`);
+  // 501 = cobalt not configured (expected default); 200/422/404 = configured + working.
+  if (![200, 422, 404, 501].includes(r.status)) throw new Error(`unexpected ${r.status}`);
+  return r.status === 501 ? 'cobalt not configured' : `status ${r.status}`;
+});
+
 await check('site:/api/scan extracts images from a page', false, async () => {
   const j = await getJson(`${BASE}/api/scan?url=${enc('https://en.wikipedia.org/wiki/The_Death_of_Socrates')}`);
   if (!(j.images && j.images.length > 0)) throw new Error('no images extracted');

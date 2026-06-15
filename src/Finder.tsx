@@ -73,9 +73,11 @@ interface ArtItem {
   /** Present for zoomable/gigapixel images (DZI/Zoomify/IIIF) — drives OSD deep-zoom
    *  and our in-browser full-resolution tile-stitch download. */
   deepzoom?: DeepZoomDescriptor;
-  /** Present for video posts (X/Twitter etc.) — drives the <video> player +
-   *  quality-picker download instead of the image viewer. */
-  video?: { poster: string; best: string; variants: Array<{ label: string; url: string; bitrate: number }> };
+  /** Present for video posts (X/Twitter, cobalt-resolved sites) — drives the
+   *  <video> player + download instead of the image viewer. `direct` means the
+   *  url already serves as an attachment (cobalt tunnel) so download is a plain
+   *  anchor; otherwise it's pulled through /api/fetch to force the attachment. */
+  video?: { poster: string; best: string; variants: Array<{ label: string; url: string; bitrate: number }>; direct?: boolean };
 }
 
 // Normalize a (title, artist) into a key for grouping the same work across sources.
@@ -124,6 +126,9 @@ const IMAGE_URL_RE = /\.(jpe?g|png|webp|gif|avif|tiff?|bmp)(?:[?#]|$)/i;
 const DEEPZOOM_DESC_RE = /(\.dzi|ImageProperties\.xml)(?:[?#].*)?$/i;
 // An X / Twitter post URL → its numeric status id.
 const X_STATUS_RE = /(?:twitter\.com|x\.com)\/[^/]+\/status(?:es)?\/(\d+)/i;
+// Hosts a self-hosted cobalt instance can grab (routed via /api/grab). X is handled
+// natively above; the rest need cobalt (configured via COBALT_API_URL) or the CLI.
+const MEDIA_HOST_RE = /(?:^|\.)(youtube\.com|youtu\.be|instagram\.com|tiktok\.com|reddit\.com|redd\.it|vimeo\.com|soundcloud\.com|twitch\.tv|facebook\.com|fb\.watch|pinterest\.|tumblr\.com|bilibili\.com|dailymotion\.com|streamable\.com|bsky\.app|vk\.com)/i;
 
 // Turn an X/Twitter post's resolved media into downloadable ArtItems (video →
 // <video> player + MP4 quality picker; photo → normal image).
@@ -150,6 +155,32 @@ function xMediaToItems(data: { id: string; text?: string; author?: string; media
         format: fmt, lossless: LOSSLESS_FORMATS.has(fmt),
         downloads: [{ label: 'Image', url: m.url, format: fmt, lossless: LOSSLESS_FORMATS.has(fmt) }],
         source: 'scan', isPublicDomain: false, sourceUrl: tweetUrl,
+      });
+    }
+  });
+  return out;
+}
+
+// Turn cobalt-resolved media (video/audio/photo) into downloadable ArtItems.
+interface CobaltMedia { type: 'video' | 'audio' | 'photo'; url: string; filename?: string; thumb?: string; }
+function cobaltMediaToItems(data: { media?: CobaltMedia[] }, pageUrl: string): ArtItem[] {
+  const out: ArtItem[] = [];
+  (data.media || []).forEach((m, i) => {
+    if (m.type === 'photo') {
+      const fmt = fmtFromUrl(m.url);
+      out.push({
+        id: `grab:p${i}:${m.url.slice(-24)}`, title: m.filename?.replace(/\.[^.]+$/, '') || 'Image', artist: '',
+        thumbUrl: m.url, previewUrl: m.url, fullUrl: m.url, format: fmt, lossless: LOSSLESS_FORMATS.has(fmt),
+        downloads: [{ label: 'Image', url: m.url, format: fmt, lossless: LOSSLESS_FORMATS.has(fmt) }],
+        source: 'scan', isPublicDomain: false, sourceUrl: pageUrl,
+      });
+    } else {
+      out.push({
+        id: `grab:v${i}:${m.url.slice(-24)}`, title: m.filename?.replace(/\.[^.]+$/, '') || (m.type === 'audio' ? 'Audio' : 'Video'), artist: '',
+        thumbUrl: m.thumb || '', previewUrl: m.thumb || '', fullUrl: m.url, format: m.type === 'audio' ? 'm4a' : 'mp4', lossless: false,
+        downloads: [{ label: 'Download', url: m.url, format: m.type === 'audio' ? 'm4a' : 'mp4', lossless: false }],
+        source: 'scan', isPublicDomain: false, sourceUrl: pageUrl,
+        video: { poster: m.thumb || '', best: m.url, variants: [{ label: 'Download', url: m.url, bitrate: 0 }], direct: true },
       });
     }
   });
@@ -647,8 +678,18 @@ function ArtDetail({
         <div className="flex flex-wrap items-center gap-2 pt-1">
           {item.video ? (
             <>
-              <span className="font-mono text-[.72rem] text-muted/60">⬇ MP4</span>
-              {item.video.variants.map((v) => (
+              <span className="font-mono text-[.72rem] text-muted/60">⬇ {item.format === 'm4a' ? 'audio' : 'video'}</span>
+              {item.video.variants.map((v) => item.video!.direct ? (
+                // cobalt tunnel already serves Content-Disposition: attachment
+                <a
+                  key={v.url}
+                  href={v.url}
+                  download={safeName(item.title || 'video', item.artist, item.format === 'm4a' ? 'm4a' : 'mp4')}
+                  className="rounded border border-bronze/45 bg-bronze/10 px-3 py-1.5 font-mono text-[.74rem] text-bronze-bright transition hover:border-bronze hover:bg-bronze/20"
+                >
+                  {v.label}
+                </a>
+              ) : (
                 <button
                   key={v.url}
                   type="button"
@@ -889,6 +930,27 @@ export default function Finder() {
       setSourceFilter(new Set()); setPdOnly(false); setLosslessOnly(false);
       setMode('art');
       return;
+    }
+
+    // A cobalt-supported media host (YouTube/IG/TikTok/Reddit/…) → resolve via the
+    // self-hosted cobalt backend (/api/grab). 501 → not configured: tell the user.
+    if (isURL(q) && MEDIA_HOST_RE.test((() => { try { return new URL(q).hostname; } catch { return ''; } })())) {
+      try {
+        const res = await fetch(`/api/grab?url=${encodeURIComponent(q)}`);
+        const json = await res.json();
+        if (res.ok && Array.isArray(json.media)) {
+          const items = cobaltMediaToItems(json, q);
+          if (items.length) {
+            setArtItems(items); setWarnings([]); setQuery(q); setStreaming(false);
+            setSourceFilter(new Set()); setPdOnly(false); setLosslessOnly(false);
+            setMediumFilter(new Set()); setMinRes(0); setYearMin(''); setYearMax('');
+            setMode('art'); return;
+          }
+        }
+        setError(json.error ?? `Could not grab media (${res.status}).`); setMode('error'); return;
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'Network error'); setMode('error'); return;
+      }
     }
 
     // Any other URL → scan the page for images

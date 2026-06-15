@@ -26,6 +26,10 @@
       "maxDuration": 15,
       "memory": 256
     },
+    "api/grab.ts": {
+      "maxDuration": 30,
+      "memory": 256
+    },
     "api/fetch.ts": {
       "maxDuration": 30,
       "memory": 1024
