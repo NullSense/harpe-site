@@ -59,6 +59,19 @@ test('the analysis dialog renders on top of the detail viewer', async ({ page })
   expect(onTop).toBe(true); // z-index / portal fix
 });
 
+test('X/Twitter video post: renders a player and downloads an MP4', async ({ page }) => {
+  await page.goto(`/?q=${encodeURIComponent('https://x.com/tester/status/123')}`);
+  await page.locator('img[alt*="demo video clip"]').first().click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog).toBeVisible();
+  await expect(dialog.locator('video')).toBeVisible();
+
+  const download = page.waitForEvent('download', { timeout: 15_000 });
+  await dialog.getByRole('button', { name: '1080p', exact: true }).click();
+  const file = await download;
+  expect(file.suggestedFilename()).toMatch(/\.mp4$/);
+});
+
 test('DZI deep-zoom stitches and downloads a full-resolution image', async ({ page }) => {
   await page.goto(`/?q=${encodeURIComponent('http://museum.test/dzi/x.dzi')}`);
   await page.locator('img[alt*="Zoomable image"]').first().click();

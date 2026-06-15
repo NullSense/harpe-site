@@ -91,6 +91,15 @@ await check('site:/api/deepzoom detects a DZI descriptor', true, async () => {
   return `${j.descriptor.width}x${j.descriptor.height}`;
 });
 
+await check('site:/api/x resolves tweet media (public syndication)', false, async () => {
+  // Example post; non-critical (tweets can be deleted — reports, doesn't page).
+  const j = await getJson(`${BASE}/api/x?id=2034694139066077325`);
+  if (!Array.isArray(j.media) || j.media.length === 0) throw new Error('no media');
+  const v = j.media.find((m) => m.type === 'video');
+  if (v && !v.best) throw new Error('video without mp4');
+  return `${j.media.length} media`;
+});
+
 await check('site:/api/scan extracts images from a page', false, async () => {
   const j = await getJson(`${BASE}/api/scan?url=${enc('https://en.wikipedia.org/wiki/The_Death_of_Socrates')}`);
   if (!(j.images && j.images.length > 0)) throw new Error('no images extracted');

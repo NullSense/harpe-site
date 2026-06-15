@@ -92,6 +92,14 @@ const server = http.createServer(async (req, res) => {
     if (u.pathname === '/api/iiif') return json(res, IIIF_INFO);
     if (u.pathname === '/api/deepzoom') return json(res, { ok: true, descriptor: DZI_DESCRIPTOR });
     if (u.pathname === '/api/analyze') return json(res, { analysis: ANALYSIS, contributors: ['aic', 'met'], cached: false, wikipedia: { title: 'Test', url: 'https://en.wikipedia.org/wiki/Test' } });
+    if (u.pathname === '/api/x') return json(res, {
+      id: '123', text: 'demo video clip', author: 'Tester',
+      media: [{ type: 'video', poster: 'http://museum.test/poster.jpg', best: 'http://museum.test/v/1080.mp4',
+        variants: [
+          { label: '1080p', url: 'http://museum.test/v/1080.mp4', bitrate: 8000000 },
+          { label: '720p', url: 'http://museum.test/v/720.mp4', bitrate: 1200000 },
+        ] }],
+    });
     if (u.pathname === '/api/scan') return json(res, { images: [], deepzoom: null, sauceEnabled: false });
     if (u.pathname === '/api/tile' || u.pathname === '/api/fetch') {
       res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'public, max-age=60' });

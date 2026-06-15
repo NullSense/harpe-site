@@ -57,7 +57,7 @@ async function safeFetchImage(
 
   const headers: Record<string, string> = {
     'User-Agent': UA,
-    Accept: 'image/*,*/*;q=0.8',
+    Accept: 'image/*,video/*,audio/*,*/*;q=0.8',
   };
   if (referer) {
     headers['Referer'] = referer;
@@ -91,9 +91,12 @@ async function safeFetchImage(
     }
 
     const ct = (res.headers.get('content-type') ?? '').split(';')[0].trim().toLowerCase();
-    if (!ct.startsWith('image/')) {
+    // Media proxy: images (sharp-convertible) plus video/audio passthrough (X/Insta
+    // clips etc.). sharp conversion only runs when w/h/fmt/q are passed, which the
+    // client never does for video — so video is always a clean streaming passthrough.
+    if (!/^(image|video|audio)\//.test(ct)) {
       await res.body?.cancel();
-      throw new GuardError(415, 'URL did not return an image — only image/* responses are proxied');
+      throw new GuardError(415, 'URL did not return image/video/audio — only media is proxied');
     }
 
     const lenHeader = Number(res.headers.get('content-length'));
@@ -203,6 +206,7 @@ function deriveFilename(url: string, contentType: string): string {
   const IMG_EXT = new Set([
     '.jpg', '.jpeg', '.png', '.webp', '.gif', '.avif',
     '.tiff', '.tif', '.bmp', '.svg',
+    '.mp4', '.webm', '.mov', '.m4a', '.mp3', '.ogg',
   ]);
   const CT_EXT: Record<string, string> = {
     'image/jpeg': '.jpg',
@@ -213,9 +217,17 @@ function deriveFilename(url: string, contentType: string): string {
     'image/tiff': '.tiff',
     'image/bmp': '.bmp',
     'image/svg+xml': '.svg',
+    'video/mp4': '.mp4',
+    'video/webm': '.webm',
+    'video/quicktime': '.mov',
+    'audio/mpeg': '.mp3',
+    'audio/mp4': '.m4a',
   };
 
-  let name = 'image';
+  // 'image' is the wrong default for a video/audio download.
+  const fallbackStem = contentType.startsWith('video/') ? 'video' : contentType.startsWith('audio/') ? 'audio' : 'image';
+
+  let name = fallbackStem;
   try {
     const path = decodeURIComponent(new URL(url).pathname);
     const base = path.split('/').pop() ?? '';
@@ -227,10 +239,10 @@ function deriveFilename(url: string, contentType: string): string {
   const lcName = name.toLowerCase();
   const hasExt = IMG_EXT.has(lcName.slice(lcName.lastIndexOf('.')));
   if (!hasExt) {
-    name += CT_EXT[contentType] ?? '.jpg';
+    name += CT_EXT[contentType] ?? (fallbackStem === 'image' ? '.jpg' : `.${fallbackStem === 'video' ? 'mp4' : 'm4a'}`);
   }
 
-  return name || 'image.jpg';
+  return name || `${fallbackStem}.${fallbackStem === 'image' ? 'jpg' : fallbackStem === 'video' ? 'mp4' : 'm4a'}`;
 }
 
 // ─── Handler ─────────────────────────────────────────────────────────────────

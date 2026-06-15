@@ -34,6 +34,7 @@ import {
   downloadViaProxy,
   fmtFromUrl,
   isURL,
+  safeName,
 } from './lib/media';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -72,6 +73,9 @@ interface ArtItem {
   /** Present for zoomable/gigapixel images (DZI/Zoomify/IIIF) — drives OSD deep-zoom
    *  and our in-browser full-resolution tile-stitch download. */
   deepzoom?: DeepZoomDescriptor;
+  /** Present for video posts (X/Twitter etc.) — drives the <video> player +
+   *  quality-picker download instead of the image viewer. */
+  video?: { poster: string; best: string; variants: Array<{ label: string; url: string; bitrate: number }> };
 }
 
 // Normalize a (title, artist) into a key for grouping the same work across sources.
@@ -118,6 +122,39 @@ const IIIF_INFO_RE = /^https?:\/\/.+\/info\.json$/i;
 const IMAGE_URL_RE = /\.(jpe?g|png|webp|gif|avif|tiff?|bmp)(?:[?#]|$)/i;
 // A DeepZoom (.dzi) or Zoomify (ImageProperties.xml) descriptor pasted directly.
 const DEEPZOOM_DESC_RE = /(\.dzi|ImageProperties\.xml)(?:[?#].*)?$/i;
+// An X / Twitter post URL → its numeric status id.
+const X_STATUS_RE = /(?:twitter\.com|x\.com)\/[^/]+\/status(?:es)?\/(\d+)/i;
+
+// Turn an X/Twitter post's resolved media into downloadable ArtItems (video →
+// <video> player + MP4 quality picker; photo → normal image).
+interface XMedia { type: 'video' | 'photo'; url?: string; poster?: string; best?: string; variants?: Array<{ label: string; url: string; bitrate: number }>; }
+function xMediaToItems(data: { id: string; text?: string; author?: string; media?: XMedia[] }, tweetUrl: string): ArtItem[] {
+  const title = (data.text || '').replace(/\s*https?:\/\/\S+\s*$/i, '').trim().slice(0, 90) || 'X post';
+  const artist = data.author || '';
+  const out: ArtItem[] = [];
+  (data.media || []).forEach((m, i) => {
+    if (m.type === 'video' && m.best && m.variants?.length) {
+      out.push({
+        id: `x:${data.id}:v${i}`, title, artist,
+        thumbUrl: m.poster || '', previewUrl: m.poster || '', fullUrl: m.best,
+        format: 'mp4', lossless: false,
+        downloads: m.variants.map((v) => ({ label: v.label, url: v.url, format: 'mp4', lossless: false })),
+        source: 'scan', isPublicDomain: false, sourceUrl: tweetUrl,
+        video: { poster: m.poster || '', best: m.best, variants: m.variants },
+      });
+    } else if (m.type === 'photo' && m.url) {
+      const fmt = fmtFromUrl(m.url);
+      out.push({
+        id: `x:${data.id}:p${i}`, title, artist,
+        thumbUrl: m.url, previewUrl: m.url, fullUrl: m.url,
+        format: fmt, lossless: LOSSLESS_FORMATS.has(fmt),
+        downloads: [{ label: 'Image', url: m.url, format: fmt, lossless: LOSSLESS_FORMATS.has(fmt) }],
+        source: 'scan', isPublicDomain: false, sourceUrl: tweetUrl,
+      });
+    }
+  });
+  return out;
+}
 
 // Turn a detected zoomable-image descriptor into an ArtItem that opens in the
 // OpenSeadragon deep-zoom viewer and offers our in-browser full-res stitch.
@@ -315,6 +352,11 @@ function ArtCard({
           onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; onImgError?.(); }}
         />
         <PreviewBadge />
+        {item.video && (
+          <span aria-hidden className="pointer-events-none absolute inset-0 flex items-center justify-center">
+            <span className="flex h-12 w-12 items-center justify-center rounded-full bg-[rgba(10,8,6,.6)] text-xl text-ink/90 backdrop-blur-sm transition group-hover:bg-bronze/30">▶</span>
+          </span>
+        )}
         {onToggleSelect && (
           <button
             type="button"
@@ -529,7 +571,18 @@ function ArtDetail({
     <div role="dialog" aria-modal="true" aria-label={item.title} className="fixed inset-0 z-[70] flex flex-col bg-[rgba(8,6,4,.96)] backdrop-blur-sm lg:flex-row">
       {/* image stage */}
       <div className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden" {...imgHandlers}>
-        {useOsd ? (
+        {item.video ? (
+          <video
+            src={item.video.best}
+            poster={item.video.poster}
+            controls
+            autoPlay
+            muted
+            loop
+            playsInline
+            className="max-h-full max-w-full select-none object-contain"
+          />
+        ) : useOsd ? (
           // h-full w-full (not just inset-0): OSD forces position:relative on its
           // host, which would void inset-0 and collapse the container to 0×0.
           <div ref={osdRef} className="absolute inset-0 h-full w-full" />
@@ -592,7 +645,21 @@ function ArtDetail({
         {item.creditLine && <p className="text-[.76rem] italic leading-snug text-muted/60">{item.creditLine}</p>}
 
         <div className="flex flex-wrap items-center gap-2 pt-1">
-          {item.deepzoom ? (
+          {item.video ? (
+            <>
+              <span className="font-mono text-[.72rem] text-muted/60">⬇ MP4</span>
+              {item.video.variants.map((v) => (
+                <button
+                  key={v.url}
+                  type="button"
+                  onClick={() => downloadViaProxy(v.url, safeName(item.title || 'video', item.artist, 'mp4'))}
+                  className="rounded border border-bronze/45 bg-bronze/10 px-3 py-1.5 font-mono text-[.74rem] text-bronze-bright transition hover:border-bronze hover:bg-bronze/20"
+                >
+                  {v.label}
+                </button>
+              ))}
+            </>
+          ) : item.deepzoom ? (
             <button
               type="button"
               onClick={runStitch}
@@ -607,7 +674,7 @@ function ArtDetail({
           ) : (
             <DownloadMenu fullUrl={item.fullUrl} title={item.title} artist={item.artist} />
           )}
-          {analyzeEnabled && (
+          {analyzeEnabled && !item.video && (
             <button type="button" onClick={() => onAnalyze(item)} className="rounded border border-bronze/40 bg-bronze/[.07] px-3 py-1.5 font-mono text-[.74rem] text-bronze-bright transition hover:border-bronze hover:bg-bronze/15">✦ Analyse</button>
           )}
           <button type="button" onClick={() => onShare(item.id)} title="Copy a shareable link" className="rounded border border-line px-2.5 py-1.5 font-mono text-[.78rem] text-muted transition hover:border-bronze/60 hover:text-bronze-bright">⧉</button>
@@ -748,6 +815,25 @@ export default function Finder() {
     setDetailId(null);
     setMode('loading');
     setError('');
+
+    // X / Twitter post URL → resolve its video(s) + photos (public syndication API)
+    const xm = isURL(q) ? X_STATUS_RE.exec(q) : null;
+    if (xm) {
+      try {
+        const res = await fetch(`/api/x?id=${xm[1]}`);
+        const json = await res.json();
+        if (!res.ok) { setError(json.error ?? `Error ${res.status}`); setMode('error'); return; }
+        const items = xMediaToItems(json, q);
+        if (items.length === 0) { setMode('empty'); return; }
+        setArtItems(items); setWarnings([]); setQuery(q); setStreaming(false);
+        setSourceFilter(new Set()); setPdOnly(false); setLosslessOnly(false);
+        setMediumFilter(new Set()); setMinRes(0); setYearMin(''); setYearMax('');
+        setMode('art');
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'Network error'); setMode('error');
+      }
+      return;
+    }
 
     // IIIF URL → resolve to a single art result
     if (isURL(q) && IIIF_MANIFEST_RE.test(q)) {
@@ -1284,9 +1370,9 @@ export default function Finder() {
             <div className="mx-auto mt-10 max-w-[680px] rounded-xl border border-line bg-[rgba(14,10,7,.55)] px-5 py-4">
               <p className="font-mono text-[.75rem] leading-relaxed text-muted/80">
                 <span className="font-semibold text-muted">Works on:</span> static pages, blogs, galleries,
-                museum sites, Wikipedia, news.{'  '}
-                <span className="font-semibold text-muted">Needs the CLI/extension:</span> video and
-                login-walled social sites (Instagram, X, YouTube) — a server can't see your session.
+                museum sites, Wikipedia, news, and <span className="text-bronze/90">X / Twitter video posts</span>.{'  '}
+                <span className="font-semibold text-muted">Needs the CLI/extension:</span> Instagram, YouTube and
+                other login-walled sites — a server can't see your session.
               </p>
             </div>
           </div>
