@@ -199,7 +199,7 @@ export async function fetchWikipedia(title: string, artist: string, signal: Abor
 
 // ─── Prompt ────────────────────────────────────────────────────────────────────
 
-function buildPrompt(title: string, artist: string, items: SourceRecord[], wiki: WikiContext | null): string {
+export function buildPrompt(title: string, artist: string, items: SourceRecord[], wiki: WikiContext | null): string {
   const blocks = items.map((it, i) => {
     const lines = [
       `[Source ${i + 1}: ${s(it.source)}]`,

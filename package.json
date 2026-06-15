@@ -10,7 +10,9 @@
     "clean": "rm -rf dist",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.api.json",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "check:api": "node scripts/check-api-bundles.mjs",
+    "verify": "npm run typecheck && npm test && npm run build && npm run check:api"
   },
   "dependencies": {
     "@upstash/ratelimit": "^2.0.8",
