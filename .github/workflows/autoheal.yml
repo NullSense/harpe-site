@@ -1,0 +1,50 @@
+name: Autoheal
+
+# OPT-IN automated remediation. When you add the `autoheal` label to the monitor
+# issue, this re-runs the live monitor for fresh diagnostics and asks Claude to
+# diagnose + draft a minimal fix PR (gated by `npm run verify`). It NEVER merges
+# on its own — output is a PR for human review, because external-API breakage
+# (schema/hotlink/host changes) usually needs judgement.
+#
+# Requires (one-time): install the Claude GitHub app on the repo and add the
+# ANTHROPIC_API_KEY secret. Until then this workflow is inert (only runs when the
+# `autoheal` label is added). Verify the action version/inputs against current
+# docs: https://github.com/anthropics/claude-code-action
+on:
+  issues:
+    types: [labeled]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  heal:
+    if: github.event.label.name == 'autoheal'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Fresh diagnostics
+        run: node tests/live/monitor.mjs || true
+      - name: Draft a fix PR with Claude
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Static prompt — does NOT interpolate untrusted issue text (injection-safe).
+          prompt: >-
+            The Harpe live monitor (tests/live/monitor.mjs) reported failures;
+            its results are in monitor-results.json in this checkout. Read that
+            file, identify the failing checks, and find the root cause in api/ or
+            src/lib/ (common causes: an upstream museum API changed its response
+            schema, a host started hotlink-blocking, or an endpoint regressed).
+            Implement the smallest correct fix, add or update a unit test that
+            captures the regression, run `npm run verify` until green, then open a
+            pull request describing the failure and the fix. Do not modify secrets,
+            workflows, or unrelated code. If the failure is a transient upstream
+            outage rather than a code defect, open no PR and comment that instead.

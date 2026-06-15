@@ -1,0 +1,96 @@
+{
+  "base": "https://harpe-site.vercel.app",
+  "at": "2026-06-15T19:30:25.245Z",
+  "results": [
+    {
+      "name": "source:AIC search (schema: data[].image_id)",
+      "critical": true,
+      "ok": true,
+      "ms": 615,
+      "note": "3c27b499-af56-f0d5-93b5-a7f2f1ad5813"
+    },
+    {
+      "name": "site:/api/art search returns items",
+      "critical": true,
+      "ok": true,
+      "ms": 5989,
+      "note": "40 items"
+    },
+    {
+      "name": "site:/api/art-stream SSE yields a batch",
+      "critical": true,
+      "ok": true,
+      "ms": 9446,
+      "note": ""
+    },
+    {
+      "name": "site:/api/iiif proxy (AIC info.json)",
+      "critical": true,
+      "ok": true,
+      "ms": 399,
+      "note": "8808x8460"
+    },
+    {
+      "name": "site:/api/tile proxy serves AIC tiles (referer-default → no 403)",
+      "critical": true,
+      "ok": true,
+      "ms": 462,
+      "note": ""
+    },
+    {
+      "name": "site:/api/deepzoom detects a DZI descriptor",
+      "critical": true,
+      "ok": true,
+      "ms": 450,
+      "note": "13920x10200"
+    },
+    {
+      "name": "site:/api/scan extracts images from a page",
+      "critical": false,
+      "ok": true,
+      "ms": 643,
+      "note": "25 images"
+    },
+    {
+      "name": "deepzoom:DZI tiles reachable (duomo)",
+      "critical": true,
+      "ok": true,
+      "ms": 257,
+      "note": ""
+    },
+    {
+      "name": "deepzoom:AIC IIIF tiles reachable directly",
+      "critical": false,
+      "ok": true,
+      "ms": 351,
+      "note": "direct status 403 (proxy handles 403)"
+    },
+    {
+      "name": "source:Met (schema: objectIDs)",
+      "critical": false,
+      "ok": true,
+      "ms": 318,
+      "note": ""
+    },
+    {
+      "name": "source:Cleveland (schema: data[].images)",
+      "critical": false,
+      "ok": true,
+      "ms": 651,
+      "note": ""
+    },
+    {
+      "name": "source:Nasjonalmuseet (schema: data[].uuid + multimedia)",
+      "critical": true,
+      "ok": true,
+      "ms": 842,
+      "note": ""
+    },
+    {
+      "name": "note:X/Instagram/video = Harpe CLI (yt-dlp/gallery-dl), not this site",
+      "critical": false,
+      "ok": true,
+      "note": "tested in the harpe repo"
+    }
+  ]
+}

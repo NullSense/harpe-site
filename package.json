@@ -13,6 +13,7 @@
     "test:watch": "vitest",
     "check:api": "node scripts/check-api-bundles.mjs",
     "test:e2e": "playwright test",
+    "monitor": "node tests/live/monitor.mjs",
     "verify": "npm run typecheck && npm test && npm run build && npm run check:api"
   },
   "dependencies": {
