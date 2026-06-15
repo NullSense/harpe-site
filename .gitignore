@@ -3,6 +3,11 @@ dist/
 .vercel/
 *.local
 .DS_Store
+
+# Playwright E2E artifacts
+/test-results/
+/playwright-report/
+/blob-report/
 .vercel
 pnpm-lock.yaml
 demo/video/

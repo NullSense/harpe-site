@@ -12,6 +12,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "check:api": "node scripts/check-api-bundles.mjs",
+    "test:e2e": "playwright test",
     "verify": "npm run typecheck && npm test && npm run build && npm run check:api"
   },
   "dependencies": {
@@ -26,6 +27,7 @@
     "yet-another-react-lightbox": "3.32.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.61.0",
     "@tailwindcss/vite": "^4.1.14",
     "@types/node": "^24.13.2",
     "@types/openseadragon": "^3.0.10",
