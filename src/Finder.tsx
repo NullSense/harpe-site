@@ -1227,7 +1227,10 @@ export default function Finder() {
         const it = detailItems.find((i) => i.id === viewId);
         if (it) {
           params.set('t', it.title);
-          if (it.thumbUrl) params.set('img', it.thumbUrl);
+          // Embed the larger preview as the card image; middleware caps it to a
+          // ~1200px JPEG via the proxy, so bigger source = sharper card, no risk.
+          const previewSrc = it.previewUrl || it.thumbUrl;
+          if (previewSrc) params.set('img', previewSrc);
           const d = [it.artist, it.date, it.medium].filter(Boolean).join(' · ');
           if (d) params.set('d', d);
         }
