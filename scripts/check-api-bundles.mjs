@@ -8,11 +8,11 @@
  * with esbuild (already a transitive dependency of Vite — no new deps) and fails
  * CI if any function's import graph is broken.
  *
- * It ALSO enforces the Vercel Hobby ceiling of 12 Serverless Functions. Vercel
- * turns every non-test api/*.ts into its own function, so shared helpers must live
- * OUTSIDE api/ (in lib/ or src/lib/, bundled into the importers). Exceeding 12
- * makes the *deploy* (not the build) fail and silently freezes prod on the last
- * good deploy — which is exactly how /api/x went missing once.
+ * It ALSO enforces the Vercel Hobby ceiling of 12 Serverless Functions. The API
+ * is now a single catch-all (api/[...path].ts) dispatching to handler modules in
+ * src/lib/server/handlers, so the count is 1 — but the guard stays as a backstop:
+ * exceeding 12 makes the *deploy* (not the build) fail and silently freezes prod
+ * on the last good deploy, which is exactly how /api/x went missing once.
  */
 import { build } from 'esbuild';
 import { readdir } from 'node:fs/promises';

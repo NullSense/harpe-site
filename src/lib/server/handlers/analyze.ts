@@ -15,10 +15,10 @@
  * synthesized at most once. Rate-limited per IP.
  */
 
-import type { VercelRequest, VercelResponse } from '../src/lib/server/vercel.js';
+import type { VercelRequest, VercelResponse } from '../vercel.js';
 import { fetch } from 'undici';
 import { createHash } from 'node:crypto';
-import { GuardError, rateLimit, clientIp } from '../src/lib/server/guard.js';
+import { GuardError, rateLimit, clientIp } from '../guard.js';
 
 const TIMEOUT_MS = 25_000;
 const CACHE_TTL_S = 60 * 60 * 24 * 30; // 30 days

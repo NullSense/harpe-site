@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { findDescriptorUrls, descriptorKind, isGoogleArtsAndCulture } from '../src/lib/server/deepzoom-detect.js';
+import { findDescriptorUrls, descriptorKind, isGoogleArtsAndCulture } from './deepzoom-detect.js';
 
 describe('descriptorKind', () => {
   it('classifies descriptor URLs by suffix', () => {

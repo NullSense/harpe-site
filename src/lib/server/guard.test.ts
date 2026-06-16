@@ -4,7 +4,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // network, no new deps. Everything else is the real guard code.
 vi.mock('node:dns/promises', () => ({ default: { lookup: vi.fn() } }));
 import dns from 'node:dns/promises';
-import { guardUrl, GuardError, clientIp, checkRateLimit } from '../src/lib/server/guard.js';
+import { guardUrl, GuardError, clientIp, checkRateLimit } from './guard.js';
 
 const lookup = dns.lookup as unknown as ReturnType<typeof vi.fn>;
 const resolvesTo = (address: string, family: 4 | 6 = 4) => lookup.mockResolvedValue([{ address, family }]);

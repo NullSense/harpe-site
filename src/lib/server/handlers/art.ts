@@ -27,11 +27,11 @@
  *   - 8 second per-source timeout
  */
 
-import type { VercelRequest, VercelResponse } from '../src/lib/server/vercel.js';
+import type { VercelRequest, VercelResponse } from '../vercel.js';
 import { fetch, Agent } from 'undici';
-import { GuardError, rateLimit, clientIp } from '../src/lib/server/guard.js';
-import { rankResults } from '../src/lib/search.js';
-import { qualityScore } from '../src/lib/ranking.js';
+import { GuardError, rateLimit, clientIp } from '../guard.js';
+import { rankResults } from '../../search.js';
+import { qualityScore } from '../../ranking.js';
 
 // HTTP/2 dispatcher (lazy). NYPL's HTTP/1.1 path returns "HTTP Basic: Access
 // denied" and ignores the Token auth scheme; over HTTP/2 (what curl uses) the

@@ -12,9 +12,9 @@
  * (public http(s) only) before we hand it to SauceNAO.
  */
 
-import type { VercelRequest, VercelResponse } from '../src/lib/server/vercel.js';
+import type { VercelRequest, VercelResponse } from '../vercel.js';
 import { fetch } from 'undici';
-import { GuardError, guardUrl, rateLimit, clientIp } from '../src/lib/server/guard.js';
+import { GuardError, guardUrl, rateLimit, clientIp } from '../guard.js';
 
 const TIMEOUT_MS = 12_000;
 

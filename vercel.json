@@ -2,34 +2,7 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": "vite",
   "functions": {
-    "api/scan.ts": {
-      "maxDuration": 30
-    },
-    "api/sauce.ts": {
-      "maxDuration": 15
-    },
-    "api/iiif.ts": {
-      "maxDuration": 10
-    },
-    "api/deepzoom.ts": {
-      "maxDuration": 20
-    },
-    "api/tile.ts": {
-      "maxDuration": 20
-    },
-    "api/x.ts": {
-      "maxDuration": 15
-    },
-    "api/grab.ts": {
-      "maxDuration": 30
-    },
-    "api/fetch.ts": {
-      "maxDuration": 30
-    },
-    "api/art-stream.ts": {
-      "maxDuration": 15
-    },
-    "api/analyze.ts": {
+    "api/[...path].ts": {
       "maxDuration": 30
     }
   },
