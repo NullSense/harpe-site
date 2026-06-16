@@ -8,7 +8,12 @@ export default defineConfig({
   build: {
     rollupOptions: {
       output: {
-        manualChunks: { react: ['react', 'react-dom'] },
+        // Vite 8 bundles with rolldown, which only accepts a function here
+        // (the object form is a Vite ≤7 / rollup API). Split React into its
+        // own long-cached chunk.
+        manualChunks(id: string) {
+          if (/node_modules\/(react|react-dom|scheduler)\//.test(id)) return 'react';
+        },
       },
     },
   },
