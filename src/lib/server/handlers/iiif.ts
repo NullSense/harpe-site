@@ -14,7 +14,7 @@
 
 import type { VercelRequest, VercelResponse } from '../vercel.js';
 import { fetch } from 'undici';
-import { GuardError, guardUrl, rateLimit, clientIp } from '../guard.js';
+import { GuardError, guardUrl, pinnedAgent, rateLimit, clientIp } from '../guard.js';
 
 const UA =
   'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
@@ -34,9 +34,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   const ip = clientIp(req.headers as Record<string, string | string[] | undefined>);
+  let guarded: { url: string; ip: string; family: 4 | 6 };
   try {
     await rateLimit(ip);
-    await guardUrl(raw); // reject private/non-http targets
+    guarded = await guardUrl(raw); // reject private/non-http targets; pin the IP
   } catch (e) {
     if (e instanceof GuardError) { res.setHeader('Cache-Control', 'no-store'); return res.status(e.status).json({ error: e.message }); }
     throw e;
@@ -45,7 +46,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 8000);
   try {
-    const r = await fetch(raw, { signal: controller.signal, headers: { Accept: 'application/json', 'User-Agent': UA } });
+    // Dial the pre-validated IP (pinnedAgent) so a DNS-rebind between guard and
+    // connect can't reach a private host — matches fetch/scan/tile/deepzoom.
+    const r = await fetch(guarded.url, {
+      signal: controller.signal,
+      dispatcher: pinnedAgent(guarded.ip, guarded.family),
+      headers: { Accept: 'application/json', 'User-Agent': UA },
+    });
     if (!r.ok) { res.setHeader('Cache-Control', 'no-store'); return res.status(502).json({ error: `Upstream ${r.status}` }); }
     const json = await r.json();
     res.setHeader('Cache-Control', 'public, s-maxage=86400, stale-while-revalidate=604800');

@@ -9,7 +9,7 @@
  * and (b) GATE the greedy sources.
  *
  * Pure + exported so it's unit-tested (search.test.ts) and shared by the client
- * ranker. The server (api/art.ts) imports it directly.
+ * ranker. The server (src/lib/server/handlers/art.ts) imports it directly.
  */
 
 // ─── Normalisation ─────────────────────────────────────────────────────────────

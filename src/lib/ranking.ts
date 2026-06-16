@@ -5,7 +5,7 @@
  * explicitly searched for (e.g. searching "engraving" must not bury engravings).
  *
  * Pure + exported so it's unit-tested (ranking.test.ts) and shared by the client
- * ranker. The server (api/art.ts) keeps an identical copy (different build).
+ * ranker. The server (src/lib/server/handlers/art.ts) imports it directly.
  */
 
 export interface RankableItem {
