@@ -1266,17 +1266,17 @@ export default function Finder() {
   }, []);
 
   // Keep the address bar in sync (replaceState → no history spam during streaming).
+  // When a work is open, embed its preview data (t/img/d via buildShareUrl) so a
+  // copied address-bar link gets a rich link preview with NO server-side refetch
+  // — Vercel edge middleware can't reliably fetch its own /api/art, so relying on
+  // that left address-bar shares imageless. Embedding makes every copy work.
   useEffect(() => {
     if (mode !== 'art' && mode !== 'scan') return;
     const term = mode === 'scan' ? pageUrl : query;
     if (!term) return;
-    const params = new URLSearchParams({ q: term });
-    if (detailId && detailIndex >= 0) {
-      const id = detailId;
-      if (id) params.set('v', id);
-    }
-    window.history.replaceState(null, '', `${window.location.pathname}?${params.toString()}`);
-  }, [mode, query, pageUrl, detailId, detailIndex]);
+    const hasDetail = !!detailId && detailIndex >= 0;
+    window.history.replaceState(null, '', buildShareUrl(hasDetail ? detailId : undefined));
+  }, [mode, query, pageUrl, detailId, detailIndex, buildShareUrl]);
 
   // Infinite scroll: reveal more cards as the sentinel nears the viewport.
   useEffect(() => {
