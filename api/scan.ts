@@ -14,11 +14,11 @@
  *   - Rate limiting: 30 req/min/IP (in-memory, best-effort; see _guard.ts TODO)
  */
 
-import type { VercelRequest, VercelResponse } from './_vercel.js';
+import type { VercelRequest, VercelResponse } from '../lib/vercel.js';
 import { fetch } from 'undici';
 import { parse as parseHtml } from 'node-html-parser';
-import { GuardError, guardUrl, pinnedAgent, rateLimit, clientIp } from './_guard.js';
-import { detectFromHtml, type DeepZoomDescriptor } from './_deepzoom.js';
+import { GuardError, guardUrl, pinnedAgent, rateLimit, clientIp } from '../lib/guard.js';
+import { detectFromHtml, type DeepZoomDescriptor } from '../lib/deepzoom-detect.js';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 

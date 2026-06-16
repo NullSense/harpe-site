@@ -7,12 +7,20 @@
  * it — a class of failure typecheck cannot catch. This reproduces the bundle step
  * with esbuild (already a transitive dependency of Vite — no new deps) and fails
  * CI if any function's import graph is broken.
+ *
+ * It ALSO enforces the Vercel Hobby ceiling of 12 Serverless Functions. Vercel
+ * turns every non-test api/*.ts into its own function, so shared helpers must live
+ * OUTSIDE api/ (in lib/ or src/lib/, bundled into the importers). Exceeding 12
+ * makes the *deploy* (not the build) fail and silently freezes prod on the last
+ * good deploy — which is exactly how /api/x went missing once.
  */
 import { build } from 'esbuild';
 import { readdir } from 'node:fs/promises';
 
+const FUNCTION_LIMIT = 12; // Vercel Hobby plan
+
 const entries = (await readdir('api')).filter(
-  (f) => f.endsWith('.ts') && !f.endsWith('.test.ts') && !f.endsWith('.d.ts') && f !== '_vercel.ts',
+  (f) => f.endsWith('.ts') && !f.endsWith('.test.ts') && !f.endsWith('.d.ts'),
 );
 
 let failed = 0;
@@ -34,4 +42,10 @@ for (const f of entries) {
   }
 }
 console.log(failed ? `\n✗ ${failed} function(s) failed to bundle` : `\n✓ all ${entries.length} functions bundle cleanly`);
+
+if (entries.length > FUNCTION_LIMIT) {
+  console.error(`\n✗ ${entries.length} serverless functions — exceeds the Vercel Hobby limit of ${FUNCTION_LIMIT}.\n  Move shared helpers OUT of api/ (into lib/ or src/lib/) so they're bundled, not counted.`);
+  process.exit(1);
+}
+console.log(`  (${entries.length}/${FUNCTION_LIMIT} serverless functions)`);
 process.exit(failed ? 1 : 0);

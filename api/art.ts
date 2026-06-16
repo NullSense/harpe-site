@@ -27,9 +27,9 @@
  *   - 8 second per-source timeout
  */
 
-import type { VercelRequest, VercelResponse } from './_vercel.js';
+import type { VercelRequest, VercelResponse } from '../lib/vercel.js';
 import { fetch, Agent } from 'undici';
-import { GuardError, rateLimit, clientIp } from './_guard.js';
+import { GuardError, rateLimit, clientIp } from '../lib/guard.js';
 import { rankResults } from '../src/lib/search.js';
 import { qualityScore } from '../src/lib/ranking.js';
 

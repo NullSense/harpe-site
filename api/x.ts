@@ -10,9 +10,9 @@
  * surface. Rate-limited + cached. Returns 200 with media:[] for public posts;
  * 404/422 for protected/deleted/media-less posts.
  */
-import type { VercelRequest, VercelResponse } from './_vercel.js';
+import type { VercelRequest, VercelResponse } from '../lib/vercel.js';
 import { fetch } from 'undici';
-import { GuardError, rateLimit, clientIp } from './_guard.js';
+import { GuardError, rateLimit, clientIp } from '../lib/guard.js';
 
 const UA =
   'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';

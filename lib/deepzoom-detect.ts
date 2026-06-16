@@ -11,7 +11,7 @@
  */
 
 import { fetch } from 'undici';
-import { GuardError, guardUrl, pinnedAgent } from './_guard.js';
+import { GuardError, guardUrl, pinnedAgent } from './guard.js';
 
 export type DeepZoomProtocol = 'iiif' | 'dzi' | 'zoomify';
 

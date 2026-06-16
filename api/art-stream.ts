@@ -13,8 +13,8 @@
  * Security: same rate limiting as art.ts. Hard 9s overall timeout.
  */
 
-import type { VercelRequest, VercelResponse } from './_vercel.js';
-import { GuardError, rateLimit, clientIp } from './_guard.js';
+import type { VercelRequest, VercelResponse } from '../lib/vercel.js';
+import { GuardError, rateLimit, clientIp } from '../lib/guard.js';
 import { gatherSources } from './art.js';
 
 // ─── Node streaming cast (mirrors fetch.ts pattern) ───────────────────────────
