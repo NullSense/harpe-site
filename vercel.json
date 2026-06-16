@@ -3,57 +3,61 @@
   "framework": "vite",
   "functions": {
     "api/scan.ts": {
-      "maxDuration": 30,
-      "memory": 256
+      "maxDuration": 30
     },
     "api/sauce.ts": {
-      "maxDuration": 15,
-      "memory": 256
+      "maxDuration": 15
     },
     "api/iiif.ts": {
-      "maxDuration": 10,
-      "memory": 256
+      "maxDuration": 10
     },
     "api/deepzoom.ts": {
-      "maxDuration": 20,
-      "memory": 256
+      "maxDuration": 20
     },
     "api/tile.ts": {
-      "maxDuration": 20,
-      "memory": 256
+      "maxDuration": 20
     },
     "api/x.ts": {
-      "maxDuration": 15,
-      "memory": 256
+      "maxDuration": 15
     },
     "api/grab.ts": {
-      "maxDuration": 30,
-      "memory": 256
+      "maxDuration": 30
     },
     "api/fetch.ts": {
-      "maxDuration": 30,
-      "memory": 1024
+      "maxDuration": 30
     },
     "api/art-stream.ts": {
-      "maxDuration": 15,
-      "memory": 256
+      "maxDuration": 15
     },
     "api/analyze.ts": {
-      "maxDuration": 30,
-      "memory": 256
+      "maxDuration": 30
     }
   },
   "headers": [
     {
       "source": "/(.*)\\.(png|jpg|jpeg|webp|woff2)",
-      "headers": [{ "key": "Cache-Control", "value": "public, max-age=31536000, immutable" }]
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=31536000, immutable"
+        }
+      ]
     },
     {
       "source": "/(.*)",
       "headers": [
-        { "key": "X-Content-Type-Options", "value": "nosniff" },
-        { "key": "Referrer-Policy", "value": "strict-origin-when-cross-origin" },
-        { "key": "Permissions-Policy", "value": "camera=(), microphone=(), geolocation=()" }
+        {
+          "key": "X-Content-Type-Options",
+          "value": "nosniff"
+        },
+        {
+          "key": "Referrer-Policy",
+          "value": "strict-origin-when-cross-origin"
+        },
+        {
+          "key": "Permissions-Policy",
+          "value": "camera=(), microphone=(), geolocation=()"
+        }
       ]
     }
   ]

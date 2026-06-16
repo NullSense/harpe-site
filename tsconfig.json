@@ -15,5 +15,8 @@
     "noUnusedParameters": true,
     "noEmit": true
   },
-  "include": ["src"]
+  "include": ["src"],
+  // server-only helpers (node:dns/undici); type-checked by the api tsconfig, not
+  // the client/DOM pass (and never imported by the client bundle).
+  "exclude": ["src/lib/server"]
 }

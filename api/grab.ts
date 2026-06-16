@@ -15,9 +15,9 @@
  * SSRF surface here). cobalt returns a direct/tunnel file URL or a picker; we
  * normalise it. cobalt is AGPL-3.0 — we only CALL it over HTTP (no code linkage).
  */
-import type { VercelRequest, VercelResponse } from '../lib/vercel.js';
+import type { VercelRequest, VercelResponse } from '../src/lib/server/vercel.js';
 import { fetch } from 'undici';
-import { GuardError, rateLimit, clientIp } from '../lib/guard.js';
+import { GuardError, rateLimit, clientIp } from '../src/lib/server/guard.js';
 
 const TIMEOUT_MS = 25_000;
 const s = (v: unknown): string => (typeof v === 'string' ? v : v == null ? '' : String(v));

@@ -15,10 +15,10 @@
  * SSRF-guarded, rate-limited, cached.
  */
 
-import type { VercelRequest, VercelResponse } from '../lib/vercel.js';
+import type { VercelRequest, VercelResponse } from '../src/lib/server/vercel.js';
 import { fetch } from 'undici';
-import { GuardError, guardUrl, pinnedAgent, rateLimit, clientIp } from '../lib/guard.js';
-import { descriptorKind, parseDescriptor, findDescriptorUrls, isGoogleArtsAndCulture } from '../lib/deepzoom-detect.js';
+import { GuardError, guardUrl, pinnedAgent, rateLimit, clientIp } from '../src/lib/server/guard.js';
+import { descriptorKind, parseDescriptor, findDescriptorUrls, isGoogleArtsAndCulture } from '../src/lib/server/deepzoom-detect.js';
 
 const UA =
   'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';

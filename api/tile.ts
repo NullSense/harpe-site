@@ -11,10 +11,10 @@
  * exportable (un-tainted) canvas. SSRF-guarded like every other proxy here.
  */
 
-import type { VercelRequest, VercelResponse } from '../lib/vercel.js';
+import type { VercelRequest, VercelResponse } from '../src/lib/server/vercel.js';
 import { fetch } from 'undici';
 import type { Response as UndiciResponse } from 'undici';
-import { GuardError, guardUrl, pinnedAgent, clientIp } from '../lib/guard.js';
+import { GuardError, guardUrl, pinnedAgent, clientIp } from '../src/lib/server/guard.js';
 
 const UA =
   'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
