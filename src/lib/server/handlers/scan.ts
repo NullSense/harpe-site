@@ -49,12 +49,12 @@ const PX_RE = /\/(\d{2,5})px-/;
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function wmOriginal(url: string): string {
+export function wmOriginal(url: string): string {
   const m = WM_THUMB.exec(url);
   return m ? m[1] + m[2] : url;
 }
 
-function sizeHint(url: string, descriptor = 0): number {
+export function sizeHint(url: string, descriptor = 0): number {
   if (descriptor) return descriptor;
   try {
     const qs = new URL(url).searchParams;
@@ -70,7 +70,7 @@ function sizeHint(url: string, descriptor = 0): number {
   return m ? parseInt(m[1], 10) : 0;
 }
 
-function resolveUrl(href: string, base: string): string | null {
+export function resolveUrl(href: string, base: string): string | null {
   if (!href || href.startsWith('data:') || href.startsWith('javascript:')) return null;
   try {
     const resolved = new URL(href.trim(), base);

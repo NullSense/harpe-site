@@ -13,8 +13,8 @@
  */
 
 import type { VercelRequest, VercelResponse } from '../vercel.js';
-import { fetch } from 'undici';
 import { GuardError, guardUrl, pinnedAgent, rateLimit, clientIp } from '../guard.js';
+import { fetchWithTimeout } from '../fetchWithTimeout.js';
 
 const UA =
   'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
@@ -43,13 +43,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     throw e;
   }
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 8000);
   try {
     // Dial the pre-validated IP (pinnedAgent) so a DNS-rebind between guard and
     // connect can't reach a private host — matches fetch/scan/tile/deepzoom.
-    const r = await fetch(guarded.url, {
-      signal: controller.signal,
+    const r = await fetchWithTimeout(guarded.url, {
+      timeoutMs: 8000,
       dispatcher: pinnedAgent(guarded.ip, guarded.family),
       headers: { Accept: 'application/json', 'User-Agent': UA },
     });
@@ -61,7 +59,5 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     res.setHeader('Cache-Control', 'no-store');
     if (e instanceof Error && e.name === 'AbortError') return res.status(504).json({ error: 'IIIF info fetch timed out' });
     return res.status(502).json({ error: 'IIIF info fetch failed' });
-  } finally {
-    clearTimeout(timer);
   }
 }

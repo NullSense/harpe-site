@@ -150,7 +150,7 @@ interface ConvertParams {
   q?: number;
 }
 
-function parseConvertParams(query: Record<string, string | string[] | undefined>): ConvertParams {
+export function parseConvertParams(query: Record<string, string | string[] | undefined>): ConvertParams {
   const p: ConvertParams = {};
 
   const parseIntParam = (key: string, max: number): number | undefined => {
@@ -176,7 +176,7 @@ function parseConvertParams(query: Record<string, string | string[] | undefined>
   return p;
 }
 
-function needsConversion(p: ConvertParams): boolean {
+export function needsConversion(p: ConvertParams): boolean {
   return !!(p.w || p.h || p.fmt || p.q);
 }
 
@@ -202,7 +202,7 @@ async function bufferBody(upstream: UndiciResponse): Promise<Buffer> {
 
 // ─── Filename derivation ──────────────────────────────────────────────────────
 
-function deriveFilename(url: string, contentType: string): string {
+export function deriveFilename(url: string, contentType: string): string {
   const IMG_EXT = new Set([
     '.jpg', '.jpeg', '.png', '.webp', '.gif', '.avif',
     '.tiff', '.tif', '.bmp', '.svg',

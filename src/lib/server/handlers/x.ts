@@ -11,8 +11,8 @@
  * 404/422 for protected/deleted/media-less posts.
  */
 import type { VercelRequest, VercelResponse } from '../vercel.js';
-import { fetch } from 'undici';
 import { GuardError, rateLimit, clientIp } from '../guard.js';
+import { fetchWithTimeout } from '../fetchWithTimeout.js';
 
 const UA =
   'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
@@ -21,12 +21,12 @@ const TIMEOUT_MS = 12_000;
 const s = (v: unknown): string => (typeof v === 'string' ? v : v == null ? '' : String(v));
 
 /** The obfuscation token the syndication endpoint expects, derived from the id. */
-function tweetToken(id: string): string {
+export function tweetToken(id: string): string {
   return ((Number(id) / 1e15) * Math.PI).toString(6 ** 2).replace(/(0+|\.)/g, '');
 }
 
 /** "…/1080x1080/…mp4" → "1080p" (falls back to the bitrate). */
-function variantLabel(url: string, bitrate: number): string {
+export function variantLabel(url: string, bitrate: number): string {
   const m = /\/(\d+)x(\d+)\//.exec(url);
   if (m) return `${m[2]}p`;
   return bitrate ? `${Math.round(bitrate / 1000)}kbps` : 'video';
@@ -47,11 +47,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   try { await rateLimit(ip); }
   catch (e) { if (e instanceof GuardError) { res.setHeader('Cache-Control', 'no-store'); return res.status(e.status).json({ error: e.message }); } throw e; }
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
   try {
     const url = `https://cdn.syndication.twimg.com/tweet-result?id=${id}&token=${tweetToken(id)}&lang=en`;
-    const r = await fetch(url, { signal: controller.signal, headers: { 'User-Agent': UA, Accept: 'application/json' } });
+    const r = await fetchWithTimeout(url, { timeoutMs: TIMEOUT_MS, headers: { 'User-Agent': UA, Accept: 'application/json' } });
     if (!r.ok) { res.setHeader('Cache-Control', 'no-store'); return res.status(502).json({ error: `Upstream ${r.status}` }); }
     const j = await r.json() as {
       __typename?: string; text?: unknown;
@@ -89,7 +87,5 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     res.setHeader('Cache-Control', 'no-store');
     if (e instanceof Error && e.name === 'AbortError') return res.status(504).json({ error: 'Tweet fetch timed out' });
     return res.status(502).json({ error: 'Tweet fetch failed' });
-  } finally {
-    clearTimeout(timer);
   }
 }

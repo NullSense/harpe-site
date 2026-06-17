@@ -13,8 +13,8 @@
  */
 
 import type { VercelRequest, VercelResponse } from '../vercel.js';
-import { fetch } from 'undici';
 import { GuardError, guardUrl, rateLimit, clientIp } from '../guard.js';
+import { fetchWithTimeout } from '../fetchWithTimeout.js';
 
 const TIMEOUT_MS = 12_000;
 
@@ -67,13 +67,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     throw e;
   }
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
   try {
     const api =
       `https://saucenao.com/search.php?output_type=2&numres=8&db=999` +
       `&api_key=${encodeURIComponent(key)}&url=${encodeURIComponent(imageUrl)}`;
-    const r = await fetch(api, { signal: controller.signal, headers: { Accept: 'application/json' } });
+    const r = await fetchWithTimeout(api, { timeoutMs: TIMEOUT_MS, headers: { Accept: 'application/json' } });
     if (!r.ok) {
       res.setHeader('Cache-Control', 'no-store');
       return res.status(502).json({ error: `SauceNAO returned ${r.status}` });
@@ -122,7 +120,5 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
     console.error('[sauce] error', e);
     return res.status(502).json({ error: 'Reverse-image search failed' });
-  } finally {
-    clearTimeout(timer);
   }
 }

@@ -16,8 +16,8 @@
  * normalise it. cobalt is AGPL-3.0 — we only CALL it over HTTP (no code linkage).
  */
 import type { VercelRequest, VercelResponse } from '../vercel.js';
-import { fetch } from 'undici';
 import { GuardError, rateLimit, clientIp } from '../guard.js';
+import { fetchWithTimeout } from '../fetchWithTimeout.js';
 
 const TIMEOUT_MS = 25_000;
 const s = (v: unknown): string => (typeof v === 'string' ? v : v == null ? '' : String(v));
@@ -42,13 +42,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   try { await rateLimit(ip); }
   catch (e) { if (e instanceof GuardError) { res.setHeader('Cache-Control', 'no-store'); return res.status(e.status).json({ error: e.message }); } throw e; }
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
   try {
     const headers: Record<string, string> = { Accept: 'application/json', 'Content-Type': 'application/json' };
     if (process.env.COBALT_API_KEY) headers.Authorization = `Api-Key ${process.env.COBALT_API_KEY}`;
-    const r = await fetch(cobalt.replace(/\/$/, '') + '/', {
-      method: 'POST', signal: controller.signal, headers,
+    const r = await fetchWithTimeout(cobalt.replace(/\/$/, '') + '/', {
+      timeoutMs: TIMEOUT_MS,
+      method: 'POST', headers,
       body: JSON.stringify({ url, videoQuality: '1080', filenameStyle: 'basic', downloadMode: 'auto' }),
     });
     const j = await r.json() as {
@@ -86,7 +85,5 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     res.setHeader('Cache-Control', 'no-store');
     if (e instanceof Error && e.name === 'AbortError') return res.status(504).json({ error: 'cobalt timed out' });
     return res.status(502).json({ error: 'cobalt request failed' });
-  } finally {
-    clearTimeout(timer);
   }
 }
