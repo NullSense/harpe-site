@@ -18,6 +18,7 @@ import DownloadMenu from './components/DownloadMenu';
 import SearchSuggest from './components/SearchSuggest';
 import Discover from './components/Discover';
 import { streamArt } from './lib/useArtStream';
+import { SOURCE_LABELS, SOURCE_ORDER, type DisplaySource } from './lib/source-meta';
 import { fitsScreen } from './lib/resolutions';
 import { qualityScore, stripHtml, mediumCategory, yearOf, rankResults } from '@harpe/core';
 import {
@@ -63,7 +64,7 @@ interface ArtItem {
   format: string;
   lossless: boolean;
   downloads: DownloadVariant[];
-  source: 'aic' | 'met' | 'cleveland' | 'commons' | 'wikiart' | 'vam' | 'wellcome' | 'smk' | 'nasjonalmuseet' | 'digitalnz' | 'wikidata' | 'europeana' | 'harvard' | 'si' | 'parismusees' | 'moma' | 'nga' | 'mia' | 'loc' | 'nypl' | 'dumps' | 'iiif' | 'scan';
+  source: DisplaySource;
   isPublicDomain: boolean;
   date?: string;
   medium?: string;
@@ -71,6 +72,7 @@ interface ArtItem {
   creditLine?: string;
   description?: string;
   sourceUrl?: string;
+  provider?: string;
   /** Present for zoomable/gigapixel images (DZI/Zoomify/IIIF) — drives OSD deep-zoom
    *  and our in-browser full-resolution tile-stitch download. */
   deepzoom?: DeepZoomDescriptor;
@@ -108,14 +110,6 @@ const SHOWN_STEP = 24; // infinite-scroll page size
 // ranking is preserved and fused with an IDF-weighted, name-aware, fuzzy relevance
 // leg + a quality prior + a cross-source consensus boost. So the streamed view
 // stays relevance-first instead of arrival order.
-// Stable display order for the source-filter chips (ranking itself is handled by
-// the RRF `fuse`, which preserves each source's own ordering).
-const SOURCE_ORDER: Record<string, number> = {
-  aic: 0, met: 1, cleveland: 2, vam: 3, wellcome: 4, smk: 5, nasjonalmuseet: 6,
-  parismusees: 7, harvard: 8, europeana: 9, si: 10, moma: 11, nga: 12, mia: 13, loc: 14,
-  nypl: 15, dumps: 16, wikidata: 17, digitalnz: 18, wikiart: 19, commons: 20,
-};
-
 function rankArt(items: ArtItem[], q: string): ArtItem[] {
   return rankResults(items, q, { qualityOf: (it) => qualityScore(it, q) });
 }
@@ -338,9 +332,6 @@ function PreviewBadge() {
 
 // ─── Art card (search mode: per-variant downloads + metadata, click to preview) ─
 
-const SOURCE_LABELS: Record<string, string> = {
-  aic: 'AIC', met: 'Met', cleveland: 'Cleveland', commons: 'Commons', wikiart: 'WikiArt', vam: 'V&A', wellcome: 'Wellcome', smk: 'SMK', nasjonalmuseet: 'Nasjonalmus.', digitalnz: 'DigitalNZ', wikidata: 'Wikidata', europeana: 'Europeana', harvard: 'Harvard', si: 'Smithsonian', parismusees: 'Paris Musées', moma: 'MoMA', nga: 'NGA', mia: 'MIA', loc: 'Library of Congress', nypl: 'NYPL', dumps: 'Open data', iiif: 'IIIF', scan: 'Web page',
-};
 function SourceBadge({ source }: { source: ArtItem['source'] }) {
   return (
     <span className="shrink-0 rounded-sm bg-bronze/15 px-1.5 py-0.5 font-mono text-[.65rem] text-bronze">
@@ -1184,7 +1175,7 @@ const Finder = forwardRef<FinderHandle>(function Finder(_props, ref) {
   const pdCount = useMemo(() => artItems.filter((i) => i.isPublicDomain).length, [artItems]);
   // sources present in the current results, with counts, ordered by SOURCE_ORDER
   const sourceCounts = useMemo(() => {
-    const m = new Map<string, number>();
+    const m = new Map<DisplaySource, number>();
     for (const it of artItems) m.set(it.source, (m.get(it.source) ?? 0) + 1);
     return [...m.entries()].sort(
       (a, b) => (SOURCE_ORDER[a[0]] ?? 99) - (SOURCE_ORDER[b[0]] ?? 99),
@@ -1388,8 +1379,8 @@ const Finder = forwardRef<FinderHandle>(function Finder(_props, ref) {
             </button>
           </p>
           <p className="mt-6 text-center font-mono text-[.68rem] tracking-[0.04em] text-muted/55">
-            millions of works across 15 open collections — the Met · Art Institute of Chicago · Cleveland · V&amp;A ·
-            Wellcome · Harvard · Smithsonian · Library of Congress · SMK · Nasjonalmuseet · Europeana · Wikidata · DigitalNZ · WikiArt · Wikimedia Commons
+            millions of works across open collections and aggregators — the Met · AIC · Cleveland · V&amp;A ·
+            Wellcome · SMK · Nasjonalmuseet · MoMA · NGA · MIA · Europeana · Wikidata · Commons
           </p>
         </>
       )}

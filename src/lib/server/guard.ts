@@ -241,7 +241,7 @@ export function checkRateLimit(ip: string): void {
 // ── Upstash Redis sliding-window (optional, cross-instance) ─────────────────
 // Lazy singleton — created once on first call when env vars are present.
 // Importing dynamically keeps the module loadable even when the packages are
-// absent from node_modules (they are always present after `npm install`, but
+// absent from node_modules (they are always present after a dependency install, but
 // this pattern prevents startup crashes if env vars are missing).
 
 let _upstashRatelimit: { limit: (key: string) => Promise<{ success: boolean }> } | null | undefined;
@@ -302,12 +302,20 @@ export async function rateLimit(ip: string): Promise<void> {
 
 /** Extract best-effort client IP from Vercel request headers. */
 export function clientIp(headers: Record<string, string | string[] | undefined>): string {
+  // Prefer `x-real-ip`: Vercel's edge sets it to the true client IP and clients
+  // cannot forge it. `x-forwarded-for` is NOT safe to trust leftmost-first — a
+  // client can prepend an arbitrary value and Vercel appends the real IP after
+  // it, so the leftmost entry is attacker-controlled (rate-limit bypass). Fall
+  // back to the RIGHTMOST x-forwarded-for entry (closest trusted hop).
+  const realIp = headers['x-real-ip'];
+  const real = Array.isArray(realIp) ? realIp[0] : realIp;
+  if (typeof real === 'string' && real.trim()) return real.trim();
+
   const xff = headers['x-forwarded-for'];
-  if (typeof xff === 'string' && xff.trim()) {
-    return xff.split(',')[0].trim();
-  }
-  if (Array.isArray(xff) && xff.length) {
-    return xff[0].split(',')[0].trim();
+  const xffStr = Array.isArray(xff) ? xff[xff.length - 1] : xff;
+  if (typeof xffStr === 'string' && xffStr.trim()) {
+    const parts = xffStr.split(',').map((s) => s.trim()).filter(Boolean);
+    if (parts.length) return parts[parts.length - 1];
   }
   return 'unknown';
 }

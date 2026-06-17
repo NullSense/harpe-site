@@ -58,9 +58,19 @@ describe('guardUrl — SSRF protection', () => {
 });
 
 describe('clientIp', () => {
-  it('takes the first x-forwarded-for hop', () => {
-    expect(clientIp({ 'x-forwarded-for': '1.2.3.4, 5.6.7.8' })).toBe('1.2.3.4');
-    expect(clientIp({ 'x-forwarded-for': ['9.9.9.9, 1.1.1.1'] })).toBe('9.9.9.9');
+  it('prefers x-real-ip (Vercel-set, unforgeable)', () => {
+    expect(clientIp({ 'x-real-ip': '1.2.3.4', 'x-forwarded-for': '9.9.9.9' })).toBe('1.2.3.4');
+    expect(clientIp({ 'x-real-ip': ['1.2.3.4'] })).toBe('1.2.3.4');
+  });
+
+  it('falls back to the RIGHTMOST x-forwarded-for hop (closest trusted proxy)', () => {
+    // The leftmost entry is client-supplied/spoofable; the rightmost is the one
+    // appended by the trusted edge. Using leftmost was a rate-limit bypass.
+    expect(clientIp({ 'x-forwarded-for': '1.2.3.4, 5.6.7.8' })).toBe('5.6.7.8');
+    expect(clientIp({ 'x-forwarded-for': ['9.9.9.9, 1.1.1.1'] })).toBe('1.1.1.1');
+  });
+
+  it('returns "unknown" when no IP headers are present', () => {
     expect(clientIp({})).toBe('unknown');
   });
 });

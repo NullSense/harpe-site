@@ -53,11 +53,11 @@ dormant until its key is set — so it's always safe to leave one unset.
 
 | Source | Env var | Register for a free key |
 |---|---|---|
-| Europeana (3,000+ EU institutions) | `EUROPEANA_API_KEY` | https://pro.europeana.eu/pages/get-api — instant email |
+| Europeana (3,000+ EU institutions, including the main machine-readable route for LT/PL/ES/PT) | `EUROPEANA_API_KEY` | https://pro.europeana.eu/pages/get-api — instant email |
 | Harvard Art Museums | `HARVARD_API_KEY` | https://harvardartmuseums.org/collections/api — fill the form, key emailed instantly |
 | Smithsonian (Open Access, CC0) | `SMITHSONIAN_API_KEY` | https://api.data.gov/signup — generic api.data.gov key works for the SI Open Access API |
-| NYPL Digital Collections (strong **photography**) | `NYPL_API_KEY` (or `NYPL_API_TOKEN`) | https://api.repo.nypl.org/ → "sign up for API access" → token emailed (10k req/day) |
-| Paris Musées (14 Paris museums) | `PARIS_MUSEES_TOKEN` | **Currently disabled in code** — redundant with Europeana and its GraphQL has no fast fulltext search. Leave unset. |
+| NYPL Digital Collections (strong **photography**) | `NYPL_API_TOKEN` | https://api.repo.nypl.org/ → "sign up for API access" → token emailed (10k req/day) |
+| Paris Musées (14 Paris museums) | `PARIS_MUSEES_TOKEN` | Optional; redundant with Europeana and its GraphQL has no fast fulltext search. Leave unset unless you want direct best-effort coverage. |
 
 ### How to register the key (per source)
 
@@ -68,7 +68,9 @@ dormant until its key is set — so it's always safe to leave one unset.
    - **Infisical → Vercel sync (your setup):** add the secret in Infisical (Personal project → **Harpe** folder) using the **exact env-var name** from the table above; the Vercel integration sync pushes it automatically. The name must match exactly (`HARVARD_API_KEY`, not `harvard_key`).
 3. **Redeploy** (`vercel --prod` or a dashboard redeploy) — env-var changes only apply to new deployments.
 
-> ⚠️ **NYPL is wired but untested** (I couldn't exercise it without your token). It's written defensively — it only shows results where it parsed a valid image URL, so worst case it returns nothing rather than broken images. After you add `NYPL_API_TOKEN` and redeploy, search e.g. "Berenice Abbott" and confirm photos appear; if they don't, ping me and I'll adjust the response parser.
+> ⚠️ **NYPL is wired but disabled for Vercel** because token auth requires HTTP/2 and Vercel egress currently hits NYPL's HTTP/1.1 denial path. Keep the token documented for local testing or future hosting, but LoC covers most public-domain photography in production meanwhile.
+
+> 🌍 **Europeana country coverage:** once `EUROPEANA_API_KEY` is set, each search runs the pan-European base query first; only when it returns few results (< `EUROPEANA_SPARSE_MIN`, default **12**) does it fan out one query per focus country (~30) to lift recall for smaller national collections. The fan-out runs through a bounded pool (default **6** in flight) to stay under Europeana's rate limit. Both are tunable via `EUROPEANA_SPARSE_MIN` and `EUROPEANA_FANOUT_CONCURRENCY`; leave unset for the defaults.
 
 ## Scanner & reverse-image enhancements (optional keys)
 
@@ -83,12 +85,13 @@ Both are server-only and dormant until their key is set.
 Both are already wired in code — just confirm the env var name matches (you have
 `FIRECRAWL_API_KEY` and `SAUCENAO_API_KEY` set in Vercel already), then redeploy.
 
-## Open-data dumps (museums with no live API)
+## Open-data dumps (first-class museums with no live search API)
 
 Museums that publish a bulk dump (MoMA, National Gallery of Art, …) but no
-searchable API are ingested into one **metadata-only Parquet** (text + image
-URLs, no images) hosted free on **Hugging Face**, and queried via HF's keyless
-`/search`. Storage cost ≈ $0.
+searchable API are ingested into **metadata-only Parquet** (text + image URLs,
+no images) hosted free on **Hugging Face**, and queried via HF's keyless
+`/search`. Storage cost ≈ $0. Each museum is still a first-class source chip in
+Harpe; the dump layer is only the transport.
 
 Currently ingested: **MoMA**, **National Gallery of Art** (with NGA's AI alt-text
 as descriptions), and **Minneapolis Institute of Art (MIA)** via `--with-mia`.
@@ -105,8 +108,18 @@ as descriptions), and **Minneapolis Institute of Art (MIA)** via `--with-mia`.
 3. Set `HARPE_DUMP_DATASET=<your-hf-user>/harpe-art` in Vercel, redeploy.
    (HF takes a few minutes to auto-convert `data/train.parquet` to its queryable branch.)
 
-The `dumps` source is dormant until that env var is set. Add more museums by
-UNION-ing another SELECT in `build_parquet()` (each must yield the same columns).
+For better per-source recall, you can also publish source-specific datasets and
+set any of these instead of, or alongside, the combined dataset:
+
+| Source | Env var |
+|---|---|
+| MoMA | `HARPE_MOMA_DUMP_DATASET` |
+| National Gallery of Art | `HARPE_NGA_DUMP_DATASET` |
+| Minneapolis Institute of Art | `HARPE_MIA_DUMP_DATASET` |
+
+Add more dump-backed museums by UNION-ing another SELECT in `build_parquet()`
+(each must yield the same columns), then add one `SOURCES` registry entry for
+that museum.
 
 ## Cross-source AI synthesis (the "deep analysis")
 

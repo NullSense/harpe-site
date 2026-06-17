@@ -31,7 +31,7 @@
 import type { VercelRequest, VercelResponse } from '../vercel.js';
 import { fetch, Agent } from 'undici';
 import { GuardError, rateLimit, clientIp } from '../guard.js';
-import { rankResults, qualityScore } from '@harpe/core';
+import { rankResults, qualityScore, type ArtItem, type Download, type SourceAdapter } from '@harpe/core';
 
 // HTTP/2 dispatcher (lazy). NYPL's HTTP/1.1 path returns "HTTP Basic: Access
 // denied" and ignores the Token auth scheme; over HTTP/2 (what curl uses) the
@@ -48,42 +48,6 @@ const UA =
 const TIMEOUT_MS = 12_000;
 const MAX_ITEMS = 40;
 
-// ─── Response types ───────────────────────────────────────────────────────────
-
-// A single downloadable file variant for a work. Sources often expose more than
-// one (e.g. a high-res JPEG and a lossless TIFF original) — we surface them all
-// so the UI can show format/quality and let the user choose.
-interface Download {
-  label: string;     // "High-res JPEG", "Original TIFF" …
-  url: string;       // direct upstream URL (downloaded via /api/fetch proxy)
-  format: string;    // 'jpeg' | 'png' | 'tiff' | 'webp' | 'gif'
-  lossless: boolean; // true for png/tiff/gif/bmp originals
-}
-
-export interface ArtItem {
-  id: string;
-  title: string;
-  artist: string;
-  dimensions: string;
-  thumbUrl: string;     // small image for the grid card
-  previewUrl: string;   // larger BROWSER-RENDERABLE image for the lightbox
-  fullUrl: string;      // primary/default download URL
-  width?: number;       // pixel width when the source reports it
-  height?: number;      // pixel height when the source reports it
-  format: string;       // format of the primary download
-  lossless: boolean;    // true if ANY download variant is lossless
-  downloads: Download[];
-  source: 'aic' | 'met' | 'cleveland' | 'commons' | 'wikiart' | 'vam' | 'wellcome' | 'smk' | 'nasjonalmuseet' | 'digitalnz' | 'wikidata' | 'europeana' | 'harvard' | 'si' | 'parismusees' | 'moma' | 'nga' | 'mia' | 'loc' | 'nypl' | 'dumps';
-  isPublicDomain: boolean;
-  // ── Enrichment (optional; the union "mega-model" beyond the basics above) ──
-  date?: string;        // display date, e.g. "1642" / "ca. 1665"
-  medium?: string;      // materials/technique, e.g. "Oil on canvas"
-  culture?: string;     // culture / place of origin
-  creditLine?: string;  // acquisition / credit line
-  description?: string; // prose description / curatorial note (source-provided)
-  sourceUrl?: string;   // canonical page for this work at the source
-}
-
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function str(v: unknown): string {
@@ -93,6 +57,11 @@ function str(v: unknown): string {
   // Objects / arrays: do NOT pass through — coerce to empty string to prevent
   // React error #31 ("Objects are not valid as a React child").
   return '';
+}
+
+function num(v: unknown): number | undefined {
+  const n = typeof v === 'number' ? v : typeof v === 'string' && v.trim() ? Number(v) : NaN;
+  return Number.isFinite(n) && n > 0 ? n : undefined;
 }
 
 // Lossless raster formats — JPEG/WEBP(lossy) are NOT here.
@@ -404,7 +373,10 @@ async function fetchCommons(q: string): Promise<ArtItem[]> {
     };
 
     const items: ArtItem[] = [];
-    for (const p of Object.values(json.query?.pages ?? {})) {
+    // Keys of `pages` are numeric pageids — use them for a stable, unique id.
+    // The filename (title) is NOT unique: File:Foo.jpg and File:Foo.png would
+    // collide on `commons-Foo` and the dedup Map would silently drop one.
+    for (const [pageId, p] of Object.entries(json.query?.pages ?? {})) {
       const ii = p.imageinfo?.[0];
       if (!ii) continue;
       const mime = str(ii.mime);
@@ -420,7 +392,7 @@ async function fetchCommons(q: string): Promise<ArtItem[]> {
       const format = fmtFromMime(mime);
       const lossless = LOSSLESS_FORMATS.has(format);
       items.push({
-        id: `commons-${title}`,
+        id: `commons-${pageId}`,
         title: title || 'Untitled',
         artist: '',
         dimensions: w && h ? `${w} × ${h} px` : '',
@@ -859,49 +831,146 @@ function first(v: unknown): string {
   return str(v);
 }
 
+// Bounded-concurrency map: runs `fn` over `items` with at most `limit` in
+// flight at once. Used to fan out the Europeana per-country queries in small
+// waves instead of one 31-connection burst — keeps full country coverage while
+// staying friendly to Europeana's rate limit and undici's per-origin pool.
+// Never rejects: a failing item resolves to `null` (callers filter those out).
+export async function mapPool<T, R>(items: readonly T[], limit: number, fn: (item: T) => Promise<R>): Promise<Array<R | null>> {
+  const out: Array<R | null> = new Array(items.length).fill(null);
+  let next = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    for (;;) {
+      const i = next++;
+      if (i >= items.length) return;
+      try {
+        out[i] = await fn(items[i]);
+      } catch {
+        out[i] = null;
+      }
+    }
+  });
+  await Promise.all(workers);
+  return out;
+}
+
+const EUROPEANA_COUNTRY_FOCUS = [
+  'Austria',
+  'Belgium',
+  'Bulgaria',
+  'Croatia',
+  'Cyprus',
+  'Czech Republic',
+  'Denmark',
+  'Estonia',
+  'Finland',
+  'France',
+  'Germany',
+  'Greece',
+  'Hungary',
+  'Ireland',
+  'Italy',
+  'Latvia',
+  'Lithuania',
+  'Luxembourg',
+  'Malta',
+  'Netherlands',
+  'Norway',
+  'Poland',
+  'Portugal',
+  'Romania',
+  'Slovakia',
+  'Slovenia',
+  'Spain',
+  'Sweden',
+  'Ukraine',
+  'United Kingdom',
+] as const;
+
+function europeanaSearchUrl(key: string, q: string, country?: string): string {
+  const params = new URLSearchParams({
+    wskey: key,
+    query: q,
+    reusability: 'open',
+    media: 'true',
+    thumbnail: 'true',
+    rows: country ? '8' : '15',
+  });
+  params.append('qf', 'TYPE:IMAGE');
+  if (country) params.append('qf', `COUNTRY:"${country}"`);
+  return `https://api.europeana.eu/record/v2/search.json?${params.toString()}`;
+}
+
+async function fetchEuropeanaBatch(key: string, q: string, signal: AbortSignal, country?: string): Promise<ArtItem[]> {
+  const res = await timedFetch(europeanaSearchUrl(key, q, country), signal);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const json = await res.json() as {
+    items?: Array<{
+      title?: unknown; dcCreator?: unknown; edmPreview?: unknown;
+      edmIsShownBy?: unknown; isShownBy?: unknown; guid?: unknown; id?: unknown;
+      dcDescription?: unknown; year?: unknown; dataProvider?: unknown;
+      edmIsShownAt?: unknown; country?: unknown;
+    }>;
+  };
+  const items: ArtItem[] = [];
+  for (const it of json.items ?? []) {
+    const thumb = first(it.edmPreview);
+    const full = first(it.edmIsShownBy) || first(it.isShownBy) || thumb;
+    if (!thumb) continue;
+    const fmt = fmtFromUrl(full || thumb);
+    const provider = first(it.dataProvider);
+    const itemCountry = country || first(it.country);
+    items.push({
+      id: `europeana-${str(it.id) || str(it.guid)}`,
+      title: first(it.title) || 'Untitled',
+      artist: first(it.dcCreator),
+      dimensions: '',
+      thumbUrl: thumb,
+      previewUrl: full || thumb,
+      fullUrl: full || thumb,
+      format: fmt,
+      lossless: LOSSLESS_FORMATS.has(fmt),
+      downloads: [{ label: 'Full image', url: full || thumb, format: fmt, lossless: LOSSLESS_FORMATS.has(fmt) }],
+      source: 'europeana',
+      isPublicDomain: true, // reusability=open filter
+      date: first(it.year),
+      culture: [provider, itemCountry].filter(Boolean).join(' · '),
+      description: first(it.dcDescription),
+      sourceUrl: first(it.edmIsShownAt) || str(it.guid),
+      provider,
+    });
+  }
+  return items;
+}
+
 // Europeana — aggregates 3,000+ European institutions. Free key: EUROPEANA_API_KEY
+//
+// Sparse-gated fan-out (best for search quality): the base query is already
+// pan-European and the final results are RRF-reranked + capped, so for a
+// well-covered query the per-country queries only return lower-relevance items
+// that get discarded — pure latency/quota cost, no quality gain. We therefore
+// run the base query FIRST and only fan out to the focus countries when the base
+// is sparse (< EUROPEANA_SPARSE_MIN results), where the extra country queries
+// genuinely lift recall for works held in smaller national collections. The
+// fan-out runs through a bounded pool (no 30-connection burst).
+const EUROPEANA_FANOUT_CONCURRENCY = Number(process.env.EUROPEANA_FANOUT_CONCURRENCY) || 6;
+const EUROPEANA_SPARSE_MIN = Number(process.env.EUROPEANA_SPARSE_MIN) || 12;
+
 async function fetchEuropeana(q: string): Promise<ArtItem[]> {
   const key = process.env.EUROPEANA_API_KEY!;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
   try {
-    const url =
-      `https://api.europeana.eu/record/v2/search.json?wskey=${encodeURIComponent(key)}` +
-      `&query=${encodeURIComponent(q)}&qf=TYPE:IMAGE&reusability=open&media=true&thumbnail=true&rows=15`;
-    const res = await timedFetch(url, controller.signal);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const json = await res.json() as {
-      items?: Array<{
-        title?: unknown; dcCreator?: unknown; edmPreview?: unknown;
-        edmIsShownBy?: unknown; isShownBy?: unknown; guid?: unknown; id?: unknown;
-        dcDescription?: unknown; year?: unknown; dataProvider?: unknown; edmIsShownAt?: unknown;
-      }>;
-    };
-    const items: ArtItem[] = [];
-    for (const it of json.items ?? []) {
-      const thumb = first(it.edmPreview);
-      const full = first(it.edmIsShownBy) || first(it.isShownBy) || thumb;
-      if (!thumb) continue;
-      items.push({
-        id: `europeana-${str(it.id) || str(it.guid)}`,
-        title: first(it.title) || 'Untitled',
-        artist: first(it.dcCreator),
-        dimensions: '',
-        thumbUrl: thumb,
-        previewUrl: full || thumb,
-        fullUrl: full || thumb,
-        format: fmtFromUrl(full || thumb),
-        lossless: LOSSLESS_FORMATS.has(fmtFromUrl(full || thumb)),
-        downloads: [{ label: 'Full image', url: full || thumb, format: fmtFromUrl(full || thumb), lossless: false }],
-        source: 'europeana',
-        isPublicDomain: true, // reusability=open filter
-        date: first(it.year),
-        culture: first(it.dataProvider),
-        description: first(it.dcDescription),
-        sourceUrl: first(it.edmIsShownAt) || str(it.guid),
-      });
-    }
-    return items;
+    const base = await fetchEuropeanaBatch(key, q, controller.signal);
+    // Base is rich enough — country fan-out would only add discarded noise.
+    if (base.length >= EUROPEANA_SPARSE_MIN) return base;
+
+    // Sparse base: fan out per-country to lift recall, then dedupe by record id.
+    const extra = await mapPool(EUROPEANA_COUNTRY_FOCUS, EUROPEANA_FANOUT_CONCURRENCY, (country) =>
+      fetchEuropeanaBatch(key, q, controller.signal, country),
+    );
+    const items = [base, ...extra.map((b) => b ?? [])].flat();
+    return [...new Map(items.map((item) => [item.id, item])).values()];
   } finally {
     clearTimeout(timer);
   }
@@ -1065,11 +1134,51 @@ async function fetchParisMusees(q: string): Promise<ArtItem[]> {
   }
 }
 
-// Dump-backed source: our own metadata Parquet on Hugging Face, queried via HF's
-// keyless /search. Covers museums with no live API (MoMA, NGA, …) ingested by
-// scripts/ingest-art-dumps/ingest.py. Dormant until HARPE_DUMP_DATASET is set.
-async function fetchDumps(q: string): Promise<ArtItem[]> {
-  const dataset = process.env.HARPE_DUMP_DATASET!;
+// Dump-backed sources: our normalized metadata Parquet on Hugging Face, queried
+// through HF's keyless /search. This covers museums that are best harvested
+// offline (MoMA, NGA, MIA, ...). Each museum still has a first-class SOURCES
+// entry; the transport/cache below is shared so one query does not fan out into
+// repeated HF calls.
+const DUMP_SOURCE_LABELS = {
+  moma: 'MoMA',
+  nga: 'NGA',
+  mia: 'MIA',
+} as const satisfies Partial<Record<ArtItem['source'], string>>;
+
+type DumpSourceKey = keyof typeof DUMP_SOURCE_LABELS;
+
+// Cache keyed by (dataset, query) — NOT by source. MoMA/NGA/MIA are typically
+// backed by one combined dataset, so without this they'd each fire their own HF
+// /search for the same query (3× the slow upstream call). One fetch returns all
+// dump-backed rows; each source filters its own out of the shared result.
+const dumpSearchCache = new Map<string, Promise<ArtItem[]>>();
+
+function dumpDatasetEnv(source: DumpSourceKey): string {
+  return `HARPE_${source.toUpperCase()}_DUMP_DATASET`;
+}
+
+function dumpDatasetFor(source: DumpSourceKey, env: NodeJS.ProcessEnv = process.env): string {
+  return env[dumpDatasetEnv(source)] || env.HARPE_DUMP_DATASET || '';
+}
+
+function fetchDumpSearch(dataset: string, q: string): Promise<ArtItem[]> {
+  const key = `${dataset}\n${q}`;
+  let cached = dumpSearchCache.get(key);
+  if (!cached) {
+    cached = fetchDumpSearchUncached(q, dataset);
+    dumpSearchCache.set(key, cached);
+    // Bound the cache. `while`, not `if`: concurrent invocations can insert
+    // several entries before any eviction runs, so a single `if` lets it grow.
+    while (dumpSearchCache.size > 32) {
+      const oldest = dumpSearchCache.keys().next().value;
+      if (!oldest) break;
+      dumpSearchCache.delete(oldest);
+    }
+  }
+  return cached;
+}
+
+async function fetchDumpSearchUncached(q: string, dataset: string): Promise<ArtItem[]> {
   const controller = new AbortController();
   // HF's /search can be slow when its index is cold — give it more headroom than
   // the per-museum timeout so it doesn't abort on the first hit after idle.
@@ -1077,7 +1186,7 @@ async function fetchDumps(q: string): Promise<ArtItem[]> {
   try {
     const url =
       `https://datasets-server.huggingface.co/search?dataset=${encodeURIComponent(dataset)}` +
-      `&config=default&split=train&query=${encodeURIComponent(q)}&offset=0&length=20`;
+      `&config=default&split=train&query=${encodeURIComponent(q)}&offset=0&length=100`;
     const res = await timedFetch(url, controller.signal);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const json = await res.json() as { rows?: Array<{ row?: Record<string, unknown> }> };
@@ -1087,32 +1196,45 @@ async function fetchDumps(q: string): Promise<ArtItem[]> {
       const thumb = str(row.image_thumb) || str(row.image_full);
       const full = str(row.image_full) || thumb;
       if (!thumb) continue;
-      const rs = str(row.source);
-      const source = (rs === 'moma' || rs === 'nga' || rs === 'mia') ? rs : 'dumps';
+      const source = str(row.source) as ArtItem['source'];
+      // Keep only rows for dump-backed sources we recognize (and can label);
+      // each fetchDumpSource() call filters this shared list to its own source.
+      if (!(source in DUMP_SOURCE_LABELS)) continue;
       items.push({
         id: str(row.id) || `dumps-${items.length}`,
         title: str(row.title) || 'Untitled',
         artist: str(row.artist),
-        dimensions: '',
+        dimensions: str(row.dimensions),
         thumbUrl: thumb,
         previewUrl: full,
         fullUrl: full,
+        width: num(row.width),
+        height: num(row.height),
         format: fmtFromUrl(full),
         lossless: false,
         downloads: [{ label: 'Full image', url: full, format: fmtFromUrl(full), lossless: false }],
-        source: source as ArtItem['source'],
+        source,
         isPublicDomain: row.is_public_domain !== false,
         date: str(row.date),
         medium: str(row.medium),
+        culture: str(row.culture),
         creditLine: str(row.credit_line),
         description: str(row.description),
         sourceUrl: str(row.source_url),
+        provider: DUMP_SOURCE_LABELS[source as DumpSourceKey],
       });
     }
     return items;
   } finally {
     clearTimeout(timer);
   }
+}
+
+async function fetchDumpSource(source: DumpSourceKey, q: string): Promise<ArtItem[]> {
+  const dataset = dumpDatasetFor(source);
+  if (!dataset) return [];
+  const all = await fetchDumpSearch(dataset, q);
+  return all.filter((it) => it.source === source).slice(0, MAX_ITEMS);
 }
 
 // ─── Library of Congress (Prints & Photographs) ──────────────────────────────
@@ -1268,27 +1390,6 @@ async function fetchNypl(q: string): Promise<ArtItem[]> {
  * Reused by both the batch handler (art.ts) and the streaming handler
  * (art-stream.ts) so the source list is defined in exactly one place.
  */
-/**
- * A museum/gallery source adapter. THE standard way to add a new gallery: write
- * a `fetch(q) => Promise<ArtItem[]>` that normalises the API into ArtItem, then
- * add one entry here. Everything else (search, ranking, streaming, tests) picks
- * it up automatically. See docs/ADDING_SOURCES.md and the `add-art-source` skill.
- */
-export interface SourceAdapter {
-  /** Stable id — also the value each item carries as ArtItem.source. */
-  key: ArtItem['source'];
-  /** Display name (used in chips + per-source warnings). */
-  label: string;
-  /** Query the source and return normalised, unified ArtItems. */
-  fetch: (q: string) => Promise<ArtItem[]>;
-  /** Env var that must be set for this (keyed) source to run. Omit = keyless. */
-  requiresEnv?: string;
-  /** Kept in the registry for documentation but not queried. */
-  disabled?: boolean;
-  /** Why it's disabled / any caveat. */
-  note?: string;
-}
-
 /** The source registry — the single list of every integration. */
 export const SOURCES: SourceAdapter[] = [
   { key: 'aic', label: 'AIC', fetch: fetchAic },
@@ -1310,7 +1411,11 @@ export const SOURCES: SourceAdapter[] = [
   // Paris Musées' Drupal GraphQL has no fast fulltext index; best-effort, also
   // covered by Europeana. Its own timeout caps latency.
   { key: 'parismusees', label: 'Paris Musées', fetch: fetchParisMusees, requiresEnv: 'PARIS_MUSEES_TOKEN' },
-  { key: 'dumps', label: 'Dumps', fetch: fetchDumps, requiresEnv: 'HARPE_DUMP_DATASET' },
+  // Dump-backed first-class sources. The adapters share one cached HF /search
+  // call per query, then split rows by the normalized dump `source` field.
+  { key: 'moma', label: 'MoMA', fetch: (q) => fetchDumpSource('moma', q), requiresAnyEnv: [dumpDatasetEnv('moma'), 'HARPE_DUMP_DATASET'] },
+  { key: 'nga', label: 'NGA', fetch: (q) => fetchDumpSource('nga', q), requiresAnyEnv: [dumpDatasetEnv('nga'), 'HARPE_DUMP_DATASET'] },
+  { key: 'mia', label: 'MIA', fetch: (q) => fetchDumpSource('mia', q), requiresAnyEnv: [dumpDatasetEnv('mia'), 'HARPE_DUMP_DATASET'] },
   // NYPL token auth needs HTTP/2; Vercel egress forces HTTP/1.1 (→ "Access
   // denied"). Works locally over h2. Photography is covered by LoC meanwhile.
   { key: 'nypl', label: 'NYPL', fetch: fetchNypl, requiresEnv: 'NYPL_API_TOKEN', disabled: true,
@@ -1319,36 +1424,16 @@ export const SOURCES: SourceAdapter[] = [
 
 /** Active sources for this environment: enabled + (keyless or key present). */
 export function activeSources(env: NodeJS.ProcessEnv = process.env): SourceAdapter[] {
-  return SOURCES.filter((s) => !s.disabled && (!s.requiresEnv || !!env[s.requiresEnv]));
+  return SOURCES.filter((s) => {
+    if (s.disabled) return false;
+    if (s.requiresEnv && !env[s.requiresEnv]) return false;
+    if (s.requiresAnyEnv && !s.requiresAnyEnv.some((name) => !!env[name])) return false;
+    return true;
+  });
 }
 
 export async function gatherSources(q: string): Promise<Array<[string, Promise<ArtItem[]>]>> {
   return activeSources().map((s) => [s.label, s.fetch(q)] as [string, Promise<ArtItem[]>]);
-}
-
-/**
- * Validate that an item conforms to the unified ArtItem contract. Returns a list
- * of problems ([] = valid). Used by the source test-suite to guarantee EVERY
- * adapter normalises to the same shape, and usable as a dev-time assertion.
- */
-export function validateArtItem(it: ArtItem): string[] {
-  const p: string[] = [];
-  for (const k of ['id', 'title', 'source'] as const) {
-    if (typeof it[k] !== 'string' || !it[k]) p.push(`${k} missing/empty`);
-  }
-  const urlish = (v: string) => /^https?:\/\//i.test(v) || v.startsWith('/');
-  for (const k of ['thumbUrl', 'previewUrl', 'fullUrl'] as const) {
-    const v = it[k];
-    if (v && !urlish(v)) p.push(`${k} is not a URL: ${v.slice(0, 48)}`);
-  }
-  if (!(it.thumbUrl || it.previewUrl || it.fullUrl)) p.push('no image URL (thumb/preview/full all empty)');
-  if (typeof it.isPublicDomain !== 'boolean') p.push('isPublicDomain not boolean');
-  if (typeof it.lossless !== 'boolean') p.push('lossless not boolean');
-  if (!Array.isArray(it.downloads)) p.push('downloads not an array');
-  if (it.width !== undefined && typeof it.width !== 'number') p.push('width not a number');
-  if (it.height !== undefined && typeof it.height !== 'number') p.push('height not a number');
-  if (it.source && !SOURCES.some((s) => s.key === it.source)) p.push(`unknown source key: ${it.source}`);
-  return p;
 }
 
 // ─── Handler ─────────────────────────────────────────────────────────────────

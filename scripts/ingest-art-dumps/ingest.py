@@ -11,8 +11,9 @@ link) — never the images (those stay on the museums' servers; the site fetches
 them on demand). So the Parquet is tens of MB of text and costs ~nothing to host.
 
 Schema (one row per artwork, union "mega-model"):
-  source, id, title, artist, date, medium, credit_line, description,
-  image_thumb, image_full, source_url, is_public_domain
+  source, id, title, artist, date, medium, dimensions, culture, credit_line,
+  description, image_thumb, image_full, width, height, source_url, rights_type,
+  is_public_domain
 
 Run:
   uv run scripts/ingest-art-dumps/ingest.py                 # build harpe-art.parquet (MoMA + NGA)
@@ -35,8 +36,9 @@ MOMA_JSON = "https://media.githubusercontent.com/media/MuseumofModernArt/collect
 NGA_OBJECTS = "https://raw.githubusercontent.com/NationalGalleryOfArt/opendata/main/data/objects.csv"
 NGA_IMAGES = "https://raw.githubusercontent.com/NationalGalleryOfArt/opendata/main/data/published_images.csv"
 
-# MoMA: Artist is an array; flatten to a comma-joined string. Keep only rows with
-# a usable image (ImageURL is null for in-copyright works).
+# MoMA: Artist is an array; flatten to a comma-joined string. MoMA's metadata
+# dump is CC0, but MoMA explicitly excludes images from that CC0 release; keep
+# image rows searchable, but do not label the image as public-domain/open-access.
 MOMA_SQL = f"""
 SELECT
   'moma' AS source,
@@ -45,12 +47,17 @@ SELECT
   array_to_string("Artist", ', ') AS artist,
   "Date" AS date,
   "Medium" AS medium,
+  "Dimensions" AS dimensions,
+  NULL AS culture,
   "CreditLine" AS credit_line,
   NULL AS description,
   "ImageURL" AS image_thumb,   -- MoMA dropped ThumbnailURL; ImageURL serves both
   "ImageURL" AS image_full,
+  NULL AS width,
+  NULL AS height,
   "URL" AS source_url,
-  TRUE AS is_public_domain
+  'metadata-cc0-image-rights-restricted' AS rights_type,
+  FALSE AS is_public_domain
 FROM read_json_auto('{MOMA_JSON}', maximum_object_size=1000000000)
 WHERE "ImageURL" IS NOT NULL
 """
@@ -64,11 +71,16 @@ SELECT
   o.attribution AS artist,
   o.displaydate AS date,
   o.medium AS medium,
+  o.dimensions AS dimensions,
+  NULL AS culture,
   o.creditline AS credit_line,
   pi.assistivetext AS description,   -- NGA ships AI-generated alt-text per image
   pi.iiifthumburl AS image_thumb,
   pi.iiifurl || '/full/full/0/default.jpg' AS image_full,
+  pi.width AS width,
+  pi.height AS height,
   'https://www.nga.gov/collection/art-object-page.' || CAST(o.objectid AS VARCHAR) || '.html' AS source_url,
+  'openaccess' AS rights_type,
   TRUE AS is_public_domain
 FROM read_csv_auto('{NGA_OBJECTS}', ignore_errors=true) o
 JOIN read_csv_auto('{NGA_IMAGES}', ignore_errors=true) pi
@@ -91,8 +103,10 @@ def mia_sql(repo_dir: str) -> str:
     # inference (and reads only the keys we need; the rest are ignored).
     cols = (
         "{'id': 'VARCHAR', 'title': 'VARCHAR', 'artist': 'VARCHAR', 'dated': 'VARCHAR', "
-        "'medium': 'VARCHAR', 'creditline': 'VARCHAR', 'description': 'VARCHAR', "
-        "'image': 'VARCHAR', 'restricted': 'BIGINT'}"
+        "'medium': 'VARCHAR', 'dimension': 'VARCHAR', 'culture': 'VARCHAR', "
+        "'creditline': 'VARCHAR', 'description': 'VARCHAR', 'text': 'VARCHAR', "
+        "'image': 'VARCHAR', 'restricted': 'BIGINT', 'rights_type': 'VARCHAR', "
+        "'image_width': 'BIGINT', 'image_height': 'BIGINT'}"
     )
     return f"""
 SELECT
@@ -102,12 +116,17 @@ SELECT
   COALESCE(artist, '') AS artist,
   dated AS date,
   medium AS medium,
+  dimension AS dimensions,
+  culture AS culture,
   creditline AS credit_line,
-  description AS description,
+  COALESCE(NULLIF(description, ''), text) AS description,
   'https://api.artsmia.org/images/' || id || '/medium.jpg' AS image_thumb,
   'https://api.artsmia.org/images/' || id || '/large.jpg' AS image_full,
+  image_width AS width,
+  image_height AS height,
   'https://collections.artsmia.org/art/' || id AS source_url,
-  TRUE AS is_public_domain
+  rights_type AS rights_type,
+  restricted = 0 AND LOWER(COALESCE(rights_type, '')) IN ('public domain', 'no copyright') AS is_public_domain
 FROM read_json('{glob}', columns={cols}, format='auto', records='true', ignore_errors=true)
 WHERE image = 'valid' AND restricted = 0 AND id IS NOT NULL
 """

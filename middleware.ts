@@ -90,7 +90,7 @@ export default async function middleware(req: Request): Promise<Response | undef
   }
 
   title = title || `${q} — Harpe`;
-  desc = desc || `Search "${q}" across 15 open museum collections — free public-domain art & image search.`;
+  desc = desc || `Search "${q}" across open museum & archive collections worldwide — free public-domain art & image search.`;
   const canonical = `${url.origin}/?q=${encodeURIComponent(q)}${v ? `&v=${encodeURIComponent(v)}` : ''}`;
   const og = previewImage(url.origin, img);
 

@@ -8,7 +8,8 @@
  * GET /api/preview?q=<query>&v=<item-id>  →  { title, img, desc }  (or {} if none)
  */
 import type { VercelRequest, VercelResponse } from '../vercel.js';
-import { gatherSources, type ArtItem } from './art.js';
+import { type ArtItem } from '@harpe/core';
+import { gatherSources } from './art.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   res.setHeader('Cache-Control', 'public, s-maxage=3600, stale-while-revalidate=86400');

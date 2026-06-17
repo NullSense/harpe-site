@@ -10,7 +10,7 @@ const MODES = [
   ['▰', 'Video & audio', 'yt-dlp under the hood, forced to true max bitrate — 1800+ sites.'],
   ['▦', 'Galleries', "gallery-dl's native extractors for hundreds of sites — originals, not thumbnails."],
   ['⊞', 'Page of images', 'scan any page, rank by real resolution, pick what you want in a visual grid.'],
-  ['◈', 'Museum art', 'federated search across 15 open collections — the Met, AIC, Cleveland, V&A, Harvard, Smithsonian, Europeana, Wikidata & more.'],
+  ['◈', 'Museum art', 'federated search across open museum collections, national aggregators, Europeana, Wikidata & Commons.'],
   ['⟲', 'Reverse image', 'find the source and the highest-resolution copy — no engine to pick.'],
   ['⌗', 'Frontend-agnostic', 'JSON in, JSON out — drive the engine from a browser extension or a GUI.'],
 ] as const;
@@ -18,7 +18,7 @@ const MODES = [
 const CLI_COMMANDS = [
   { cmd: 'harpe <url>', desc: 'scan a page and open an image picker' },
   { cmd: 'harpe -p <url>', desc: 'download video/audio at max bitrate via yt-dlp' },
-  { cmd: 'harpe -s <query>', desc: 'museum art search — AIC, Met, Cleveland, V&A & more' },
+  { cmd: 'harpe -s <query>', desc: 'museum art search — AIC, Met, Cleveland, V&A, Europeana & more' },
   { cmd: 'harpe -r <file>', desc: 'reverse-image-search a local file' },
   { cmd: 'harpe -v / -A / -a', desc: 'verbosity, all-images, audio-only flags' },
   { cmd: 'harpe', desc: 'bare invocation — interactive mode with fzf picker' },

@@ -3,7 +3,7 @@
  * REAL upstream sources, so we learn the moment something breaks in the wild
  * (a museum changes its schema, hotlink rules, IIIF host, etc.).
  *
- * Dependency-free (Node 22 global fetch). Run: `npm run monitor`
+ * Dependency-free (Node 22 global fetch). Run: `pnpm run monitor`
  *   MONITOR_BASE   override the site origin (default https://harpe-site.vercel.app)
  * Writes monitor-results.json (consumed by the Monitor workflow to file issues)
  * and exits non-zero if any CRITICAL check fails.

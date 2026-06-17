@@ -202,7 +202,7 @@ function applyMode() {
       // Permission granted but the local helper isn't answering → needs install.
       $modeLine.innerHTML =
         "Engine enabled, but the helper isn't responding. " +
-        "<a id='helper-link' href='https://github.com/NullSense/harpe-extension#installation' target='_blank' rel='noopener'>Install it</a>, then reopen.";
+        "<a id='helper-link' href='https://github.com/NullSense/harpe#installation' target='_blank' rel='noopener'>Install it</a>, then reopen.";
     } else {
       $modeLine.innerHTML =
         "Built-in mode — images + direct videos save to Downloads. " +

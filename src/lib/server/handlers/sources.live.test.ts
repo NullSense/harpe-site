@@ -1,12 +1,13 @@
 import { describe, it, expect } from 'vitest';
-import { activeSources, validateArtItem } from './art.js';
+import { validateArtItem } from '@harpe/core';
+import { activeSources } from './art.js';
 
 /**
  * LIVE integration test: hits each active source's real API and asserts it
  * (a) returns results and (b) every item conforms to the unified ArtItem shape.
  *
  * Skipped by default (network = slow/flaky in CI). Run it explicitly:
- *   npm run test:live           # or: RUN_LIVE=1 vitest run sources.live
+ *   pnpm run test:live          # or: RUN_LIVE=1 vitest run --project live
  *   LIVE_QUERY="monet" RUN_LIVE=1 vitest run sources.live
  * Keyed sources only run when their key/env is present.
  */

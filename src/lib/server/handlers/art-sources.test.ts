@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { SOURCES, activeSources, validateArtItem, type ArtItem } from './art.js';
+import { SOURCE_KEYS, validateArtItem, type ArtItem } from '@harpe/core';
+import { SOURCES, activeSources, mapPool } from './art.js';
 
 // Guards the source registry + the unified-shape validator. Deterministic (no
 // network) — the live per-source checks live in sources.live.test.ts.
@@ -20,6 +21,10 @@ describe('SOURCES registry', () => {
       expect(s.label).toBeTruthy();
       expect(typeof s.fetch).toBe('function');
       if (s.requiresEnv) expect(typeof s.requiresEnv).toBe('string');
+      if (s.requiresAnyEnv) {
+        expect(Array.isArray(s.requiresAnyEnv)).toBe(true);
+        expect(s.requiresAnyEnv.length).toBeGreaterThan(0);
+      }
     }
   });
 
@@ -28,8 +33,12 @@ describe('SOURCES registry', () => {
     expect(new Set(keys).size).toBe(keys.length);
   });
 
+  it('shared SourceKey list matches the registry exactly', () => {
+    expect(SOURCES.map((s) => s.key).sort()).toEqual([...SOURCE_KEYS].sort());
+  });
+
   it('has a healthy number of integrations', () => {
-    expect(SOURCES.length).toBeGreaterThanOrEqual(12);
+    expect(SOURCES.length).toBeGreaterThanOrEqual(15);
   });
 });
 
@@ -37,7 +46,7 @@ describe('activeSources', () => {
   it('with no env: only keyless, non-disabled sources', () => {
     const active = activeSources({});
     expect(active.length).toBeGreaterThanOrEqual(12);
-    expect(active.every((s) => !s.requiresEnv && !s.disabled)).toBe(true);
+    expect(active.every((s) => !s.requiresEnv && !s.requiresAnyEnv && !s.disabled)).toBe(true);
   });
 
   it('enables a keyed source when its env var is present', () => {
@@ -45,9 +54,56 @@ describe('activeSources', () => {
     expect(active.some((s) => s.key === 'europeana')).toBe(true);
   });
 
+  it('enables dump-backed museums from the combined dump dataset', () => {
+    const active = activeSources({ HARPE_DUMP_DATASET: 'owner/harpe-art' } as NodeJS.ProcessEnv);
+    expect(active.some((s) => s.key === 'moma')).toBe(true);
+    expect(active.some((s) => s.key === 'nga')).toBe(true);
+    expect(active.some((s) => s.key === 'mia')).toBe(true);
+  });
+
+  it('enables a dump-backed museum from its per-source dump dataset', () => {
+    const active = activeSources({ HARPE_MOMA_DUMP_DATASET: 'owner/harpe-moma' } as NodeJS.ProcessEnv);
+    expect(active.some((s) => s.key === 'moma')).toBe(true);
+    expect(active.some((s) => s.key === 'nga')).toBe(false);
+    expect(active.some((s) => s.key === 'mia')).toBe(false);
+  });
+
   it('never includes a disabled source, even with its key set', () => {
     const active = activeSources({ NYPL_API_TOKEN: 'x' } as NodeJS.ProcessEnv);
     expect(active.some((s) => s.key === 'nypl')).toBe(false);
+  });
+});
+
+describe('mapPool (bounded-concurrency fan-out)', () => {
+  it('preserves input order regardless of completion order', async () => {
+    const out = await mapPool([30, 10, 20], 3, (ms) =>
+      new Promise<number>((r) => setTimeout(() => r(ms), ms / 10)),
+    );
+    expect(out).toEqual([30, 10, 20]);
+  });
+
+  it('never exceeds the concurrency limit', async () => {
+    let inFlight = 0;
+    let peak = 0;
+    await mapPool([...Array(12).keys()], 4, async () => {
+      inFlight++;
+      peak = Math.max(peak, inFlight);
+      await new Promise((r) => setTimeout(r, 5));
+      inFlight--;
+    });
+    expect(peak).toBeLessThanOrEqual(4);
+  });
+
+  it('maps a rejected item to null without failing the whole batch', async () => {
+    const out = await mapPool([1, 2, 3], 2, async (n) => {
+      if (n === 2) throw new Error('boom');
+      return n * 10;
+    });
+    expect(out).toEqual([10, null, 30]);
+  });
+
+  it('handles an empty input', async () => {
+    expect(await mapPool([], 4, async (x) => x)).toEqual([]);
   });
 });
 
