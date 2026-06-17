@@ -15,7 +15,7 @@
  * it folds diacritics ("Durer" → Dürer) and tolerates small typos ("monay" → Monet)
  * exactly like the result ranker — no extra fuzzy-search dependency.
  */
-import { normalize, jaroWinkler, tokenize } from './search';
+import { normalize, jaroWinkler, tokenize } from '@harpe/core';
 
 export type SuggestKind = 'artist' | 'movement' | 'theme';
 

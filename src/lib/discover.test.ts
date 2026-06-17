@@ -3,7 +3,7 @@ import {
   suggest, ALL_SUGGESTIONS, ARTISTS, MOVEMENTS, THEMES,
   FEATURED_ARTISTS, FEATURED_MOVEMENTS, FEATURED_THEMES,
 } from './discover';
-import { normalize } from './search';
+import { normalize } from '@harpe/core';
 
 const labels = (q: string, n?: number) => suggest(q, n).map((s) => s.label);
 

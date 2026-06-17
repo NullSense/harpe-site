@@ -20,7 +20,7 @@ import Discover from './components/Discover';
 import { streamArt } from './lib/useArtStream';
 import { fitsScreen } from './lib/resolutions';
 import { qualityScore, stripHtml, mediumCategory, yearOf } from './lib/ranking';
-import { rankResults } from './lib/search';
+import { rankResults } from '@harpe/core';
 import {
   type DeepZoomDescriptor,
   osdTileSource,

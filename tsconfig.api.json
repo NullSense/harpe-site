@@ -9,7 +9,12 @@
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "noEmit": true,
-    "esModuleInterop": true
+    "esModuleInterop": true,
+    "allowImportingTsExtensions": true,
+    "baseUrl": ".",
+    "paths": {
+      "@harpe/core": ["./packages/core/src/index.ts"]
+    }
   },
   "include": ["api", "src/lib/server"]
 }

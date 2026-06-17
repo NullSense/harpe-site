@@ -16,8 +16,13 @@
  */
 import { build } from 'esbuild';
 import { readdir } from 'node:fs/promises';
+import { resolve } from 'node:path';
 
 const FUNCTION_LIMIT = 12; // Vercel Hobby plan
+
+// Bundle the workspace package from source so its import graph is verified too
+// (otherwise `packages: 'external'` would skip @harpe/core and miss a break).
+const ALIAS = { '@harpe/core': resolve('packages/core/src/index.ts') };
 
 const entries = (await readdir('api')).filter(
   (f) => f.endsWith('.ts') && !f.endsWith('.test.ts') && !f.endsWith('.d.ts'),
@@ -32,6 +37,7 @@ for (const f of entries) {
       platform: 'node',
       format: 'esm',
       packages: 'external', // only resolve the LOCAL import graph, not node_modules
+      alias: ALIAS, // …but DO follow @harpe/core (workspace src), not externalise it
       write: false,
       logLevel: 'silent',
     });

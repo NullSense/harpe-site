@@ -3,20 +3,23 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
+  "workspaces": ["packages/*"],
   "scripts": {
     "dev": "vite --port=3000 --host=0.0.0.0",
-    "build": "vite build",
+    "build": "npm run build -w @harpe/core && vite build",
     "preview": "vite preview",
-    "clean": "rm -rf dist",
-    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.api.json",
+    "clean": "rm -rf dist packages/*/dist",
+    "typecheck": "tsc --noEmit -p packages/core/tsconfig.json && tsc --noEmit && tsc --noEmit -p tsconfig.api.json",
     "test": "vitest run",
     "test:watch": "vitest",
     "check:api": "node scripts/check-api-bundles.mjs",
     "test:e2e": "playwright test",
     "monitor": "node tests/live/monitor.mjs",
-    "verify": "npm run typecheck && npm test && npm run build && npm run check:api"
+    "verify": "npm run typecheck && npm test && npm run build && npm run check:api",
+    "postinstall": "npm run build -w @harpe/core"
   },
   "dependencies": {
+    "@harpe/core": "*",
     "@upstash/ratelimit": "^2.0.8",
     "@upstash/redis": "^1.38.0",
     "node-html-parser": "^6.1.13",
