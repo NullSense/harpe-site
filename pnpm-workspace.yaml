@@ -1,0 +1,14 @@
+packages:
+  - 'packages/*'
+  - 'apps/*'
+
+# Supply-chain freshness guard: refuse to install any package version published
+# less than 7 days (10080 min) ago, so a freshly-compromised release can't land
+# before it's noticed/yanked. pnpm v10 reads this (camelCase) only from here —
+# in .npmrc it must be kebab-case `minimum-release-age`, so keep it in one place.
+minimumReleaseAge: 10080
+
+# Pin esbuild across the whole tree (security: pre-0.25 dev-server CORS issue).
+# `overrides`/`pnpm.overrides` in package.json is deprecated/ignored in v10.
+overrides:
+  esbuild: '^0.28.1'

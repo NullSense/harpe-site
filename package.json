@@ -3,24 +3,24 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "workspaces": ["packages/*", "apps/*"],
+  "packageManager": "pnpm@10.25.0",
   "scripts": {
     "dev": "vite --port=3000 --host=0.0.0.0",
-    "build": "npm run build -w @harpe/core && vite build",
+    "build": "pnpm --filter @harpe/core build && vite build",
     "preview": "vite preview",
-    "clean": "rm -rf dist packages/*/dist",
+    "clean": "rm -rf dist packages/*/dist apps/*/dist",
     "typecheck": "tsc --noEmit -p packages/core/tsconfig.json && tsc --noEmit -p packages/cli/tsconfig.json && tsc --noEmit && tsc --noEmit -p tsconfig.api.json",
-    "test": "vitest run",
-    "test:watch": "vitest",
-    "test:live": "RUN_LIVE=1 vitest run sources.live",
+    "test": "vitest run --project default",
+    "test:watch": "vitest --project default",
+    "test:live": "RUN_LIVE=1 vitest run --project live",
     "check:api": "node scripts/check-api-bundles.mjs",
     "test:e2e": "playwright test",
     "monitor": "node tests/live/monitor.mjs",
-    "verify": "npm run typecheck && npm test && npm run build && npm run check:api && npm run build -w @harpe/extension && npm test -w @harpe/extension",
-    "postinstall": "npm run build -w @harpe/core"
+    "verify": "pnpm run typecheck && pnpm test && pnpm run build && pnpm run check:api && pnpm --filter @harpe/extension build && pnpm --filter @harpe/extension test",
+    "postinstall": "pnpm --filter @harpe/core build"
   },
   "dependencies": {
-    "@harpe/core": "*",
+    "@harpe/core": "workspace:*",
     "@upstash/ratelimit": "^2.0.8",
     "@upstash/redis": "^1.38.0",
     "node-html-parser": "^6.1.13",
@@ -43,8 +43,5 @@
     "typescript": "~5.8.2",
     "vite": "^8.0.16",
     "vitest": "^4.1.9"
-  },
-  "overrides": {
-    "esbuild": "^0.28.1"
   }
 }

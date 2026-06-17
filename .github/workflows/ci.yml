@@ -14,27 +14,36 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 10.25.0
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-          cache: npm
-      - run: npm ci
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
       - name: Typecheck (client + api)
-        run: npm run typecheck
+        run: pnpm run typecheck
       - name: Unit + integration tests
-        run: npm test
+        run: pnpm test
       - name: Production build
-        run: npm run build
+        run: pnpm run build
       - name: Verify serverless functions bundle
-        run: npm run check:api
+        run: pnpm run check:api
+      - name: Extension build
+        run: pnpm --filter @harpe/extension build
+      - name: Extension tests
+        run: pnpm --filter @harpe/extension test
       - name: Install Playwright browser
         run: npx playwright install --with-deps chromium
       - name: Browser E2E (Playwright)
-        run: npm run test:e2e
+        run: pnpm run test:e2e
       - name: Upload Playwright report on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: playwright-report
-          path: playwright-report/
+          path: |
+            playwright-report/
+            test-results/
           retention-days: 7
