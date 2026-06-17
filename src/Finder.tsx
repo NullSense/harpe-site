@@ -19,8 +19,7 @@ import SearchSuggest from './components/SearchSuggest';
 import Discover from './components/Discover';
 import { streamArt } from './lib/useArtStream';
 import { fitsScreen } from './lib/resolutions';
-import { qualityScore, stripHtml, mediumCategory, yearOf } from './lib/ranking';
-import { rankResults } from '@harpe/core';
+import { qualityScore, stripHtml, mediumCategory, yearOf, rankResults } from '@harpe/core';
 import {
   type DeepZoomDescriptor,
   osdTileSource,

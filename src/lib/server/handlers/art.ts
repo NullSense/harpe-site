@@ -31,8 +31,7 @@
 import type { VercelRequest, VercelResponse } from '../vercel.js';
 import { fetch, Agent } from 'undici';
 import { GuardError, rateLimit, clientIp } from '../guard.js';
-import { rankResults } from '@harpe/core';
-import { qualityScore } from '../../ranking.js';
+import { rankResults, qualityScore } from '@harpe/core';
 
 // HTTP/2 dispatcher (lazy). NYPL's HTTP/1.1 path returns "HTTP Basic: Access
 // denied" and ignores the Token auth scheme; over HTTP/2 (what curl uses) the

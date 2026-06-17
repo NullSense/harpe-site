@@ -4,4 +4,6 @@
  * does its own fetching/rendering and calls into these helpers.
  */
 export * from './search.js';
+export * from './ranking.js';
+export * from './media.js';
 export * from './contract.js';
