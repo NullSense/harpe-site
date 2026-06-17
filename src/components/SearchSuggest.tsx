@@ -25,6 +25,8 @@ interface Props {
   onPick: (query: string) => void;
   /** Off for URL-looking input — we don't autocomplete links. */
   enabled: boolean;
+  /** Clear the box and return to the home/discovery state (shows a ✕ when set). */
+  onClear?: () => void;
   inputId: string;
   inputRef: React.RefObject<HTMLInputElement | null>;
   placeholder: string;
@@ -33,7 +35,7 @@ interface Props {
 }
 
 export default function SearchSuggest({
-  value, onChange, onPick, enabled, inputId, inputRef, placeholder, className, disabled,
+  value, onChange, onPick, enabled, onClear, inputId, inputRef, placeholder, className, disabled,
 }: Props) {
   const listboxId = useId();
   const [open, setOpen] = useState(false);
@@ -112,6 +114,18 @@ export default function SearchSuggest({
         aria-activedescendant={activeId}
         className={className}
       />
+
+      {onClear && value.length > 0 && (
+        <button
+          type="button"
+          onClick={() => { onClear(); setOpen(false); setActive(-1); inputRef.current?.focus(); }}
+          aria-label="Clear search"
+          title="Clear search"
+          className="absolute right-2.5 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-full text-muted transition hover:bg-bronze/15 hover:text-bronze-bright"
+        >
+          <span aria-hidden className="text-[1.05rem] leading-none">×</span>
+        </button>
+      )}
 
       {show && (
         <ul

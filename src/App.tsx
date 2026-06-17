@@ -1,6 +1,6 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import AsciiHero from './AsciiHero.tsx';
-import Finder from './Finder.tsx';
+import Finder, { type FinderHandle } from './Finder.tsx';
 
 // ─── CLI reference data ───────────────────────────────────────────────────────
 
@@ -179,6 +179,13 @@ function ExtensionPanel() {
 
 export default function App() {
   const [toolTab, setToolTab] = useState<ToolTab>(toolFromHash);
+  const finderRef = useRef<FinderHandle>(null);
+
+  // Logo = "home": clear the search and scroll back to the top.
+  const goHome = useCallback(() => {
+    finderRef.current?.reset();
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }, []);
 
   const selectTool = useCallback((t: ToolTab) => {
     history.replaceState(null, '', t === 'cli' ? '#cli' : '#extension');
@@ -207,12 +214,20 @@ export default function App() {
         {/* ── Hero: brand + the one search box ── */}
         <section className="pt-[9vh] pb-14">
           <div className="flex flex-col items-center text-center">
-            <img
-              src="/logo.png"
-              alt="Harpe — a bronze hooked sickle-blade with a Greek meander on the hilt"
-              className="animate-rise h-[150px] w-auto max-sm:h-[120px]"
-              style={{ filter: 'drop-shadow(0 8px 50px rgba(216,153,33,.18))' }}
-            />
+            <button
+              type="button"
+              onClick={goHome}
+              aria-label="Harpe — back to home"
+              title="Back to home"
+              className="rounded-lg outline-none transition focus-visible:ring-2 focus-visible:ring-bronze/40"
+            >
+              <img
+                src="/logo.png"
+                alt="Harpe — a bronze hooked sickle-blade with a Greek meander on the hilt"
+                className="animate-rise h-[150px] w-auto max-sm:h-[120px]"
+                style={{ filter: 'drop-shadow(0 8px 50px rgba(216,153,33,.18))' }}
+              />
+            </button>
             <h1 className="sr-only">Harpe</h1>
             <p className="mt-1.5 font-display text-[clamp(1.05rem,2.6vw,1.5rem)] font-medium tracking-[0.04em]">
               A hooked blade for the web — <em className="not-italic text-bronze-bright">enter, catch, retrieve.</em>
@@ -225,7 +240,7 @@ export default function App() {
 
           {/* the one search box + results */}
           <div className="mt-8">
-            <Finder />
+            <Finder ref={finderRef} />
           </div>
 
           {/* secondary links */}

@@ -12,7 +12,7 @@
  */
 
 import type React from 'react';
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { forwardRef, useCallback, useEffect, useId, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import DownloadMenu from './components/DownloadMenu';
 import SearchSuggest from './components/SearchSuggest';
@@ -799,7 +799,12 @@ function AnalysisBody({ text }: { text: string }) {
 
 // ─── Finder ────────────────────────────────────────────────────────────────────
 
-export default function Finder() {
+/** Imperative handle so the page logo can send the Finder back to its home state. */
+export interface FinderHandle {
+  reset: () => void;
+}
+
+const Finder = forwardRef<FinderHandle>(function Finder(_props, ref) {
   const [input, setInput] = useState('');
   const [mode, setMode] = useState<Mode>('idle');
   const [error, setError] = useState('');
@@ -1043,6 +1048,43 @@ export default function Finder() {
   const handleSubmit = (e: React.FormEvent) => { e.preventDefault(); run(input); };
   // Run a search from a picked suggestion / discovery chip (reflect it in the box).
   const runQuery = useCallback((q: string) => { setInput(q); run(q); }, [run]);
+
+  // Return to the pristine home / discovery state. Used by the search box's clear
+  // (✕) button and by clicking the page logo — otherwise a user lands on results
+  // with no way back. Cancels any in-flight stream and wipes the address-bar query
+  // so the URL reflects "home" too.
+  const reset = useCallback(() => {
+    streamCancelRef.current?.();
+    streamCancelRef.current = null;
+    setInput('');
+    setQuery('');
+    setMode('idle');
+    setError('');
+    setPageUrl('');
+    setImages([]);
+    setSelected(new Set());
+    setDlMap(new Map());
+    setDlBusy(false);
+    setDlDone(false);
+    setScanDeepzoom(null);
+    setArtItems([]);
+    setWarnings([]);
+    setLosslessOnly(false);
+    setPdOnly(false);
+    setSourceFilter(new Set());
+    setMediumFilter(new Set());
+    setMinRes(0);
+    setYearMin('');
+    setYearMax('');
+    setStreaming(false);
+    setShown(SHOWN_STEP);
+    setDetailId(null);
+    setSauce(null);
+    setAnalysis(null);
+    if (typeof window !== 'undefined') window.history.replaceState(null, '', window.location.pathname);
+  }, []);
+
+  useImperativeHandle(ref, () => ({ reset }), [reset]);
 
   // ── scan helpers ──
   const handleLoad = useCallback((idx: number, nw: number) => {
@@ -1304,11 +1346,12 @@ export default function Finder() {
           value={input}
           onChange={setInput}
           onPick={runQuery}
+          onClear={reset}
           enabled={!isURL(input)}
           inputId={inputId}
           inputRef={inputRef}
           placeholder="Paste a link, or search for art…"
-          className="w-full rounded-lg border border-line bg-[rgba(14,10,7,.82)] px-4 py-3 font-mono text-[.92rem] text-ink shadow-[inset_0_1px_0_rgba(255,255,255,.03)] outline-none transition placeholder:text-muted/55 focus:border-bronze/70 focus:ring-2 focus:ring-bronze/25"
+          className="w-full rounded-lg border border-line bg-[rgba(14,10,7,.82)] py-3 pl-4 pr-11 font-mono text-[.92rem] text-ink shadow-[inset_0_1px_0_rgba(255,255,255,.03)] outline-none transition placeholder:text-muted/55 focus:border-bronze/70 focus:ring-2 focus:ring-bronze/25"
         />
         <button
           type="submit"
@@ -1691,4 +1734,6 @@ export default function Finder() {
       )}
     </section>
   );
-}
+});
+
+export default Finder;
