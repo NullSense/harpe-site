@@ -221,12 +221,18 @@ export default function App() {
               title="Back to home"
               className="rounded-lg outline-none transition focus-visible:ring-2 focus-visible:ring-bronze/40"
             >
-              <img
-                src="/logo.png"
-                alt="Harpe — a bronze hooked sickle-blade with a Greek meander on the hilt"
-                className="animate-rise h-[150px] w-auto max-sm:h-[120px]"
-                style={{ filter: 'drop-shadow(0 8px 50px rgba(216,153,33,.18))' }}
-              />
+              <picture>
+                <source srcSet="/logo.webp" type="image/webp" />
+                <img
+                  src="/logo.png"
+                  alt="Harpe — a bronze hooked sickle-blade with a Greek meander on the hilt"
+                  className="animate-rise h-[150px] w-auto max-sm:h-[120px]"
+                  style={{ filter: 'drop-shadow(0 8px 50px rgba(216,153,33,.18))' }}
+                  width={642}
+                  height={961}
+                  fetchPriority="high"
+                />
+              </picture>
             </button>
             <h1 className="sr-only">Harpe</h1>
             <p className="mt-1.5 font-display text-[clamp(1.05rem,2.6vw,1.5rem)] font-medium tracking-[0.04em]">
