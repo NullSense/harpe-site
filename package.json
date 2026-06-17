@@ -12,6 +12,7 @@
     "typecheck": "tsc --noEmit -p packages/core/tsconfig.json && tsc --noEmit -p packages/cli/tsconfig.json && tsc --noEmit && tsc --noEmit -p tsconfig.api.json",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:live": "RUN_LIVE=1 vitest run sources.live",
     "check:api": "node scripts/check-api-bundles.mjs",
     "test:e2e": "playwright test",
     "monitor": "node tests/live/monitor.mjs",

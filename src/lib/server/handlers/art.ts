@@ -1268,39 +1268,87 @@ async function fetchNypl(q: string): Promise<ArtItem[]> {
  * Reused by both the batch handler (art.ts) and the streaming handler
  * (art-stream.ts) so the source list is defined in exactly one place.
  */
+/**
+ * A museum/gallery source adapter. THE standard way to add a new gallery: write
+ * a `fetch(q) => Promise<ArtItem[]>` that normalises the API into ArtItem, then
+ * add one entry here. Everything else (search, ranking, streaming, tests) picks
+ * it up automatically. See docs/ADDING_SOURCES.md and the `add-art-source` skill.
+ */
+export interface SourceAdapter {
+  /** Stable id — also the value each item carries as ArtItem.source. */
+  key: ArtItem['source'];
+  /** Display name (used in chips + per-source warnings). */
+  label: string;
+  /** Query the source and return normalised, unified ArtItems. */
+  fetch: (q: string) => Promise<ArtItem[]>;
+  /** Env var that must be set for this (keyed) source to run. Omit = keyless. */
+  requiresEnv?: string;
+  /** Kept in the registry for documentation but not queried. */
+  disabled?: boolean;
+  /** Why it's disabled / any caveat. */
+  note?: string;
+}
+
+/** The source registry — the single list of every integration. */
+export const SOURCES: SourceAdapter[] = [
+  { key: 'aic', label: 'AIC', fetch: fetchAic },
+  { key: 'met', label: 'Met', fetch: fetchMet },
+  { key: 'cleveland', label: 'Cleveland', fetch: fetchCleveland },
+  { key: 'commons', label: 'Commons', fetch: fetchCommons },
+  { key: 'wikiart', label: 'WikiArt', fetch: fetchWikiArt },
+  { key: 'vam', label: 'V&A', fetch: fetchVam },
+  { key: 'wellcome', label: 'Wellcome', fetch: fetchWellcome },
+  { key: 'smk', label: 'SMK', fetch: fetchSmk },
+  { key: 'nasjonalmuseet', label: 'Nasjonalmuseet', fetch: fetchNasjonalmuseet },
+  { key: 'digitalnz', label: 'DigitalNZ', fetch: fetchDigitalNZ },
+  { key: 'wikidata', label: 'Wikidata', fetch: fetchWikidata },
+  { key: 'loc', label: 'Library of Congress', fetch: fetchLoc },
+  // Keyed sources — only queried when their server-only key/env is configured.
+  { key: 'europeana', label: 'Europeana', fetch: fetchEuropeana, requiresEnv: 'EUROPEANA_API_KEY' },
+  { key: 'harvard', label: 'Harvard', fetch: fetchHarvard, requiresEnv: 'HARVARD_API_KEY' },
+  { key: 'si', label: 'Smithsonian', fetch: fetchSmithsonian, requiresEnv: 'SMITHSONIAN_API_KEY' },
+  // Paris Musées' Drupal GraphQL has no fast fulltext index; best-effort, also
+  // covered by Europeana. Its own timeout caps latency.
+  { key: 'parismusees', label: 'Paris Musées', fetch: fetchParisMusees, requiresEnv: 'PARIS_MUSEES_TOKEN' },
+  { key: 'dumps', label: 'Dumps', fetch: fetchDumps, requiresEnv: 'HARPE_DUMP_DATASET' },
+  // NYPL token auth needs HTTP/2; Vercel egress forces HTTP/1.1 (→ "Access
+  // denied"). Works locally over h2. Photography is covered by LoC meanwhile.
+  { key: 'nypl', label: 'NYPL', fetch: fetchNypl, requiresEnv: 'NYPL_API_TOKEN', disabled: true,
+    note: 'token auth needs HTTP/2; disabled on Vercel (HTTP/1.1 egress)' },
+];
+
+/** Active sources for this environment: enabled + (keyless or key present). */
+export function activeSources(env: NodeJS.ProcessEnv = process.env): SourceAdapter[] {
+  return SOURCES.filter((s) => !s.disabled && (!s.requiresEnv || !!env[s.requiresEnv]));
+}
+
 export async function gatherSources(q: string): Promise<Array<[string, Promise<ArtItem[]>]>> {
-  const sources: Array<[string, Promise<ArtItem[]>]> = [
-    ['AIC', fetchAic(q)],
-    ['Met', fetchMet(q)],
-    ['Cleveland', fetchCleveland(q)],
-    ['Commons', fetchCommons(q)],
-    ['WikiArt', fetchWikiArt(q)],
-    ['V&A', fetchVam(q)],
-    ['Wellcome', fetchWellcome(q)],
-    ['SMK', fetchSmk(q)],
-    ['Nasjonalmuseet', fetchNasjonalmuseet(q)],
-    ['DigitalNZ', fetchDigitalNZ(q)],
-    ['Wikidata', fetchWikidata(q)],
-    ['Library of Congress', fetchLoc(q)],
-  ];
-  // Keyed sources: only queried when their (server-only) API key is configured.
-  if (process.env.EUROPEANA_API_KEY) sources.push(['Europeana', fetchEuropeana(q)]);
-  if (process.env.HARVARD_API_KEY) sources.push(['Harvard', fetchHarvard(q)]);
-  if (process.env.SMITHSONIAN_API_KEY) sources.push(['Smithsonian', fetchSmithsonian(q)]);
-  // NYPL live API is DISABLED on Vercel: its token auth only works over HTTP/2,
-  // but Vercel's serverless egress forces HTTP/1.1 (where NYPL replies "HTTP
-  // Basic: Access denied" and ignores the Token scheme). Verified: the same code
-  // succeeds over HTTP/2 locally. Re-enable if egress ever supports h2, or run
-  // NYPL via its bulk public-domain dump instead. Photography is covered by LoC.
-  void fetchNypl;
-  // if (process.env.NYPL_API_TOKEN || process.env.NYPL_API_KEY) sources.push(['NYPL', fetchNypl(q)]);
-  if (process.env.PARIS_MUSEES_TOKEN) sources.push(['Paris Musées', fetchParisMusees(q)]);
-  if (process.env.HARPE_DUMP_DATASET) sources.push(['Dumps', fetchDumps(q)]);
-  // Note: Paris Musées' Drupal GraphQL has no fast fulltext index — the LIKE scan
-  // can be slow/empty. It's best-effort: its own timeout caps latency and a slow
-  // or failing call just degrades to a per-source warning (the 14 Paris museums
-  // are also covered by Europeana).
-  return sources;
+  return activeSources().map((s) => [s.label, s.fetch(q)] as [string, Promise<ArtItem[]>]);
+}
+
+/**
+ * Validate that an item conforms to the unified ArtItem contract. Returns a list
+ * of problems ([] = valid). Used by the source test-suite to guarantee EVERY
+ * adapter normalises to the same shape, and usable as a dev-time assertion.
+ */
+export function validateArtItem(it: ArtItem): string[] {
+  const p: string[] = [];
+  for (const k of ['id', 'title', 'source'] as const) {
+    if (typeof it[k] !== 'string' || !it[k]) p.push(`${k} missing/empty`);
+  }
+  const urlish = (v: string) => /^https?:\/\//i.test(v) || v.startsWith('/');
+  for (const k of ['thumbUrl', 'previewUrl', 'fullUrl'] as const) {
+    const v = it[k];
+    if (v && !urlish(v)) p.push(`${k} is not a URL: ${v.slice(0, 48)}`);
+  }
+  if (!(it.thumbUrl || it.previewUrl || it.fullUrl)) p.push('no image URL (thumb/preview/full all empty)');
+  if (typeof it.isPublicDomain !== 'boolean') p.push('isPublicDomain not boolean');
+  if (typeof it.lossless !== 'boolean') p.push('lossless not boolean');
+  if (!Array.isArray(it.downloads)) p.push('downloads not an array');
+  if (it.width !== undefined && typeof it.width !== 'number') p.push('width not a number');
+  if (it.height !== undefined && typeof it.height !== 'number') p.push('height not a number');
+  if (it.source && !SOURCES.some((s) => s.key === it.source)) p.push(`unknown source key: ${it.source}`);
+  return p;
 }
 
 // ─── Handler ─────────────────────────────────────────────────────────────────
