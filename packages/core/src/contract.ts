@@ -8,6 +8,7 @@
  * browser silently can't reach the host — which is exactly why they live here
  * once instead of being copy-pasted across repos.
  */
+import type { MediaKind } from './media.js';
 
 /** Native-messaging host name (Chrome manifest "name", Firefox manifest, registry key). */
 export const HOST_NAME = 'com.nullsense.harpe';
@@ -42,5 +43,4 @@ export type HostReply =
   | { ok: true; path?: string | null }
   | { results: Array<{ url: string; ok: boolean; path?: string; kind?: MediaKind; error?: string }> };
 
-export type MediaKind = 'image' | 'video' | 'audio';
 export type GroupMode = 'site' | 'author' | 'both' | 'none';

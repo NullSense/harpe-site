@@ -8,6 +8,7 @@
     "build": "tsc -p tsconfig.json"
   },
   "dependencies": {
-    "@harpe/core": "*"
+    "@harpe/core": "*",
+    "node-html-parser": "^6.1.13"
   }
 }
