@@ -16,21 +16,36 @@ export default defineConfig({
     alias: { '@harpe/core': coreSrc },
   },
   build: {
-    rollupOptions: {
+    rolldownOptions: {
       output: {
-        // Vite 8 bundles with rolldown, which only accepts a function here
-        // (the object form is a Vite ≤7 / rollup API). Split React into its
-        // own long-cached chunk.
+        // Vite 8 bundles with Rolldown. Keep this as a function so the React
+        // vendor split remains explicit without using the removed object form.
         manualChunks(id: string) {
           if (/node_modules\/(react|react-dom|scheduler)\//.test(id)) return 'react';
         },
       },
     },
   },
-  // Vitest = unit/integration only (*.test.ts). Browser E2E lives in tests/e2e
-  // and is run by Playwright (*.spec.ts) — keep the two runners from colliding.
+  // Vitest default = deterministic unit/integration tests. Live API tests are
+  // an explicit project so `pnpm test` never discovers them accidentally.
   test: {
-    include: ['{src,api}/**/*.test.ts', 'packages/*/src/**/*.test.ts'],
-    exclude: ['tests/e2e/**', 'node_modules/**', 'dist/**'],
+    projects: [
+      {
+        extends: true,
+        test: {
+          name: 'default',
+          include: ['{src,api}/**/*.test.ts', 'packages/*/src/**/*.test.ts'],
+          exclude: ['**/*.live.test.ts', 'tests/e2e/**', 'node_modules/**', 'dist/**'],
+        },
+      },
+      {
+        extends: true,
+        test: {
+          name: 'live',
+          include: ['src/lib/server/handlers/**/*.live.test.ts'],
+          exclude: ['tests/e2e/**', 'node_modules/**', 'dist/**'],
+        },
+      },
+    ],
   },
 });
