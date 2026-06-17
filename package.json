@@ -9,7 +9,7 @@
     "build": "npm run build -w @harpe/core && vite build",
     "preview": "vite preview",
     "clean": "rm -rf dist packages/*/dist",
-    "typecheck": "tsc --noEmit -p packages/core/tsconfig.json && tsc --noEmit && tsc --noEmit -p tsconfig.api.json",
+    "typecheck": "tsc --noEmit -p packages/core/tsconfig.json && tsc --noEmit -p packages/cli/tsconfig.json && tsc --noEmit && tsc --noEmit -p tsconfig.api.json",
     "test": "vitest run",
     "test:watch": "vitest",
     "check:api": "node scripts/check-api-bundles.mjs",

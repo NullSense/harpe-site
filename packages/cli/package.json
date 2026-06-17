@@ -1,0 +1,13 @@
+{
+  "name": "@harpe/cli",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Harpe engine + CLI (TypeScript). WORK IN PROGRESS — porting the Python engine onto @harpe/core. The Python `harpe` remains the shipping engine until this reaches parity.",
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@harpe/core": "*"
+  }
+}
