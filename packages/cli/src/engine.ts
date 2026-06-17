@@ -2,18 +2,22 @@
  * Download engine — ported from harpe/engine.py. The filename / folder / kind
  * decision is a pure, tested function (`decideFile`); `fetchImages` is the thin
  * I/O wrapper that streams each URL to the chosen path.
+ * Network scanning: scanPage (wraps extract.pageImages) and enumerateImages
+ * (gallery-dl --get-urls with scanPage fallback).
  */
 import { createWriteStream } from 'node:fs';
 import { mkdir, access } from 'node:fs/promises';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { homedir } from 'node:os';
-import { extname, join } from 'node:path';
+import { extname, join, basename } from 'node:path';
+import { spawn } from 'node:child_process';
 import {
   displayName, extFromContentType, kindForExt, MEDIA_EXT,
   type GroupMode, type MediaKind,
 } from '@harpe/core';
 import { dirs as DEFAULT_DIRS, UA } from './config.js';
+import { pageImages } from './extract.js';
 
 /** "https://host/" for use as a default Referer. */
 export function origin(url: string): string {
@@ -104,6 +108,89 @@ export function decideFile(opts: {
     return sub ? join(roots[kind], sub) : roots[kind];
   })();
   return { dir, name, kind };
+}
+
+export interface ImageRow {
+  url: string;
+  name: string;
+  dim: string;
+  width?: number;
+  height?: number;
+}
+
+function rowToImageRow(dim: string, url: string, name: string): ImageRow {
+  let width: number | undefined;
+  let height: number | undefined;
+  if (dim.includes('x')) {
+    const [ws, hs] = dim.split('x');
+    const w = Number.parseInt(ws, 10);
+    const h = Number.parseInt(hs, 10);
+    if (Number.isFinite(w) && Number.isFinite(h)) { width = w; height = h; }
+  }
+  return { url, name, dim, width, height };
+}
+
+/**
+ * Candidate images on a page, biggest first. Thin wrapper over extract.pageImages.
+ * Returns rows in the same shape as enumerateImages so any frontend can switch
+ * between the two transparently.
+ */
+export async function scanPage(page: string): Promise<ImageRow[]> {
+  const rows = await pageImages(page);
+  return rows.map(({ dim, url, name }) => rowToImageRow(dim, url, name));
+}
+
+// gallery-dl media URL regex — matches http(s) URLs with a recognised image ext
+const MEDIA_URL_RE =
+  /^https?:\/\/\S+\.(?:jpe?g|png|webp|gif|tiff?|bmp|avif|svg)(\?[^\s#]*)?$/i;
+
+/**
+ * List images on `page` without downloading, biggest first.
+ *
+ * Strategy:
+ *  1. Try `gallery-dl --get-urls <page>` — fast, handles auth/cookies.
+ *     Parse stdout for http(s) media URLs. If media URLs are found, return them
+ *     (dims will be "?" / undefined since gallery-dl doesn't probe headers).
+ *  2. If gallery-dl exits 64 (unsupported URL), is not installed, OR outputs
+ *     no media URLs → fall back to scanPage() (static-HTML + Range probing).
+ */
+export async function enumerateImages(page: string): Promise<ImageRow[]> {
+  try {
+    const result = await new Promise<{ code: number; stdout: string }>((resolve, reject) => {
+      let stdout = '';
+      let p: ReturnType<typeof spawn>;
+      try {
+        p = spawn('gallery-dl', ['--get-urls', page], { stdio: ['ignore', 'pipe', 'pipe'] });
+      } catch (e) {
+        reject(e);
+        return;
+      }
+      p.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
+      p.on('error', reject);
+      p.on('close', (code) => resolve({ code: code ?? 1, stdout }));
+    });
+
+    if (result.code !== 64) {
+      const mediaUrls = result.stdout
+        .split('\n')
+        .map((l) => l.trim())
+        .filter((l) => MEDIA_URL_RE.test(l));
+
+      if (mediaUrls.length > 0) {
+        return mediaUrls.map((url) => ({
+          url,
+          name: basename(new URL(url).pathname) || url,
+          dim: '?',
+          width: undefined,
+          height: undefined,
+        }));
+      }
+    }
+  } catch {
+    // gallery-dl not installed or spawn failed — fall through to scanPage
+  }
+
+  return scanPage(page);
 }
 
 export interface FetchResult {

@@ -28,6 +28,14 @@ function envInt(name: string, def: number): number {
   return Number.isFinite(n) ? n : def;
 }
 
+/**
+ * Path to the `grab-thumb` preview script used by the fzf pickers (curl+chafa
+ * terminal thumbnails). Resolved fresh: $GRAB_THUMB wins, else ~/bin/grab-thumb.
+ * The picker only wires a preview when this file actually exists, so a missing
+ * script just means "no thumbnails" rather than a broken picker.
+ */
+export const GRAB_THUMB = process.env.GRAB_THUMB || join(HOME, 'bin', 'grab-thumb');
+
 /** Long-edge cap for saved art (0 = full resolution). */
 export const MAXPX = envInt('GRAB_ART_MAXPX', 7680);
 /** Page-picker: drop images whose long edge is below this; cap candidates probed. */

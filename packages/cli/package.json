@@ -3,7 +3,11 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Harpe engine + CLI (TypeScript). WORK IN PROGRESS — porting the Python engine onto @harpe/core. The Python `harpe` remains the shipping engine until this reaches parity.",
+  "description": "Harpe engine + CLI (TypeScript), built on @harpe/core. Ports the Python `harpe` engine: download flows (video/audio/image/page/art/fetch), federated museum search, reverse-image, the native-messaging host and its installer.",
+  "bin": {
+    "harpe": "./dist/cli.js",
+    "grab": "./dist/cli.js"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json"
   },
