@@ -249,5 +249,3 @@ export async function detectFromHtml(html: string, baseUrl: string, timeoutMs = 
   }
   return null;
 }
-
-export { fetchText };

@@ -10,15 +10,6 @@ export interface DownloadVariant {
   lossless: boolean;
 }
 
-/** A slide for the shared lightbox (shape consumed by yet-another-react-lightbox). */
-export interface LightboxSlide {
-  src: string;
-  title?: string;
-  description?: string;
-  downloadUrl?: string;
-  downloadFilename?: string;
-}
-
 export const LOSSLESS_FORMATS = new Set(['png', 'tiff', 'gif', 'bmp']);
 
 export function extFor(format: string): string {
@@ -37,7 +28,7 @@ export function fmtFromUrl(url: string): string {
 }
 
 /** Build a same-origin proxy URL (forces attachment + bypasses CORS). */
-export function proxyUrl(url: string, referer?: string): string {
+function proxyUrl(url: string, referer?: string): string {
   const p = new URLSearchParams({ url });
   if (referer) p.set('referer', referer);
   return `/api/fetch?${p.toString()}`;

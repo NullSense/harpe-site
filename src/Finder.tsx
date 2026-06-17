@@ -7,7 +7,7 @@
  *   • a title or artist name  → federated museum search (AIC, Met, Cleveland,
  *                                Commons, WikiArt)
  *
- * Both result kinds render in the same grid and open the same MediaLightbox,
+ * Both result kinds render in the same grid and open the same ArtDetail view,
  * and every download goes through the same /api/fetch proxy.
  */
 

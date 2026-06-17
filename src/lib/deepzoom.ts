@@ -23,7 +23,7 @@
  * The pure pyramid math (no DOM) is unit-tested in deepzoom.test.ts.
  */
 
-export type DeepZoomProtocol = 'iiif' | 'dzi' | 'zoomify';
+type DeepZoomProtocol = 'iiif' | 'dzi' | 'zoomify';
 
 export interface DeepZoomDescriptor {
   protocol: DeepZoomProtocol;
