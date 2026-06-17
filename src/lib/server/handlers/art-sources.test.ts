@@ -129,3 +129,117 @@ describe('validateArtItem (the unified contract)', () => {
     expect(validateArtItem(makeItem({ source: 'nope' as unknown as ArtItem['source'] })).join()).toContain('unknown source key');
   });
 });
+
+// ─── Dump PD mapping (mirrors fetchDumpSearchUncached logic) ──────────────────
+// The HF row field `is_public_domain` can be true | false | null (when the dump
+// omitted the column). Only an explicit `true` must yield isPublicDomain=true.
+
+function mapDumpPd(value: unknown): boolean {
+  return value === true;
+}
+
+describe('dump is_public_domain mapping', () => {
+  it('true → public domain', () => {
+    expect(mapDumpPd(true)).toBe(true);
+  });
+
+  it('false → not public domain', () => {
+    expect(mapDumpPd(false)).toBe(false);
+  });
+
+  it('null → not public domain (unknown rights must not be assumed PD)', () => {
+    expect(mapDumpPd(null)).toBe(false);
+  });
+
+  it('undefined → not public domain', () => {
+    expect(mapDumpPd(undefined)).toBe(false);
+  });
+
+  it('1 (truthy number) → not public domain (strict === true)', () => {
+    expect(mapDumpPd(1)).toBe(false);
+  });
+});
+
+// ─── Commons license detection (mirrors fetchCommons logic) ──────────────────
+// extmetadata can be absent, partially populated, or carry various license strings.
+
+function mapCommonsLicense(extmetadata?: {
+  LicenseShortName?: { value?: unknown };
+  License?: { value?: unknown };
+  UsageTerms?: { value?: unknown };
+}): boolean {
+  const str = (v: unknown) => (typeof v === 'string' ? v : '');
+  const licShort = str(extmetadata?.LicenseShortName?.value).toLowerCase();
+  const licKey = str(extmetadata?.License?.value).toLowerCase();
+  const usage = str(extmetadata?.UsageTerms?.value).toLowerCase();
+  return (
+    licShort.includes('cc0') || licShort.includes('public domain') ||
+    licKey.includes('cc0') || licKey.includes('publicdomain') ||
+    usage.includes('public domain') || usage.includes('no known copyright')
+  );
+}
+
+describe('Commons extmetadata license mapping', () => {
+  it('CC0 LicenseShortName → public domain', () => {
+    expect(mapCommonsLicense({ LicenseShortName: { value: 'CC0' } })).toBe(true);
+  });
+
+  it('"Public Domain" LicenseShortName → public domain', () => {
+    expect(mapCommonsLicense({ LicenseShortName: { value: 'Public Domain' } })).toBe(true);
+  });
+
+  it('CC-BY-SA LicenseShortName → not public domain', () => {
+    expect(mapCommonsLicense({ LicenseShortName: { value: 'CC BY-SA 4.0' } })).toBe(false);
+  });
+
+  it('GFDL LicenseShortName → not public domain', () => {
+    expect(mapCommonsLicense({ LicenseShortName: { value: 'GFDL' } })).toBe(false);
+  });
+
+  it('License key "publicdomain" → public domain', () => {
+    expect(mapCommonsLicense({ License: { value: 'publicdomain' } })).toBe(true);
+  });
+
+  it('UsageTerms "public domain" → public domain', () => {
+    expect(mapCommonsLicense({ UsageTerms: { value: 'This work is in the public domain.' } })).toBe(true);
+  });
+
+  it('UsageTerms "no known copyright" → public domain', () => {
+    expect(mapCommonsLicense({ UsageTerms: { value: 'No known copyright restrictions.' } })).toBe(true);
+  });
+
+  it('missing extmetadata → false (defensive)', () => {
+    expect(mapCommonsLicense(undefined)).toBe(false);
+  });
+
+  it('empty extmetadata → false (defensive)', () => {
+    expect(mapCommonsLicense({})).toBe(false);
+  });
+});
+
+// ─── IIIF image URL helper ────────────────────────────────────────────────────
+
+import { iiifImage, IIIF } from '../iiif-image-url.js';
+
+describe('iiifImage helper', () => {
+  const base = 'https://iiif.wellcomecollection.org/image/V0017241';
+
+  it('produces the correct thumb URL (preserves byte-identity with original template)', () => {
+    // Before: `${base}/full/!843,843/0/default.jpg`
+    expect(iiifImage(base, IIIF.THUMB)).toBe(`${base}/full/!843,843/0/default.jpg`);
+  });
+
+  it('produces the correct preview URL', () => {
+    // Before: `${base}/full/!1600,1600/0/default.jpg`
+    expect(iiifImage(base, IIIF.PREVIEW)).toBe(`${base}/full/!1600,1600/0/default.jpg`);
+  });
+
+  it('produces the correct full URL', () => {
+    // Before: `${base}/full/full/0/default.jpg`
+    expect(iiifImage(base, IIIF.FULL)).toBe(`${base}/full/full/0/default.jpg`);
+  });
+
+  it('accepts an arbitrary size string', () => {
+    expect(iiifImage(base, '512,')).toBe(`${base}/full/512,/0/default.jpg`);
+  });
+});

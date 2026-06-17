@@ -32,6 +32,7 @@ import type { VercelRequest, VercelResponse } from '../vercel.js';
 import { fetch, Agent } from 'undici';
 import { GuardError, rateLimit, clientIp } from '../guard.js';
 import { rankResults, qualityScore, type ArtItem, type Download, type SourceAdapter } from '@harpe/core';
+import { iiifImage, IIIF } from '../iiif-image-url.js';
 
 // HTTP/2 dispatcher (lazy). NYPL's HTTP/1.1 path returns "HTTP Basic: Access
 // denied" and ignores the Token auth scheme; over HTTP/2 (what curl uses) the
@@ -355,7 +356,7 @@ async function fetchCommons(q: string): Promise<ArtItem[]> {
     const url =
       `https://commons.wikimedia.org/w/api.php?action=query&format=json` +
       `&generator=search&gsrsearch=${encodeURIComponent(q)}&gsrnamespace=6&gsrlimit=15` +
-      `&prop=imageinfo&iiprop=url%7Csize%7Cmime&iiurlwidth=1024`;
+      `&prop=imageinfo&iiprop=url%7Csize%7Cmime%7Cextmetadata&iiurlwidth=1024`;
 
     const res = await timedFetch(url, controller.signal);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -367,6 +368,11 @@ async function fetchCommons(q: string): Promise<ArtItem[]> {
           imageinfo?: Array<{
             url?: unknown; thumburl?: unknown;
             width?: unknown; height?: unknown; mime?: unknown;
+            extmetadata?: {
+              LicenseShortName?: { value?: unknown };
+              License?: { value?: unknown };
+              UsageTerms?: { value?: unknown };
+            };
           }>;
         }>;
       };
@@ -391,6 +397,16 @@ async function fetchCommons(q: string): Promise<ArtItem[]> {
       const rendered = str(ii.thumburl) || full;
       const format = fmtFromMime(mime);
       const lossless = LOSSLESS_FORMATS.has(format);
+      // Commons hosts CC0 / PD as well as CC-BY / CC-BY-SA / GFDL works.
+      // Use extmetadata to determine the actual license; only mark public-domain
+      // for CC0 and unambiguously PD-marked items. Missing metadata → false.
+      const licShort = str(ii.extmetadata?.LicenseShortName?.value).toLowerCase();
+      const licKey = str(ii.extmetadata?.License?.value).toLowerCase();
+      const usage = str(ii.extmetadata?.UsageTerms?.value).toLowerCase();
+      const isPublicDomain =
+        licShort.includes('cc0') || licShort.includes('public domain') ||
+        licKey.includes('cc0') || licKey.includes('publicdomain') ||
+        usage.includes('public domain') || usage.includes('no known copyright');
       items.push({
         id: `commons-${pageId}`,
         title: title || 'Untitled',
@@ -405,7 +421,7 @@ async function fetchCommons(q: string): Promise<ArtItem[]> {
         lossless,
         downloads: [{ label: `Original ${format.toUpperCase()}`, url: full, format, lossless }],
         source: 'commons',
-        isPublicDomain: true, // Commons hosts freely-licensed / PD media
+        isPublicDomain,
       });
     }
 
@@ -497,14 +513,14 @@ async function fetchVam(q: string): Promise<ArtItem[]> {
       const base = str(r._images?._iiif_image_base_url).replace(/\/$/, '');
       if (!base) continue;
       const date = str(r._primaryDate);
-      const full = `${base}/full/full/0/default.jpg`;
+      const full = iiifImage(base, IIIF.FULL);
       items.push({
         id: `vam-${str(r.systemNumber)}`,
         title: (str(r._primaryTitle) || str(r.objectType) || 'Untitled') + (date ? ` (${date})` : ''),
         artist: str(r._primaryMaker?.name),
         dimensions: '',
-        thumbUrl: `${base}/full/!843,843/0/default.jpg`,
-        previewUrl: `${base}/full/!1600,1600/0/default.jpg`,
+        thumbUrl: iiifImage(base, IIIF.THUMB),
+        previewUrl: iiifImage(base, IIIF.PREVIEW),
         fullUrl: full,
         format: 'jpeg',
         lossless: false,
@@ -551,14 +567,14 @@ async function fetchWellcome(q: string): Promise<ArtItem[]> {
       const m = thumb.match(/\/thumbs\/([^/]+)\/full\//);
       if (!m) continue;
       const base = `https://iiif.wellcomecollection.org/image/${m[1]}`;
-      const full = `${base}/full/full/0/default.jpg`;
+      const full = iiifImage(base, IIIF.FULL);
       items.push({
         id: `wellcome-${str(w.id)}`,
         title: str(w.title) || 'Untitled',
         artist: '',
         dimensions: '',
-        thumbUrl: `${base}/full/!843,843/0/default.jpg`,
-        previewUrl: `${base}/full/!1600,1600/0/default.jpg`,
+        thumbUrl: iiifImage(base, IIIF.THUMB),
+        previewUrl: iiifImage(base, IIIF.PREVIEW),
         fullUrl: full,
         format: 'jpeg',
         lossless: false,
@@ -1009,8 +1025,8 @@ async function fetchHarvard(q: string): Promise<ArtItem[]> {
         title: (str(r.title) || 'Untitled') + (date ? ` (${date})` : ''),
         artist: artist ? str(artist.name) : '',
         dimensions: '',
-        thumbUrl: iiif ? `${iiif}/full/!843,843/0/default.jpg` : `${primary}?height=843`,
-        previewUrl: iiif ? `${iiif}/full/!1600,1600/0/default.jpg` : primary,
+        thumbUrl: iiif ? iiifImage(iiif, IIIF.THUMB) : `${primary}?height=843`,
+        previewUrl: iiif ? iiifImage(iiif, IIIF.PREVIEW) : primary,
         fullUrl: primary,
         format: 'jpeg',
         lossless: false,
@@ -1153,6 +1169,30 @@ type DumpSourceKey = keyof typeof DUMP_SOURCE_LABELS;
 // dump-backed rows; each source filters its own out of the shared result.
 const dumpSearchCache = new Map<string, Promise<ArtItem[]>>();
 
+// Upstash KV cache for dump search results. Shares the same env vars as the rate
+// limiter / analyze cache so no extra configuration is needed. Falls back to the
+// in-memory Map when the env vars are absent (e.g. local dev).
+// Lazy-initialized once per serverless instance (same pattern as analyze.ts).
+let _dumpRedis: {
+  get: (k: string) => Promise<unknown>;
+  set: (k: string, v: string, o: { ex: number; nx?: boolean }) => Promise<unknown>;
+} | null | undefined;
+
+async function getDumpRedis() {
+  if (_dumpRedis !== undefined) return _dumpRedis;
+  const url = process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL;
+  const token = process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN;
+  if (!url || !token) { _dumpRedis = null; return null; }
+  try {
+    const { Redis } = await import('@upstash/redis');
+    _dumpRedis = new Redis({ url, token }) as unknown as typeof _dumpRedis;
+  } catch { _dumpRedis = null; }
+  return _dumpRedis;
+}
+
+const DUMP_CACHE_TTL_S = 5 * 60; // 5-minute TTL for dump search results
+const DUMP_CACHE_KEY_PREFIX = 'dump-search:';
+
 function dumpDatasetEnv(source: DumpSourceKey): string {
   return `HARPE_${source.toUpperCase()}_DUMP_DATASET`;
 }
@@ -1162,13 +1202,36 @@ function dumpDatasetFor(source: DumpSourceKey, env: NodeJS.ProcessEnv = process.
 }
 
 function fetchDumpSearch(dataset: string, q: string): Promise<ArtItem[]> {
-  const key = `${dataset}\n${q}`;
-  let cached = dumpSearchCache.get(key);
+  const memKey = `${dataset}\n${q}`;
+  // Tier 1: in-memory Map (per-instance, lives only as long as the Lambda is warm).
+  let cached = dumpSearchCache.get(memKey);
   if (!cached) {
-    cached = fetchDumpSearchUncached(q, dataset);
-    dumpSearchCache.set(key, cached);
-    // Bound the cache. `while`, not `if`: concurrent invocations can insert
-    // several entries before any eviction runs, so a single `if` lets it grow.
+    // Tier 2: Upstash KV (survives across instances; ~5-minute TTL).
+    // Wrap the async KV lookup + upstream fetch in a Promise so the in-memory Map
+    // entry is set synchronously and concurrent callers share the same Promise.
+    cached = (async () => {
+      const redis = await getDumpRedis();
+      const kvKey = `${DUMP_CACHE_KEY_PREFIX}${dataset}\n${q}`;
+      if (redis) {
+        try {
+          const hit = await redis.get(kvKey);
+          if (hit) {
+            return typeof hit === 'string' ? (JSON.parse(hit) as ArtItem[]) : (hit as ArtItem[]);
+          }
+        } catch { /* ignore KV errors — fall through to live fetch */ }
+      }
+      const items = await fetchDumpSearchUncached(q, dataset);
+      // Populate KV with SET-if-not-exists (NX) to avoid stampede overwrites.
+      if (redis) {
+        try {
+          await redis.set(kvKey, JSON.stringify(items), { ex: DUMP_CACHE_TTL_S, nx: true });
+        } catch { /* ignore KV write errors */ }
+      }
+      return items;
+    })();
+    dumpSearchCache.set(memKey, cached);
+    // Bound the in-memory cache. `while`, not `if`: concurrent invocations can
+    // insert several entries before any eviction runs, so a single `if` lets it grow.
     while (dumpSearchCache.size > 32) {
       const oldest = dumpSearchCache.keys().next().value;
       if (!oldest) break;
@@ -1214,7 +1277,7 @@ async function fetchDumpSearchUncached(q: string, dataset: string): Promise<ArtI
         lossless: false,
         downloads: [{ label: 'Full image', url: full, format: fmtFromUrl(full), lossless: false }],
         source,
-        isPublicDomain: row.is_public_domain !== false,
+        isPublicDomain: row.is_public_domain === true,
         date: str(row.date),
         medium: str(row.medium),
         culture: str(row.culture),

@@ -81,6 +81,11 @@ SELECT
   pi.height AS height,
   'https://www.nga.gov/collection/art-object-page.' || CAST(o.objectid AS VARCHAR) || '.html' AS source_url,
   'openaccess' AS rights_type,
+  -- NGA's Open Access initiative (launched 2019) is NGA's own assertion that each
+  -- work is in the public domain. They release these images under CC0, so
+  -- openaccess=1 is a correct public-domain signal — not merely "freely usable
+  -- under a Creative Commons license". We keep TRUE here intentionally; a birth-year
+  -- heuristic would be less accurate than NGA's own legal determination.
   TRUE AS is_public_domain
 FROM read_csv_auto('{NGA_OBJECTS}', ignore_errors=true) o
 JOIN read_csv_auto('{NGA_IMAGES}', ignore_errors=true) pi
@@ -126,7 +131,7 @@ SELECT
   image_height AS height,
   'https://collections.artsmia.org/art/' || id AS source_url,
   rights_type AS rights_type,
-  restricted = 0 AND LOWER(COALESCE(rights_type, '')) IN ('public domain', 'no copyright') AS is_public_domain
+  COALESCE(restricted = 0 AND LOWER(COALESCE(rights_type, '')) IN ('public domain', 'no copyright'), FALSE) AS is_public_domain
 FROM read_json('{glob}', columns={cols}, format='auto', records='true', ignore_errors=true)
 WHERE image = 'valid' AND restricted = 0 AND id IS NOT NULL
 """
