@@ -6,12 +6,12 @@
  *   { images: [{ url, name, width? }] }
  *
  * Security:
- *   - SSRF guard via _guard.ts (private IP / bad scheme / bad port rejection)
+ *   - SSRF guard via guard.ts (private IP / bad scheme / bad port rejection)
  *   - Redirect following with per-hop SSRF re-validation (max 3 hops)
  *   - Only text/html responses are accepted
  *   - Body capped at ~4 MB
  *   - 8 second total fetch timeout
- *   - Rate limiting: 30 req/min/IP (in-memory, best-effort; see _guard.ts TODO)
+ *   - Rate limiting: 30 req/min/IP (in-memory, best-effort; see guard.ts)
  */
 
 import type { VercelRequest, VercelResponse } from '../vercel.js';

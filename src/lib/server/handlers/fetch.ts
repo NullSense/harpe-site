@@ -15,7 +15,7 @@
  * When none of w/h/fmt/q are present: original streaming passthrough (no change).
  *
  * Security:
- *   - SSRF guard via _guard.ts (private IP / bad scheme / bad port rejection)
+ *   - SSRF guard via guard.ts (private IP / bad scheme / bad port rejection)
  *   - Redirect following with per-hop SSRF re-validation (max 3 hops)
  *   - REQUIRES response Content-Type to start with "image/"
  *   - Body buffered (conversion) or streamed (passthrough) with an 80 MB DoS cap
