@@ -15,6 +15,8 @@ import type React from 'react';
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import DownloadMenu from './components/DownloadMenu';
+import SearchSuggest from './components/SearchSuggest';
+import Discover from './components/Discover';
 import { streamArt } from './lib/useArtStream';
 import { fitsScreen } from './lib/resolutions';
 import { qualityScore, stripHtml, mediumCategory, yearOf } from './lib/ranking';
@@ -1039,7 +1041,8 @@ export default function Finder() {
   }, []);
 
   const handleSubmit = (e: React.FormEvent) => { e.preventDefault(); run(input); };
-  const runExample = (ex: string) => { setInput(ex); inputRef.current?.focus(); run(ex); };
+  // Run a search from a picked suggestion / discovery chip (reflect it in the box).
+  const runQuery = useCallback((q: string) => { setInput(q); run(q); }, [run]);
 
   // ── scan helpers ──
   const handleLoad = useCallback((idx: number, nw: number) => {
@@ -1290,29 +1293,22 @@ export default function Finder() {
     return () => obs.disconnect();
   }, [mode, visibleArt.length]);
 
-  const EXAMPLES: Array<{ label: string; value: string }> = [
-    { label: 'Starry Night', value: 'Starry Night' },
-    { label: 'The Birth of Venus', value: 'The Birth of Venus' },
-    { label: 'a web page ↗', value: 'https://en.wikipedia.org/wiki/Perseus' },
-  ];
+  const URL_EXAMPLE = 'https://en.wikipedia.org/wiki/Perseus';
 
   return (
     <section id="finder" aria-label="Find and download images" className="w-full">
       {/* the one search box */}
       <form onSubmit={handleSubmit} className="mx-auto flex w-full max-w-[680px] flex-col gap-2 sm:flex-row">
         <label htmlFor={inputId} className="sr-only">Paste a link, or search for art</label>
-        <input
-          id={inputId}
-          ref={inputRef}
-          type="text"
-          inputMode="url"
+        <SearchSuggest
           value={input}
-          onChange={(e) => setInput(e.target.value)}
+          onChange={setInput}
+          onPick={runQuery}
+          enabled={!isURL(input)}
+          inputId={inputId}
+          inputRef={inputRef}
           placeholder="Paste a link, or search for art…"
-          autoComplete="off"
-          autoCapitalize="off"
-          spellCheck="false"
-          className="flex-1 rounded-lg border border-line bg-[rgba(14,10,7,.82)] px-4 py-3 font-mono text-[.92rem] text-ink shadow-[inset_0_1px_0_rgba(255,255,255,.03)] outline-none transition placeholder:text-muted/55 focus:border-bronze/70 focus:ring-2 focus:ring-bronze/25"
+          className="w-full rounded-lg border border-line bg-[rgba(14,10,7,.82)] px-4 py-3 font-mono text-[.92rem] text-ink shadow-[inset_0_1px_0_rgba(255,255,255,.03)] outline-none transition placeholder:text-muted/55 focus:border-bronze/70 focus:ring-2 focus:ring-bronze/25"
         />
         <button
           type="submit"
@@ -1324,28 +1320,37 @@ export default function Finder() {
         </button>
       </form>
 
-      {/* one-line explainer + examples */}
+      {/* one-line explainer */}
       <p className="mx-auto mt-3 max-w-[600px] text-center text-[.82rem] text-muted">
         Paste a page or gallery <strong className="font-semibold text-ink/80">URL</strong> to grab its
         images — or type an <strong className="font-semibold text-ink/80">artwork or artist</strong> to
         search the world's museums.
       </p>
-      <div className="mt-3 flex flex-wrap justify-center gap-2">
-        {EXAMPLES.map((ex) => (
-          <button
-            key={ex.value}
-            type="button"
-            onClick={() => runExample(ex.value)}
-            className="rounded-full border border-line px-3 py-1 font-mono text-[.72rem] text-muted transition hover:border-bronze/60 hover:text-bronze"
-          >
-            {ex.label}
-          </button>
-        ))}
-      </div>
-      <p className="mt-3 text-center font-mono text-[.68rem] tracking-[0.04em] text-muted/55">
-        millions of works across 15 open collections — the Met · Art Institute of Chicago · Cleveland · V&amp;A ·
-        Wellcome · Harvard · Smithsonian · Library of Congress · SMK · Nasjonalmuseet · Europeana · Wikidata · DigitalNZ · WikiArt · Wikimedia Commons
-      </p>
+
+      {/* idle state → curated discovery (artists / movements / themes) */}
+      {mode === 'idle' && (
+        <>
+          {!isURL(input) && (
+            <div className="mt-7">
+              <Discover onPick={runQuery} />
+            </div>
+          )}
+          <p className="mt-7 text-center text-[.78rem] text-muted/70">
+            …or paste a page / gallery URL to grab its images —{' '}
+            <button
+              type="button"
+              onClick={() => runQuery(URL_EXAMPLE)}
+              className="text-bronze underline-offset-2 transition hover:text-bronze-bright hover:underline"
+            >
+              try one ↗
+            </button>
+          </p>
+          <p className="mt-6 text-center font-mono text-[.68rem] tracking-[0.04em] text-muted/55">
+            millions of works across 15 open collections — the Met · Art Institute of Chicago · Cleveland · V&amp;A ·
+            Wellcome · Harvard · Smithsonian · Library of Congress · SMK · Nasjonalmuseet · Europeana · Wikidata · DigitalNZ · WikiArt · Wikimedia Commons
+          </p>
+        </>
+      )}
 
       {/* ── results ── */}
       <div className="mt-10">
