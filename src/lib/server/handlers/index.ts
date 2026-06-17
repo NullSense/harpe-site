@@ -13,6 +13,7 @@ import deepzoom from './deepzoom.js';
 import fetchHandler from './fetch.js';
 import grab from './grab.js';
 import iiif from './iiif.js';
+import preview from './preview.js';
 import sauce from './sauce.js';
 import scan from './scan.js';
 import tile from './tile.js';
@@ -28,6 +29,7 @@ export const handlers: Record<string, Handler> = {
   fetch: fetchHandler,
   grab,
   iiif,
+  preview,
   sauce,
   scan,
   tile,

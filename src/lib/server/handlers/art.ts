@@ -24,7 +24,8 @@
  *   - q is validated as a non-empty string and URL-encoded before use
  *   - URLs are all fixed museum API hosts — no user-supplied URL, no SSRF risk
  *   - Rate limiting: Upstash Redis when configured, in-memory fallback otherwise
- *   - 8 second per-source timeout
+ *   - 12 second per-source timeout (results stream in, so slow public APIs like
+ *     Library of Congress / Europeana can finish late instead of being aborted)
  */
 
 import type { VercelRequest, VercelResponse } from '../vercel.js';
@@ -45,7 +46,7 @@ function h2Agent(): Agent {
 
 const UA =
   'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
-const TIMEOUT_MS = 8_000;
+const TIMEOUT_MS = 12_000;
 const MAX_ITEMS = 40;
 
 // ─── Response types ───────────────────────────────────────────────────────────

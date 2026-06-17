@@ -8,7 +8,7 @@ import dispatch, { opFromRequest } from '../../../../api/[...path].js';
 
 const EXPECTED = [
   'analyze', 'art', 'art-stream', 'deepzoom', 'fetch',
-  'grab', 'iiif', 'sauce', 'scan', 'tile', 'x',
+  'grab', 'iiif', 'preview', 'sauce', 'scan', 'tile', 'x',
 ];
 
 function res() {

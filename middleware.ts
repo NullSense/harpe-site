@@ -68,21 +68,24 @@ export default async function middleware(req: Request): Promise<Response | undef
   let img = url.searchParams.get('img') || '';
   let desc = url.searchParams.get('d') || '';
 
-  // No embedded preview data → resolve the item by re-running the search once.
-  // Kept short so a slow source can't stall the crawler past its own timeout.
+  // No embedded preview data (e.g. a plain address-bar copy) → resolve the item
+  // server-side. We hit /api/preview (Node runtime, reuses gatherSources) via the
+  // DEPLOYMENT URL, not the public alias — edge can't reliably fetch its own
+  // alias, but the per-deployment host works. Non-fatal: any failure → defaults.
   if ((!title || !img) && !/^https?:/i.test(q)) {
+    const base =
+      typeof process !== 'undefined' && process.env.VERCEL_URL
+        ? `https://${process.env.VERCEL_URL}`
+        : url.origin;
     try {
-      const r = await fetch(`${url.origin}/api/art?q=${encodeURIComponent(q)}`, {
-        signal: AbortSignal.timeout(5000),
-      });
-      const j = (await r.json()) as { items?: Array<Record<string, string>> };
-      const items = j.items || [];
-      const it = (v && items.find((x) => x.id === v)) || items[0];
-      if (it) {
-        title = title || it.title;
-        img = img || it.previewUrl || it.thumbUrl;
-        desc = desc || [it.artist, it.date, it.medium].filter(Boolean).join(' · ');
-      }
+      const r = await fetch(
+        `${base}/api/preview?q=${encodeURIComponent(q)}&v=${encodeURIComponent(v)}`,
+        { signal: AbortSignal.timeout(6000) },
+      );
+      const j = (await r.json()) as { title?: string; img?: string; desc?: string };
+      title = title || j.title || '';
+      img = img || j.img || '';
+      desc = desc || j.desc || '';
     } catch { /* fall back to defaults */ }
   }
 
