@@ -6,9 +6,24 @@
  * proxies here via the deployment URL instead.
  *
  * GET /api/preview?q=<query>&v=<item-id>  →  { title, img, desc }  (or {} if none)
+ *
+ * Rate limiting: applies the same rateLimit(clientIp(headers)) guard as
+ * /api/art. On GuardError we return {} (status 200) rather than 429 so a
+ * throttle never breaks the social card — preview must degrade gracefully.
+ *
+ * IP-attribution caveat: this endpoint is called server-to-server by
+ * middleware.ts, so x-real-ip / x-forwarded-for may collapse to a shared Vercel
+ * infra IP when CDN caching is cold. Accepting that: once the CDN warms the
+ * response (s-maxage=3600) the same ?q= never reaches this function again, so
+ * only genuinely distinct queries consume budget. A throttled infra IP therefore
+ * means an attacker is hammering MANY distinct queries — exactly the abuse we
+ * want to cap. The rate limit budget is the same 60 req/min used by /api/art;
+ * legitimate social crawlers retry at most a handful of times per link and are
+ * never hurt in practice because the CDN shields them.
  */
 import type { VercelRequest, VercelResponse } from '../vercel.js';
 import { type ArtItem } from '@harpe/core';
+import { GuardError, rateLimit, clientIp } from '../guard.js';
 import { gatherSources } from './art.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -16,6 +31,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const q = (typeof req.query.q === 'string' ? req.query.q : '').trim();
   const v = typeof req.query.v === 'string' ? req.query.v : '';
   if (!q) return res.status(200).json({});
+
+  // Rate limit — degrade gracefully: a throttle returns {} (200) instead of
+  // 429 so the social card always renders (empty card > broken page).
+  try {
+    await rateLimit(clientIp(req.headers as Record<string, string | string[] | undefined>));
+  } catch (e) {
+    if (e instanceof GuardError) return res.status(200).json({});
+    throw e;
+  }
 
   try {
     const named = await gatherSources(q);

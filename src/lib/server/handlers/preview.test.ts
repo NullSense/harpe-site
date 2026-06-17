@@ -1,9 +1,17 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('./art.js', () => ({ gatherSources: vi.fn() }));
+vi.mock('../guard.js', () => ({
+  GuardError: class GuardError extends Error {
+    constructor(public readonly status: number, message: string) { super(message); this.name = 'GuardError'; }
+  },
+  rateLimit: vi.fn(),
+  clientIp: vi.fn(() => '1.2.3.4'),
+}));
 
 import preview from './preview.js';
 import { gatherSources } from './art.js';
+import { rateLimit, GuardError } from '../guard.js';
 
 function res() {
   const r: any = { code: 0, body: undefined, headers: {} };
@@ -18,7 +26,10 @@ const item = (over: Record<string, unknown> = {}) => ({
   medium: 'Oil on canvas', thumbUrl: 't.jpg', previewUrl: 'p.jpg', ...over,
 });
 
-beforeEach(() => vi.mocked(gatherSources).mockReset());
+beforeEach(() => {
+  vi.mocked(gatherSources).mockReset();
+  vi.mocked(rateLimit).mockResolvedValue(undefined);
+});
 
 describe('preview resolver', () => {
   it('resolves the exact item by v and returns title/img/desc', async () => {
@@ -26,7 +37,7 @@ describe('preview resolver', () => {
       ['AIC', Promise.resolve([item({ id: 'aic-1' }), item({ id: 'aic-2', title: 'Other' })])],
     ] as never);
     const r = res();
-    await preview({ query: { q: 'monet', v: 'aic-2' } } as never, r as never);
+    await preview({ query: { q: 'monet', v: 'aic-2' }, headers: {} } as never, r as never);
     expect(r.body).toMatchObject({ title: 'Other', img: 'p.jpg', desc: 'Claude Monet · 1906 · Oil on canvas' });
   });
 
@@ -35,13 +46,13 @@ describe('preview resolver', () => {
       ['AIC', Promise.resolve([item({ title: 'First' })])],
     ] as never);
     const r = res();
-    await preview({ query: { q: 'monet' } } as never, r as never);
+    await preview({ query: { q: 'monet' }, headers: {} } as never, r as never);
     expect(r.body.title).toBe('First');
   });
 
   it('returns {} for an empty query (no work done)', async () => {
     const r = res();
-    await preview({ query: {} } as never, r as never);
+    await preview({ query: {}, headers: {} } as never, r as never);
     expect(r.body).toEqual({});
     expect(gatherSources).not.toHaveBeenCalled();
   });
@@ -52,7 +63,60 @@ describe('preview resolver', () => {
       ['Met', Promise.resolve([item({ id: 'met-9', title: 'Met work' })])],
     ] as never);
     const r = res();
-    await preview({ query: { q: 'x', v: 'met-9' } } as never, r as never);
+    await preview({ query: { q: 'x', v: 'met-9' }, headers: {} } as never, r as never);
     expect(r.body.title).toBe('Met work');
+  });
+
+  it('returns {} (200) when rate limit is exceeded — card degrades gracefully, never errors', async () => {
+    vi.mocked(rateLimit).mockRejectedValue(new GuardError(429, 'Rate limit exceeded — try again in a minute'));
+    const r = res();
+    await preview({ query: { q: 'monet' }, headers: {} } as never, r as never);
+    // Status 200 (not 429) — preview must never block the social card
+    expect(r.code).toBe(200);
+    expect(r.body).toEqual({});
+    // gatherSources should not be called when throttled
+    expect(gatherSources).not.toHaveBeenCalled();
+  });
+
+  it('rethrows non-GuardError exceptions from rateLimit', async () => {
+    vi.mocked(rateLimit).mockRejectedValue(new Error('infra failure'));
+    const r = res();
+    await expect(
+      preview({ query: { q: 'monet' }, headers: {} } as never, r as never),
+    ).rejects.toThrow('infra failure');
+  });
+
+  it('assembles desc from artist, date, medium — omits blank fields', async () => {
+    vi.mocked(gatherSources).mockResolvedValue([
+      ['AIC', Promise.resolve([item({ artist: '', date: '1906', medium: '' })])],
+    ] as never);
+    const r = res();
+    await preview({ query: { q: 'monet' }, headers: {} } as never, r as never);
+    expect(r.body.desc).toBe('1906');
+  });
+
+  it('uses previewUrl as img; falls back to thumbUrl when previewUrl is empty', async () => {
+    vi.mocked(gatherSources).mockResolvedValue([
+      ['AIC', Promise.resolve([item({ previewUrl: '', thumbUrl: 'thumb.jpg' })])],
+    ] as never);
+    const r = res();
+    await preview({ query: { q: 'x' }, headers: {} } as never, r as never);
+    expect(r.body.img).toBe('thumb.jpg');
+  });
+
+  it('returns {} when all sources resolve with empty arrays', async () => {
+    vi.mocked(gatherSources).mockResolvedValue([
+      ['AIC', Promise.resolve([])],
+      ['Met', Promise.resolve([])],
+    ] as never);
+    const r = res();
+    await preview({ query: { q: 'nothing' }, headers: {} } as never, r as never);
+    expect(r.body).toEqual({});
+  });
+
+  it('sets the CDN cache header on every response', async () => {
+    const r = res();
+    await preview({ query: {}, headers: {} } as never, r as never);
+    expect(r.headers['Cache-Control']).toContain('s-maxage=3600');
   });
 });
