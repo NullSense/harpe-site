@@ -1,0 +1,10 @@
+# Repo-local gitleaks config: keep the full default ruleset, but the browser
+# extension manifest "key" is a PUBLIC key (it pins the stable extension ID and
+# is meant to be committed — the private half lives outside the repo), so
+# allowlist that file.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Public extension signing key in the MV3 manifest"
+paths = ['''apps/extension/static/manifest\.json''']

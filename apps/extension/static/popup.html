@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Harpe</title>
+  <link rel="stylesheet" href="css/popup.css" />
+</head>
+<body>
+  <header>
+    <div class="header-left">
+      <img src="icons/icon32.png" alt="" class="logo" />
+      <span class="app-name">Harpe</span>
+    </div>
+    <div class="header-right">
+      <button id="btn-settings" class="btn-icon" title="Settings" aria-label="Settings" aria-expanded="false">
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3.2"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      </button>
+      <button id="btn-rescan" class="btn-secondary">Rescan</button>
+    </div>
+  </header>
+
+  <!-- Settings drawer (toggled by the gear) -->
+  <section id="settings" class="settings" hidden>
+    <p id="mode-line" class="mode-line">Checking for the Harpe engine…</p>
+    <button id="btn-enable-engine" class="btn-secondary" hidden>Enable Harpe engine</button>
+
+    <div class="dest-grid">
+      <div class="dest-row" id="row-img">
+        <label class="settings-label" for="dest-img" id="lbl-img">Images</label>
+        <div class="dest-input-row">
+          <input id="dest-img" class="settings-input" type="text" spellcheck="false" autocomplete="off" />
+          <button class="btn-secondary btn-browse" data-for="dest-img" hidden>Browse…</button>
+        </div>
+      </div>
+      <div class="dest-row" id="row-vid">
+        <label class="settings-label" for="dest-vid">Videos</label>
+        <div class="dest-input-row">
+          <input id="dest-vid" class="settings-input" type="text" spellcheck="false" autocomplete="off" />
+          <button class="btn-secondary btn-browse" data-for="dest-vid" hidden>Browse…</button>
+        </div>
+      </div>
+      <div class="dest-row" id="row-aud">
+        <label class="settings-label" for="dest-aud">Audio</label>
+        <div class="dest-input-row">
+          <input id="dest-aud" class="settings-input" type="text" spellcheck="false" autocomplete="off" />
+          <button class="btn-secondary btn-browse" data-for="dest-aud" hidden>Browse…</button>
+        </div>
+      </div>
+      <div class="dest-row" id="row-group">
+        <label class="settings-label" for="group">Organize into subfolders by</label>
+        <select id="group" class="settings-input">
+          <option value="site">Site (x.com, instagram.com…)</option>
+          <option value="author">Author / account</option>
+          <option value="both">Author then site</option>
+          <option value="none">No subfolders</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="settings-row">
+      <button id="btn-save-settings" class="btn-primary">Save</button>
+      <p id="settings-status" class="settings-status" hidden></p>
+    </div>
+
+    <p class="settings-help" id="settings-help">
+      Each type saves to its own folder, grouped by site inside. Leave blank for the default.
+    </p>
+  </section>
+
+  <div class="page-title-bar">
+    <span id="page-title" class="page-title"></span>
+    <span id="count" class="count"></span>
+  </div>
+
+  <div id="status" class="status scanning">Initialising…</div>
+
+  <!-- Where the last grab landed + reveal-in-file-manager -->
+  <div id="saved-bar" class="saved-bar" hidden>
+    <span id="saved-text" class="saved-text" title=""></span>
+    <button id="btn-open-folder" class="btn-secondary">Open folder</button>
+  </div>
+
+  <!-- Shown when the native helper isn't installed/reachable -->
+  <div id="host-hint" class="host-hint" hidden>
+    <p class="host-hint-title">Engine not set up</p>
+    <p>
+      Install the Harpe engine once — it registers itself as the browser helper:
+    </p>
+    <pre class="host-hint-cmd">uv tool install git+https://github.com/NullSense/harpe</pre>
+    <p>
+      Then reload this extension. (If it was already installed, run
+      <code>harpe install-host</code> once.)
+      <a id="host-hint-link" href="https://github.com/NullSense/harpe-extension#installation" target="_blank" rel="noopener">Setup guide →</a>
+    </p>
+  </div>
+
+  <div class="toolbar">
+    <button id="btn-select-all" class="btn-secondary">Select all</button>
+    <button id="btn-clear" class="btn-secondary">Clear</button>
+    <button id="btn-grab" class="btn-primary" disabled>Grab</button>
+  </div>
+
+  <main id="grid" class="grid"></main>
+
+  <script src="js/popup.js"></script>
+</body>
+</html>

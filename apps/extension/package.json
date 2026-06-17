@@ -1,0 +1,17 @@
+{
+  "name": "@harpe/extension",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Harpe MV3 browser extension. Bundled from src/ with esbuild; imports @harpe/core for the native-messaging contract.",
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node --test tests/*.test.mjs"
+  },
+  "dependencies": {
+    "@harpe/core": "*"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.1"
+  }
+}

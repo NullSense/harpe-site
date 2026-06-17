@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "workspaces": ["packages/*"],
+  "workspaces": ["packages/*", "apps/*"],
   "scripts": {
     "dev": "vite --port=3000 --host=0.0.0.0",
     "build": "npm run build -w @harpe/core && vite build",
@@ -15,7 +15,7 @@
     "check:api": "node scripts/check-api-bundles.mjs",
     "test:e2e": "playwright test",
     "monitor": "node tests/live/monitor.mjs",
-    "verify": "npm run typecheck && npm test && npm run build && npm run check:api",
+    "verify": "npm run typecheck && npm test && npm run build && npm run check:api && npm run build -w @harpe/extension && npm test -w @harpe/extension",
     "postinstall": "npm run build -w @harpe/core"
   },
   "dependencies": {
