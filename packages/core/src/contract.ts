@@ -31,16 +31,28 @@ export type HostRequest =
       referer?: string;
       /** Per-type destination roots: { image, video, audio }. */
       dirs?: Partial<Record<MediaKind, string>>;
-      /** Per-url descriptive naming hints. */
-      items?: Array<{ name?: string; author?: string }>;
+      /** Single explicit destination folder (overrides dirs + grouping). */
+      dest?: string;
+      /** Per-url descriptive naming hints, keyed by url. */
+      items?: Record<string, { name?: string; author?: string }>;
       /** Folder grouping under each root. */
       group?: GroupMode;
     };
+
+/** One per-URL download outcome. */
+export interface GrabResult {
+  url: string;
+  ok: boolean;
+  path?: string;
+  kind?: MediaKind;
+  error?: string;
+}
 
 /** A reply the host sends back. */
 export type HostReply =
   | { ok: true; pong: true; defaults: Record<MediaKind, string>; version: string }
   | { ok: true; path?: string | null }
-  | { results: Array<{ url: string; ok: boolean; path?: string; kind?: MediaKind; error?: string }> };
+  | { ok: false; error: string }
+  | { results: GrabResult[]; truncated?: boolean; error?: string };
 
 export type GroupMode = 'site' | 'author' | 'both' | 'none';

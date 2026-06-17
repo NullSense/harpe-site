@@ -16,6 +16,7 @@ The Harpe engine + CLI, in TypeScript, built on [`@harpe/core`](../core).
 | `protocol.ts` | native-messaging framing (4-byte LE + JSON) + `capReply`, typed by `@harpe/core` contract | `harpe/nativehost.py` |
 | `extract.ts` | static-HTML image extraction (`collect`/`select`/`wmOriginal`/`sizeHint`) | `harpe/extract.py` (pure parts) |
 | `engine.ts` | download decision (`decideFile`/`sanitizeStem`/`groupSubpath`/`rootsFrom`, pure + tested) + `fetchImages` (I/O) | `harpe/engine.py` |
+| `nativehost.ts` | native-messaging **handlers** (ping/open/pick/grab, deps-injected → tested) + `run()` loop + desktop helpers (open folder / pick folder) | `harpe/nativehost.py` |
 
 Media-kind classification (`MEDIA_EXT`, `kindForExt`, `extFromContentType`,
 `displayName`) lives in `@harpe/core` (shared with the site).
@@ -25,8 +26,10 @@ Tests are ported from the Python `tests/` (TDD): `routing`, `backends`,
 
 ## Remaining to reach parity
 
-- native-host **handlers** + run loop (ping/open/pick/grab → engine) ← `nativehost.py`
-- `installhost.ts` (manifests + Windows registry) ← `installhost.py`
+- `cli.ts` entry + `bin` (wire `--native-host` → `run()`, plus the search/page/
+  video flows) ← `cli.py`
+- `installhost.ts` (manifests + Windows registry; registers the host so the
+  browser can launch it) ← `installhost.py`
 - museum `sources.ts` — best shared into `@harpe/core` so the site + CLI use one
   implementation ← `sources.py` / the site's `art.ts` (kills duplication #2)
 - network bits: dimension probing (`extract.page_images`), `enumerate_images`,
