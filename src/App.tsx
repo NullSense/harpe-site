@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import AsciiHero from './AsciiHero.tsx';
 import Finder, { type FinderHandle } from './Finder.tsx';
+import StatsBar from './components/StatsBar.tsx';
 
 // ─── CLI reference data ───────────────────────────────────────────────────────
 
@@ -248,6 +249,9 @@ export default function App() {
           <div className="mt-8">
             <Finder ref={finderRef} />
           </div>
+
+          {/* live coverage stats */}
+          <StatsBar />
 
           {/* secondary links */}
           <div className="mt-10 flex flex-wrap items-center justify-center gap-x-5 gap-y-2 font-mono text-[.78rem]">

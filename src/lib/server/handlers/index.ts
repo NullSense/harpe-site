@@ -16,6 +16,7 @@ import iiif from './iiif.js';
 import preview from './preview.js';
 import sauce from './sauce.js';
 import scan from './scan.js';
+import stats from './stats.js';
 import tile from './tile.js';
 import x from './x.js';
 
@@ -32,6 +33,7 @@ export const handlers: Record<string, Handler> = {
   preview,
   sauce,
   scan,
+  stats,
   tile,
   x,
 };
