@@ -80,10 +80,13 @@ interface ArtItem {
   inscriptions?: string;
   tags?: string[];
   licenseUrl?: string;
-  /** Per-source catalogue records merged into this item by dedupe() — used to
-   *  feed every source's facts to the AI analysis after duplicates collapse. */
+  /** Per-source records merged into this item by dedupe() (quality-ranked, rep
+   *  first) — feed every source's facts to the AI analysis AND drive the sidebar
+   *  "same work" copies strip, so each carries its own image + dimensions. */
   variants?: Array<{
-    source: string; date?: string; medium?: string; culture?: string; creditLine?: string;
+    source: string; title?: string; thumbUrl?: string; previewUrl?: string; fullUrl?: string;
+    width?: number; height?: number; isPublicDomain?: boolean;
+    date?: string; medium?: string; culture?: string; creditLine?: string;
     description?: string; sourceUrl?: string; artworkType?: string; style?: string;
     tags?: string[]; inscriptions?: string; accessionNumber?: string;
   }>;
@@ -455,10 +458,23 @@ function ArtDetail({
 }) {
   const open = index >= 0 && index < items.length;
   const active = open ? items[index] : undefined;
+  // When this is a merged work (dedupe folded several copies into one), the user
+  // can switch the viewer to any folded copy via the sidebar strip. pickIdx ===
+  // null shows the representative; otherwise it indexes active.variants (which is
+  // quality-ranked, representative first).
+  const [pickIdx, setPickIdx] = useState<number | null>(null);
+  const variantList = active?.variants ?? [];
+  const picked = pickIdx != null ? variantList[pickIdx] : undefined;
+  // The image the viewer actually shows: a picked alternate copy, else the
+  // representative item. Alternate copies are treated as plain images.
+  const shownFull = picked ? (picked.fullUrl || picked.previewUrl || '') : (active?.fullUrl || '');
+  const shownPreview = picked ? (picked.previewUrl || picked.fullUrl || '') : (active?.previewUrl || '');
+  const shownFormat = picked ? fmtFromUrl(picked.fullUrl || picked.previewUrl || '') : active?.format;
   // Deep-zoom items (our own DZI/Zoomify/IIIF stitcher) take priority; otherwise
-  // fall back to deriving a IIIF Image-API base from a museum item's full URL.
-  const dz = active?.deepzoom ?? null;
-  const iiifBase = active && !dz ? deriveIIIF(active.fullUrl) : null;
+  // fall back to deriving a IIIF Image-API base from a museum item's full URL. A
+  // picked alternate copy is always a plain image (no descriptor of its own).
+  const dz = picked ? null : (active?.deepzoom ?? null);
+  const iiifBase = active && !dz && shownFull ? deriveIIIF(shownFull) : null;
   const tiled = !!iiifBase || !!dz;
   // Plain (non-tiled) images are ALSO routed through OpenSeadragon, via its
   // documented `{type:'image'}` source. So every image gets the same native
@@ -469,7 +485,7 @@ function ArtDetail({
   // TIFF) so deep zoom stays sharp. The <img> block below is now only the
   // OSD-load-failure fallback.
   const plainSrc = active && !active.video && !tiled
-    ? displaySrc(active.fullUrl && active.format !== 'tiff' ? active.fullUrl : (active.previewUrl || active.fullUrl))
+    ? displaySrc(shownFull && shownFormat !== 'tiff' ? shownFull : (shownPreview || shownFull))
     : null;
   const [z, setZ] = useState(1);
   const [nat, setNat] = useState<{ w: number; h: number } | null>(null); // measured pixels
@@ -581,7 +597,7 @@ function ArtDetail({
     if (imgRef.current) imgRef.current.style.transform = `translate(${panRef.current.x}px, ${panRef.current.y}px) scale(${zoom})`;
   }, []);
 
-  useEffect(() => { panRef.current = { x: 0, y: 0 }; setZ(1); setNat(null); }, [index]);
+  useEffect(() => { panRef.current = { x: 0, y: 0 }; setZ(1); setNat(null); setPickIdx(null); }, [index]);
   useEffect(() => { apply(z); }, [z, apply]);
   useEffect(() => {
     if (!open) return;
@@ -599,7 +615,8 @@ function ArtDetail({
   // Resolution for ALL images: prefer source-reported pixels, else what we measured
   // from the loaded image (so every work shows a resolution, not just some sources).
   const resolution =
-    item.width && item.height ? `${item.width} × ${item.height} px`
+    picked?.width && picked?.height ? `${picked.width} × ${picked.height} px`
+    : !picked && item.width && item.height ? `${item.width} × ${item.height} px`
     : nat ? `${nat.w} × ${nat.h} px`
     : '';
   // "More like this" from the items already on screen: same artist → title-token
@@ -682,8 +699,9 @@ function ArtDetail({
           <img
             ref={imgRef}
             /* zoomed in → load the full-resolution original (unless it's a TIFF the
-               browser can't render) so deep zoom is sharp, not a blurry preview. */
-            src={displaySrc(z > 1 && item.fullUrl && item.format !== 'tiff' ? item.fullUrl : (item.previewUrl || item.fullUrl))}
+               browser can't render) so deep zoom is sharp, not a blurry preview.
+               Honours the picked alternate copy (shownFull/shownPreview). */
+            src={displaySrc(z > 1 && shownFull && shownFormat !== 'tiff' ? shownFull : (shownPreview || shownFull))}
             alt={item.title}
             draggable={false}
             onLoad={(e) => { setNat({ w: e.currentTarget.naturalWidth, h: e.currentTarget.naturalHeight }); apply(z); }}
@@ -817,6 +835,44 @@ function ArtDetail({
         {item.sourceUrl && (
           <a href={item.sourceUrl} target="_blank" rel="noopener" className="font-mono text-[.76rem] text-bronze/80 transition hover:text-bronze-bright">↗ view at source</a>
         )}
+
+        {(() => {
+          // "Same work" strip — the copies dedupe() folded into this card, quality-
+          // ranked (representative first). Click a copy to view it; the highlighted
+          // tile is the one currently shown. Only for genuinely-merged works.
+          const copies = variantList.filter((v) => v.thumbUrl || v.previewUrl || v.fullUrl);
+          if (copies.length < 2) return null;
+          return (
+            <div className="mt-2 border-t border-line pt-3">
+              <p className="mb-2 font-mono text-[.7rem] uppercase tracking-wider text-muted/60">
+                Same work · {copies.length} copies <span className="normal-case text-muted/40">(best first)</span>
+              </p>
+              <div className="grid grid-cols-3 gap-2">
+                {variantList.map((v, vi) => {
+                  const img = v.thumbUrl || v.previewUrl || v.fullUrl;
+                  if (!img) return null;
+                  const isShown = (pickIdx ?? 0) === vi;
+                  const res = v.width && v.height ? `${v.width}×${v.height}` : '';
+                  const label = SOURCE_LABELS[v.source as DisplaySource] ?? v.source;
+                  return (
+                    <button
+                      key={`${v.source}-${vi}`}
+                      type="button"
+                      onClick={() => setPickIdx(vi)}
+                      title={`${label}${res ? ` · ${res} px` : ''}`}
+                      className={'relative overflow-hidden rounded ring-1 transition ' + (isShown ? 'ring-bronze' : 'ring-line/40 hover:ring-bronze/60')}
+                    >
+                      <img src={displaySrc(img)} alt={v.title || ''} loading="lazy" className="aspect-square w-full object-cover" />
+                      <span className="absolute inset-x-0 bottom-0 truncate bg-[rgba(8,6,4,.82)] px-1 py-0.5 text-center font-mono text-[.55rem] text-muted/85">
+                        {label}{res ? ` · ${res}` : ''}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })()}
 
         {similar.length > 0 && (
           <div className="mt-2 border-t border-line pt-3">

@@ -370,8 +370,10 @@ const MERGE_FILL_FIELDS = [
 ] as const;
 const MERGE_UNION_FIELDS = ['tags', 'downloads'] as const;
 
-// Per-source catalogue fields retained on `variants` (feeds the AI analysis).
+// Per-source fields retained on `variants` (feeds the AI analysis AND the
+// "other copies" strip — hence each copy's own image + dimensions).
 const VARIANT_FIELDS = [
+  'title', 'thumbUrl', 'previewUrl', 'fullUrl', 'width', 'height', 'isPublicDomain',
   'date', 'medium', 'culture', 'creditLine', 'description', 'sourceUrl',
   'accessionNumber', 'artworkType', 'style', 'tags', 'inscriptions',
 ] as const;
@@ -420,9 +422,10 @@ function mergeGroup<T extends Fusable>(members: T[]): T {
   }
   rep.dupCount = sources.size;
   rep.mergedSources = Array.from(sources);
-  // Retain each source's catalogue record so the AI analysis still sees every
-  // source's facts/description after the visible items are collapsed into one.
-  r.variants = members.map((m) => {
+  // Retain each source's catalogue record (best-quality first, matching `sorted`)
+  // so the AI analysis sees every source's facts AND the UI can list the copies
+  // ranked by quality with the representative first.
+  r.variants = sorted.map((m) => {
     const md = m as Record<string, unknown>;
     const v: Record<string, unknown> = { source: m.source };
     for (const f of VARIANT_FIELDS) if (md[f] !== undefined && md[f] !== '') v[f] = md[f];

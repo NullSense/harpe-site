@@ -82,9 +82,18 @@ export interface ArtItem {
   variants?: SourceVariant[];
 }
 
-/** A single source's catalogue record, retained on a merged ArtItem.variants. */
+/** A single source's catalogue record, retained on a merged ArtItem.variants.
+ *  Carries that copy's own image + key facts so the UI can show every folded
+ *  copy (ranked by quality) and let the user switch the viewer to any of them. */
 export interface SourceVariant {
   source: string;
+  title?: string;
+  thumbUrl?: string;
+  previewUrl?: string;
+  fullUrl?: string;
+  width?: number;
+  height?: number;
+  isPublicDomain?: boolean;
   date?: string;
   medium?: string;
   culture?: string;
