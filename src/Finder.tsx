@@ -20,6 +20,7 @@ import Discover from './components/Discover';
 import { streamArt } from './lib/useArtStream';
 import { SOURCE_LABELS, SOURCE_ORDER, type DisplaySource } from './lib/source-meta';
 import { fitsScreen } from './lib/resolutions';
+import { dist, pinchZoom } from './lib/gesture';
 import { qualityScore, stripHtml, mediumCategory, yearOf, rankResults } from '@harpe/core';
 import {
   type DeepZoomDescriptor,
@@ -458,16 +459,28 @@ function ArtDetail({
   // fall back to deriving a IIIF Image-API base from a museum item's full URL.
   const dz = active?.deepzoom ?? null;
   const iiifBase = active && !dz ? deriveIIIF(active.fullUrl) : null;
+  const tiled = !!iiifBase || !!dz;
+  // Plain (non-tiled) images are ALSO routed through OpenSeadragon, via its
+  // documented `{type:'image'}` source. So every image gets the same native
+  // pinch-zoom / momentum-pan / double-tap gestures on touch + desktop, and OSD's
+  // canvas carries `touch-action:none` — a pinch zooms the artwork, not the whole
+  // page (the old <img> path set no touch-action, so Android hijacked the pinch as
+  // a page zoom). Prefer the full-res original (unless it's a browser-unrenderable
+  // TIFF) so deep zoom stays sharp. The <img> block below is now only the
+  // OSD-load-failure fallback.
+  const plainSrc = active && !active.video && !tiled
+    ? displaySrc(active.fullUrl && active.format !== 'tiff' ? active.fullUrl : (active.previewUrl || active.fullUrl))
+    : null;
   const [z, setZ] = useState(1);
   const [nat, setNat] = useState<{ w: number; h: number } | null>(null); // measured pixels
-  // OpenSeadragon (tiled deep-zoom) for IIIF/DZI/Zoomify items; <img> fallback.
+  // OpenSeadragon for tiled (IIIF/DZI/Zoomify) AND plain images; <img> fallback.
   const osdRef = useRef<HTMLDivElement>(null);
   const [osdFailed, setOsdFailed] = useState(false);
-  const useOsd = open && (!!iiifBase || !!dz) && !osdFailed;
+  const useOsd = open && !active?.video && (tiled || !!plainSrc) && !osdFailed;
   const dzKey = dz ? `${dz.protocol}:${dz.base}` : '';
   useEffect(() => { setOsdFailed(false); }, [index]);
   useEffect(() => {
-    if (!open || (!iiifBase && !dz) || osdFailed) return;
+    if (!useOsd) return;
     let viewer: { destroy: () => void; addHandler: (e: string, f: () => void) => void; world: { getItemAt: (i: number) => { getContentSize: () => { x: number; y: number } } | undefined } } | undefined;
     let cancelled = false;
     (async () => {
@@ -476,7 +489,7 @@ function ArtDetail({
         if (dz) {
           // DZI/Zoomify → custom tile source straight from the descriptor.
           tileSources = osdTileSource(dz);
-        } else {
+        } else if (iiifBase) {
           // IIIF → fetch the CORS-proxied info.json, then route its TILES through
           // /api/tile by rewriting @id. Many IIIF servers (e.g. artic.edu) return
           // 403 for direct cross-origin tile requests (no Referer), which the
@@ -489,6 +502,10 @@ function ArtDetail({
           info['@id'] = proxied;
           info.id = proxied;
           tileSources = info;
+        } else {
+          // Plain image → OSD "simple image" source: one image, full native
+          // pinch/pan/double-tap, no tiling needed.
+          tileSources = { type: 'image', url: plainSrc };
         }
         const { default: OSD } = await import('openseadragon');
         if (cancelled || !osdRef.current) return;
@@ -498,6 +515,12 @@ function ArtDetail({
           tileSources,
           showNavigationControl: false,
           gestureSettingsMouse: { clickToZoom: false, dblClickToZoom: true },
+          // Native-feeling touch: two-finger pinch zooms, one-finger drag pans with
+          // flick momentum, double-tap zooms; rotation off (it's a flat artwork).
+          gestureSettingsTouch: {
+            pinchToZoom: true, flickEnabled: true, dragToPan: true,
+            dblClickToZoom: true, clickToZoom: false, pinchRotate: false,
+          },
           visibilityRatio: 1,
           minZoomImageRatio: 0.85,
           maxZoomPixelRatio: 5,
@@ -513,7 +536,7 @@ function ArtDetail({
       }
     })();
     return () => { cancelled = true; try { viewer?.destroy(); } catch { /* noop */ } };
-  }, [open, iiifBase, dz, dzKey, osdFailed, index]);
+  }, [useOsd, iiifBase, dz, dzKey, plainSrc, index]);
   // ── Full-resolution tile-stitch download (DZI/Zoomify deep-zoom items) ──
   const [stitch, setStitch] = useState<
     null | { phase: 'busy' | 'done' | 'error'; done: number; total: number; w?: number; h?: number; msg?: string }
@@ -550,6 +573,10 @@ function ArtDetail({
   const imgRef = useRef<HTMLImageElement>(null);
   const panRef = useRef({ x: 0, y: 0 });
   const drag = useRef<null | { sx: number; sy: number; px: number; py: number }>(null);
+  // Live touch pointers + the pinch baseline, for the <img> fallback's two-finger
+  // zoom (the OSD path handles its own gestures).
+  const ptrs = useRef<Map<number, { x: number; y: number }>>(new Map());
+  const pinch = useRef<null | { dist: number; z: number }>(null);
   const apply = useCallback((zoom: number) => {
     if (imgRef.current) imgRef.current.style.transform = `translate(${panRef.current.x}px, ${panRef.current.y}px) scale(${zoom})`;
   }, []);
@@ -597,10 +624,39 @@ function ArtDetail({
   const imgHandlers = useOsd ? {} : {
     onWheel,
     onDoubleClick: () => { const n = z > 1 ? 1 : 2.4; if (n === 1) panRef.current = { x: 0, y: 0 }; apply(n); setZ(n); },
-    onPointerDown: (e: React.PointerEvent) => { if (z > 1) { drag.current = { sx: e.clientX, sy: e.clientY, px: panRef.current.x, py: panRef.current.y }; (e.target as HTMLElement).setPointerCapture?.(e.pointerId); } },
-    onPointerMove: (e: React.PointerEvent) => { if (drag.current) { panRef.current = { x: drag.current.px + (e.clientX - drag.current.sx), y: drag.current.py + (e.clientY - drag.current.sy) }; apply(z); } },
-    onPointerUp: () => { drag.current = null; },
-    style: { cursor: z > 1 ? 'grab' : 'zoom-in' } as React.CSSProperties,
+    onPointerDown: (e: React.PointerEvent) => {
+      ptrs.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
+      if (ptrs.current.size >= 2) {
+        // Second finger down → start a pinch from the current spread + zoom.
+        const [a, b] = [...ptrs.current.values()];
+        pinch.current = { dist: dist(a, b), z };
+        drag.current = null;
+      } else if (z > 1) {
+        drag.current = { sx: e.clientX, sy: e.clientY, px: panRef.current.x, py: panRef.current.y };
+      }
+    },
+    onPointerMove: (e: React.PointerEvent) => {
+      if (ptrs.current.has(e.pointerId)) ptrs.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (pinch.current && ptrs.current.size >= 2) {
+        const [a, b] = [...ptrs.current.values()];
+        const n = pinchZoom(pinch.current.dist, dist(a, b), pinch.current.z);
+        if (n === 1) panRef.current = { x: 0, y: 0 };
+        apply(n); setZ(n);
+      } else if (drag.current) {
+        panRef.current = { x: drag.current.px + (e.clientX - drag.current.sx), y: drag.current.py + (e.clientY - drag.current.sy) };
+        apply(z);
+      }
+    },
+    onPointerUp: (e: React.PointerEvent) => {
+      ptrs.current.delete(e.pointerId);
+      if (ptrs.current.size < 2) pinch.current = null;
+      if (ptrs.current.size === 0) drag.current = null;
+    },
+    onPointerCancel: (e: React.PointerEvent) => { ptrs.current.delete(e.pointerId); pinch.current = null; drag.current = null; },
+    // touch-action:none keeps a pinch/drag on the image from zooming or scrolling
+    // the whole page (the root cause of "my whole screen zooms" on Android).
+    style: { cursor: z > 1 ? 'grab' : 'zoom-in', touchAction: 'none' } as React.CSSProperties,
   };
 
   return createPortal(
@@ -645,7 +701,7 @@ function ArtDetail({
         <div className="absolute bottom-3 left-3 z-10 flex items-center gap-1 font-mono text-[.72rem]">
           {!useOsd && <button type="button" onClick={() => { const n = Math.max(1, z / 1.4); if (n === 1) panRef.current = { x: 0, y: 0 }; apply(n); setZ(n); }} className="rounded border border-line bg-[rgba(10,8,6,.7)] px-2 py-1 text-muted hover:text-bronze-bright">−</button>}
           {!useOsd && <button type="button" onClick={() => { const n = Math.min(6, z * 1.4); apply(n); setZ(n); }} className="rounded border border-line bg-[rgba(10,8,6,.7)] px-2 py-1 text-muted hover:text-bronze-bright">+</button>}
-          <span className="rounded bg-[rgba(10,8,6,.7)] px-2 py-1 text-muted/70">{index + 1} / {items.length}{useOsd ? ' · deep-zoom' : ''}</span>
+          <span className="rounded bg-[rgba(10,8,6,.7)] px-2 py-1 text-muted/70">{index + 1} / {items.length}{tiled ? ' · deep-zoom' : ''}</span>
         </div>
       </div>
 
