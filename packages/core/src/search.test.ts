@@ -185,6 +185,63 @@ describe('relevanceScore (ordering)', () => {
   });
 });
 
+// ─── thematic / subject queries (tags + description, not just title) ────────────
+
+describe('thematic queries match subject fields, not only title/artist', () => {
+  // The bug: "mythology and gods" returned ~22 works because the gate only saw
+  // title+artist, dropping every mythological painting titled "Venus and Mars".
+  const venus = {
+    title: 'Venus and Mars', artist: 'Sandro Botticelli',
+    tags: ['mythology', 'Roman gods', 'Venus', 'Mars'],
+    description: 'An allegory of love depicting the Roman gods Venus and Mars.',
+  };
+  const portrait = { title: 'Portrait of a Lady', artist: 'Hans Holbein', tags: ['portrait'], description: 'A noblewoman.' };
+
+  it('keeps a mythological work whose theme is only in tags/description', () => {
+    expect(isRelevant(venus, 'mythology and gods')).toBe(true);
+  });
+
+  it('still drops a work with no thematic match (gate not neutered)', () => {
+    expect(isRelevant(portrait, 'mythology and gods')).toBe(false);
+  });
+
+  it('scores the thematic match above zero so it can rank', () => {
+    expect(relevanceScore(venus, 'mythology and gods')).toBeGreaterThan(0);
+    expect(relevanceScore(portrait, 'mythology and gods')).toBe(0);
+  });
+
+  it('filters out Internet-Archive book-scan plates but keeps real works', () => {
+    const items = [
+      { id: 'b1', source: 'commons', title: 'The gods of the Egyptians (1904) (14763839232)', tags: ['mythology'] },
+      { id: 'b2', source: 'commons', title: 'The gods of the Egyptians (1904) (14577696327)', tags: ['mythology'] },
+      { id: 'v', source: 'aic', title: 'Venus and Mars', artist: 'Botticelli', tags: ['mythology', 'gods'] },
+    ];
+    const out = rankResults(items, 'mythology and gods');
+    expect(out.map((o) => o.title)).toEqual(['Venus and Mars']); // book plates dropped
+  });
+
+  it('keeps book scans when the query is actually about books/illustrations', () => {
+    const items = [
+      { id: 'b1', source: 'commons', title: 'Egyptian mythology illustrations (1904) (14763839232)', tags: ['mythology'] },
+    ];
+    const out = rankResults(items, 'egyptian mythology book illustrations');
+    expect(out).toHaveLength(1);
+  });
+
+  it('rankResults keeps thematic matches instead of gating them out', () => {
+    const items = [
+      { id: '1', source: 'aic', ...venus },
+      { id: '2', source: 'met', title: 'The Birth of Venus', artist: 'Botticelli', tags: ['mythology', 'goddess'], description: 'The goddess Venus.' },
+      { id: '3', source: 'cleveland', ...portrait },
+    ];
+    const out = rankResults(items, 'mythology and gods');
+    const titles = out.map((o) => o.title);
+    expect(titles).toContain('Venus and Mars');
+    expect(titles).toContain('The Birth of Venus');
+    expect(titles).not.toContain('Portrait of a Lady');
+  });
+});
+
 // ─── cross-source de-duplication ───────────────────────────────────────────────
 
 type Item = {

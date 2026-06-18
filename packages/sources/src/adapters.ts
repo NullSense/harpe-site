@@ -33,7 +33,7 @@ export async function fetchAic(q: string): Promise<ArtItem[]> {
   try {
     const url =
       `https://api.artic.edu/api/v1/artworks/search` +
-      `?q=${encodeURIComponent(q)}&fields=id,title,artist_title,image_id,is_public_domain,dimensions,date_display,medium_display,description,place_of_origin,credit_line,artwork_type_title,classification_titles,subject_titles,style_titles,inscriptions,main_reference_number&limit=12`;
+      `?q=${encodeURIComponent(q)}&fields=id,title,artist_title,image_id,is_public_domain,dimensions,date_display,medium_display,description,place_of_origin,credit_line,artwork_type_title,classification_titles,subject_titles,style_titles,inscriptions,main_reference_number&limit=25`;
 
     const res = await timedFetch(url, controller.signal);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -259,7 +259,7 @@ export async function fetchCleveland(q: string): Promise<ArtItem[]> {
     // We keep has_image and badge rights per-item from share_license_status.
     const url =
       `https://openaccess-api.clevelandart.org/api/artworks/` +
-      `?q=${encodeURIComponent(q)}&has_image=1&limit=12`;
+      `?q=${encodeURIComponent(q)}&has_image=1&limit=25`;
 
     const res = await timedFetch(url, controller.signal);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -379,7 +379,7 @@ export async function fetchCommons(q: string): Promise<ArtItem[]> {
   try {
     const url =
       `https://commons.wikimedia.org/w/api.php?action=query&format=json` +
-      `&generator=search&gsrsearch=${encodeURIComponent(q)}&gsrnamespace=6&gsrlimit=15` +
+      `&generator=search&gsrsearch=${encodeURIComponent(q)}&gsrnamespace=6&gsrlimit=25` +
       `&prop=imageinfo&iiprop=url%7Csize%7Cmime%7Cextmetadata&iiurlwidth=1024`;
 
     const res = await timedFetch(url, controller.signal);
@@ -551,7 +551,7 @@ export async function fetchVam(q: string): Promise<ArtItem[]> {
   try {
     const url =
       `https://api.vam.ac.uk/v2/objects/search` +
-      `?q=${encodeURIComponent(q)}&images_exist=1&page_size=15`;
+      `?q=${encodeURIComponent(q)}&images_exist=1&page_size=25`;
     const res = await timedFetch(url, controller.signal);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
@@ -610,7 +610,7 @@ export async function fetchWellcome(q: string): Promise<ArtItem[]> {
   try {
     const url =
       `https://api.wellcomecollection.org/catalogue/v2/works` +
-      `?query=${encodeURIComponent(q)}&pageSize=15&include=items,contributors,production,physicalDescription,licenses`;
+      `?query=${encodeURIComponent(q)}&pageSize=25&include=items,contributors,production,physicalDescription,licenses`;
     const res = await timedFetch(url, controller.signal);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
@@ -708,7 +708,7 @@ export async function fetchSmk(q: string): Promise<ArtItem[]> {
   try {
     const url =
       `https://api.smk.dk/api/v1/art/search?keys=${encodeURIComponent(q)}` +
-      `&filters=%5Bhas_image%3Atrue%5D&offset=0&rows=15`;
+      `&filters=%5Bhas_image%3Atrue%5D&offset=0&rows=25`;
     const res = await timedFetch(url, controller.signal);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const json = await res.json() as {
@@ -902,7 +902,7 @@ export async function fetchDigitalNZ(q: string): Promise<ArtItem[]> {
   try {
     const url =
       `https://api.digitalnz.org/v3/records.json?text=${encodeURIComponent(q)}` +
-      `&i%5Bcategory%5D=Images&per_page=15`;
+      `&i%5Bcategory%5D=Images&per_page=25`;
     const res = await timedFetch(url, controller.signal);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const json = await res.json() as {
@@ -1218,7 +1218,7 @@ export async function fetchHarvard(q: string): Promise<ArtItem[]> {
   try {
     const url =
       `https://api.harvardartmuseums.org/object?apikey=${encodeURIComponent(key)}` +
-      `&keyword=${encodeURIComponent(q)}&hasimage=1&size=20&sort=rank`;
+      `&keyword=${encodeURIComponent(q)}&hasimage=1&size=30&sort=rank`;
     const res = await timedFetch(url, controller.signal);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const json = await res.json() as {
@@ -1309,7 +1309,7 @@ export async function fetchSmithsonian(q: string): Promise<ArtItem[]> {
   try {
     const url =
       `https://api.si.edu/openaccess/api/v1.0/search?api_key=${encodeURIComponent(key)}` +
-      `&q=${encodeURIComponent(`${q} AND online_media_type:Images`)}&rows=15`;
+      `&q=${encodeURIComponent(`${q} AND online_media_type:Images`)}&rows=25`;
     const res = await timedFetch(url, controller.signal);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const json = await res.json() as {

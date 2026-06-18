@@ -8,7 +8,7 @@ export const UA =
   'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
 export const TIMEOUT_MS = 12_000;
-export const MAX_ITEMS = 40;
+export const MAX_ITEMS = 50;
 
 // Lossless raster formats — JPEG/WEBP(lossy) are NOT here.
 export const LOSSLESS_FORMATS = new Set(['png', 'tiff', 'gif', 'bmp']);

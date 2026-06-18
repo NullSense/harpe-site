@@ -139,6 +139,26 @@ function tokenHit(hay: string, hayWords: string[], t: string): boolean {
 export interface Scorable {
   title?: string;
   artist?: string;
+  // Subject/catalogue fields — museum APIs match THESE server-side for thematic
+  // queries ("mythology", "gods", "shipwreck"), so the gate/scorer must see them
+  // too, or every work whose theme isn't in its title gets wrongly dropped.
+  tags?: string[];
+  description?: string;
+  medium?: string;
+  culture?: string;
+  artworkType?: string;
+  style?: string;
+}
+
+/** Diacritic-folded subject text (tags + classification + description) used to
+ *  match THEMATIC queries that won't appear in the title/artist. */
+function subjectText(item: Scorable): string {
+  return normalize(
+    [
+      Array.isArray(item.tags) ? item.tags.join(' ') : '',
+      item.artworkType, item.style, item.medium, item.culture, item.description,
+    ].filter(Boolean).join(' '),
+  );
 }
 
 /**
@@ -173,6 +193,17 @@ export function relevanceScore(item: Scorable, query: string, idf?: (t: string) 
   if (titleHits === toks.length) score += 3;                    // all tokens in title
   if (artistHits === toks.length) score += nameQuery ? 5 : 3;   // all tokens in artist
 
+  // Subject/tag/description hits — the signal for thematic queries. Weighted
+  // below title/artist so a titled match still wins, but a work tagged with the
+  // theme ("Venus and Mars" tagged mythology, for "mythology gods") still scores.
+  const subject = subjectText(item);
+  if (subject) {
+    const subjectWords = subject.split(' ');
+    let subjectHits = 0;
+    for (const t of toks) if (tokenHit(subject, subjectWords, t)) { score += w(t) * 0.5; subjectHits++; }
+    if (subjectHits === toks.length) score += 1.5; // all query tokens present in the subject text
+  }
+
   // Initialism match: "JW" → John William Waterhouse, not Yoshiki Waterhouse.
   // (Initials of the name-words contain the query's initials run, in order.)
   if (nameQuery) {
@@ -193,7 +224,11 @@ export function isRelevant(item: Scorable, query: string): boolean {
   if (toks.length === 0) return true;
   const title = normalize(item.title || '');
   const artist = normalize(item.artist || '');
-  const hay = `${title} ${artist}`.trim();
+  // Include subject text: the museum APIs returned this item because the query
+  // matched its tags/classification/description, not necessarily its title. The
+  // gate's job is to drop greedy-source noise (no field matches at all), NOT to
+  // re-filter legitimate thematic hits.
+  const hay = `${title} ${artist} ${subjectText(item)}`.trim();
   const hayWords = hay.split(' ');
   const hits = toks.filter((t) => tokenHit(hay, hayWords, t));
   if (hits.length === 0) return false;
@@ -512,7 +547,13 @@ export function fuse<T extends Fusable>(items: T[], query: string, opts: FuseOpt
 export function rankResults<T extends Fusable>(items: T[], query: string, opts: FuseOptions<T> = {}): T[] {
   const seen = new Set<string>();
   const unique = items.filter((it) => (it.id && !seen.has(it.id) ? (seen.add(it.id), true) : false));
-  const merged = dedupe(unique);
+  // Drop Internet-Archive / Commons book-scan plates (title ends in a long
+  // numeric media id, e.g. "… (1904) (14763839232)") — dozens of near-identical
+  // scanned pages that bury real artworks on thematic queries. Keep them only
+  // when the user is actually after books/illustrations/plates/prints.
+  const wantsBook = /\b(book|illustration|plate|manuscript|engraving|print|page|folio)s?\b/i.test(query);
+  const cleaned = wantsBook ? unique : unique.filter((it) => !/\(\d{7,}\)\s*$/.test((it as { title?: string }).title || ''));
+  const merged = dedupe(cleaned.length > 0 ? cleaned : unique);
   const gated = merged.filter((it) => isRelevant(it, query));
   return fuse(gated.length > 0 ? gated : merged, query, opts);
 }

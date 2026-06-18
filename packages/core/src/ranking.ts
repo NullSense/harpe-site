@@ -68,6 +68,10 @@ export function qualityScore(item: RankableItem, query = ''): number {
   if (REPRO_RE.test(med) && !wantsRepro) s -= 3;
   if ((BOOK_RE.test(med) || BOOK_RE.test(t)) && !wantsBook) s -= 4;
   if (/\bafter [a-z]|reproduction|postcard|photograph of\b/.test(t)) s -= 2;
+  // Internet-Archive / Commons book-scan uploads: title ends in a long numeric
+  // media id, e.g. "The gods of the Egyptians (1904) (14763839232)". Dozens of
+  // near-identical plates from one book; demote hard so real works rank above them.
+  if (!wantsBook && /\(\d{7,}\)\s*$/.test(t)) s -= 6;
   s += SRC_PRIOR[item.source] ?? 0;
   return s;
 }
