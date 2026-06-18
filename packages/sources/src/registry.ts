@@ -49,7 +49,8 @@ export const SOURCES: SourceAdapter[] = [
   { key: 'harvard', label: 'Harvard', fetch: fetchHarvard, requiresEnv: 'HARVARD_API_KEY' },
   // Paris Musées' Drupal GraphQL has no fast fulltext index; best-effort, also
   // covered by Europeana. Its own timeout caps latency.
-  { key: 'parismusees', label: 'Paris Musées', fetch: fetchParisMusees, requiresEnv: 'PARIS_MUSEES_TOKEN' },
+  { key: 'parismusees', label: 'Paris Musées', fetch: fetchParisMusees, requiresEnv: 'PARIS_MUSEES_TOKEN',
+    disabled: true, note: 'GraphQL schema drift (fieldAuteurs removed) — disabled until the query is rebuilt against the current NodeOeuvre schema' },
   // NYPL token auth needs HTTP/2; Vercel egress forces HTTP/1.1 (→ "Access
   // denied"). Works locally over h2. Photography is covered by LoC meanwhile.
   { key: 'nypl', label: 'NYPL', fetch: fetchNypl, requiresEnv: 'NYPL_API_TOKEN', disabled: true,

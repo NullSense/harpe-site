@@ -41,6 +41,7 @@ Add a museum: write a SELECT yielding the union columns and register it in SOURC
 """
 import argparse
 import csv
+import http.client
 import io
 import itertools
 import json
@@ -93,7 +94,8 @@ def _http_status(exc: BaseException):
 
 
 # Transient classes worth retrying (incl. a truncated/partial JSON body).
-_TRANSIENT_EXC = (urllib.error.URLError, httpx.HTTPError, TimeoutError, OSError, json.JSONDecodeError)
+_TRANSIENT_EXC = (urllib.error.URLError, httpx.HTTPError, TimeoutError, OSError,
+                  json.JSONDecodeError, http.client.HTTPException)  # incl. IncompleteRead
 
 
 def _retry(what: str, fn, *, retries: int = 4, base_delay: float = 2.0):
