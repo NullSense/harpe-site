@@ -21,7 +21,7 @@ import { streamArt } from './lib/useArtStream';
 import { SOURCE_LABELS, SOURCE_ORDER, type DisplaySource } from './lib/source-meta';
 import { fitsScreen } from './lib/resolutions';
 import { dist, pinchZoom } from './lib/gesture';
-import { qualityScore, stripHtml, mediumCategory, yearOf, rankResults } from '@harpe/core';
+import { qualityScore, stripHtml, mediumCategory, yearOf, rankResults, type ArtistEntity } from '@harpe/core';
 import {
   type DeepZoomDescriptor,
   osdTileSource,
@@ -461,7 +461,7 @@ function deriveIIIF(url: string): string | null {
 }
 
 function ArtDetail({
-  items, index, onClose, onIndex, onAnalyze, onShare, onSearch, onFindSource, analyzeEnabled,
+  items, index, onClose, onIndex, onAnalyze, onShare, onSearch, onFindSource, onArtist, analyzeEnabled,
 }: {
   items: ArtItem[];
   index: number;               // -1 = closed
@@ -471,6 +471,8 @@ function ArtDetail({
   onShare: (id: string) => void;
   onSearch: (q: string) => void;
   onFindSource?: (url: string) => void;
+  /** Open the knowledge-graph artist page (their works + bio) for a P170 QID. */
+  onArtist?: (qid: string, name: string) => void;
   analyzeEnabled: boolean;
 }) {
   const open = index >= 0 && index < items.length;
@@ -747,8 +749,13 @@ function ArtDetail({
           <button type="button" onClick={onClose} aria-label="Close" className="shrink-0 rounded-md border border-line px-2 py-0.5 font-mono text-muted transition hover:border-bronze/60 hover:text-bronze-bright">✕</button>
         </div>
         {item.artist && (
-          <button type="button" onClick={() => onSearch(item.artist)} className="text-left text-[.92rem] text-bronze/90 transition hover:text-bronze-bright" title={`More by ${item.artist}`}>
-            {item.artist}
+          <button
+            type="button"
+            onClick={() => (item.artistId && onArtist ? onArtist(item.artistId, item.artist) : onSearch(item.artist))}
+            className="text-left text-[.92rem] text-bronze/90 transition hover:text-bronze-bright"
+            title={item.artistId ? `${item.artist} — works + biography` : `More by ${item.artist}`}
+          >
+            {item.artist}{item.artistId && <span aria-hidden className="ml-1 text-bronze/50">→</span>}
           </button>
         )}
         <div className="flex flex-wrap items-center gap-1.5">
@@ -985,6 +992,9 @@ const Finder = forwardRef<FinderHandle>(function Finder(_props, ref) {
   // The open detail is tracked by item ID (not index) so streaming re-ordering
   // doesn't swap which artwork is shown — the index is derived from the id.
   const [detailId, setDetailId] = useState<string | null>(null);
+  // Knowledge-graph artist page: when set, the results grid shows this artist's
+  // works under a bio banner (loaded from /api/artist). Cleared by any new search.
+  const [entity, setEntity] = useState<ArtistEntity | null>(null);
 
   // reverse-image search (SauceNAO) — scan mode
   const [sauceEnabled, setSauceEnabled] = useState(false);
@@ -1007,6 +1017,7 @@ const Finder = forwardRef<FinderHandle>(function Finder(_props, ref) {
     const q = raw.trim();
     if (!q) return;
     setDetailId(null);
+    setEntity(null);          // leaving any KG artist view
     setMode('loading');
     setError('');
 
@@ -1195,6 +1206,29 @@ const Finder = forwardRef<FinderHandle>(function Finder(_props, ref) {
   // Run a search from a picked suggestion / discovery chip (reflect it in the box).
   const runQuery = useCallback((q: string) => { setInput(q); run(q); }, [run]);
 
+  // Knowledge-graph artist page: load an artist's works + bio into the existing
+  // results grid (under a bio banner). Falls back to a normal federated search
+  // when the KG has no entry yet (ingest entity pass not run) or the call errors.
+  const loadArtist = useCallback(async (qid: string, name: string) => {
+    streamCancelRef.current?.();
+    streamCancelRef.current = null;
+    setInput(name || qid); setQuery(name || qid);
+    setDetailId(null); setWarnings([]); setArtItems([]); setEntity(null);
+    setSourceFilter(new Set()); setMediumFilter(new Set()); setPdOnly(false);
+    setLosslessOnly(false); setMinRes(0); setYearMin(''); setYearMax(''); setShown(SHOWN_STEP);
+    setMode('loading'); setError('');
+    try {
+      const res = await fetch(`/api/artist?qid=${encodeURIComponent(qid)}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const json = await res.json() as { entity?: ArtistEntity; works?: unknown[] };
+      setEntity(json.entity ?? null);
+      setArtItems((json.works ?? []).map(normalizeArt));
+      setMode('art');
+    } catch {
+      run(name || qid); // KG miss → graceful fallback to federated search
+    }
+  }, [run]);
+
   // Return to the pristine home / discovery state. Used by the search box's clear
   // (✕) button and by clicking the page logo — otherwise a user lands on results
   // with no way back. Cancels any in-flight stream and wipes the address-bar query
@@ -1225,6 +1259,7 @@ const Finder = forwardRef<FinderHandle>(function Finder(_props, ref) {
     setStreaming(false);
     setShown(SHOWN_STEP);
     setDetailId(null);
+    setEntity(null);
     setSauce(null);
     setAnalysis(null);
     if (typeof window !== 'undefined') window.history.replaceState(null, '', window.location.pathname);
@@ -1647,6 +1682,27 @@ const Finder = forwardRef<FinderHandle>(function Finder(_props, ref) {
         {/* ART results — break out of the page's narrow column to a full-width wall */}
         {mode === 'art' && (
           <div aria-live="polite" className="relative left-1/2 right-1/2 -ml-[50vw] -mr-[50vw] w-screen max-w-[100vw] overflow-x-clip px-4 sm:px-6 lg:px-10">
+            {entity && (
+              <div className="mx-auto mb-5 flex max-w-3xl items-center gap-4 rounded-lg border border-line bg-[rgba(14,10,7,.6)] p-4">
+                {entity.imageCommons && (
+                  <img
+                    src={`https://commons.wikimedia.org/wiki/Special:FilePath/${encodeURIComponent(entity.imageCommons)}?width=120`}
+                    alt={entity.labelEn}
+                    loading="lazy"
+                    className="h-20 w-20 shrink-0 rounded-full object-cover ring-1 ring-line"
+                  />
+                )}
+                <div className="min-w-0">
+                  <h2 className="font-display text-[1.3rem] leading-tight text-ink">{entity.labelEn}</h2>
+                  <p className="font-mono text-[.72rem] text-muted/70">
+                    {[entity.nationality, [entity.birthYear, entity.deathYear].filter(Boolean).join('–'), entity.movementLabels?.[0]].filter(Boolean).join(' · ')}
+                    {entity.workCount ? `${entity.nationality || entity.birthYear || entity.movementLabels?.[0] ? ' · ' : ''}${entity.workCount} works` : ''}
+                  </p>
+                  {entity.description && <p className="mt-1 line-clamp-2 text-[.85rem] text-muted">{entity.description}</p>}
+                  <a href={`https://www.wikidata.org/wiki/${entity.qid}`} target="_blank" rel="noopener" className="mt-1 inline-block font-mono text-[.7rem] text-bronze/70 transition hover:text-bronze-bright">Wikidata ↗</a>
+                </div>
+              </div>
+            )}
             {warnings.length > 0 && (
               <p className="mb-4 text-center font-mono text-[.75rem] text-amber/80">
                 Partial results — some sources failed: {warnings.join(' · ')}
@@ -1757,6 +1813,7 @@ const Finder = forwardRef<FinderHandle>(function Finder(_props, ref) {
         onAnalyze={analyzeWork}
         onShare={copyShare}
         onSearch={(qq) => { setInput(qq); setDetailId(null); run(qq); }}
+        onArtist={(qid, name) => { setDetailId(null); loadArtist(qid, name); }}
         onFindSource={sauceEnabled ? findSource : undefined}
         analyzeEnabled={analyzeEnabled}
       />
