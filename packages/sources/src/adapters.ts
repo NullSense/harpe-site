@@ -610,7 +610,7 @@ export async function fetchWellcome(q: string): Promise<ArtItem[]> {
   try {
     const url =
       `https://api.wellcomecollection.org/catalogue/v2/works` +
-      `?query=${encodeURIComponent(q)}&pageSize=25&include=items,contributors,production,physicalDescription,licenses`;
+      `?query=${encodeURIComponent(q)}&pageSize=25&include=items,contributors,production,notes`;
     const res = await timedFetch(url, controller.signal);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
@@ -628,7 +628,8 @@ export async function fetchWellcome(q: string): Promise<ArtItem[]> {
         }>;
         physicalDescription?: unknown;
         notes?: Array<{ noteType?: { id?: unknown }; contents?: unknown[] }>;
-        licenses?: Array<{ url?: unknown; label?: unknown; id?: unknown }>;
+        // License lives per item-location, not at work level.
+        items?: Array<{ locations?: Array<{ license?: { id?: unknown; url?: unknown; label?: unknown } }> }>;
       }>;
     };
 
@@ -658,8 +659,11 @@ export async function fetchWellcome(q: string): Promise<ArtItem[]> {
 
       const medium = str(w.physicalDescription) || undefined;
 
-      // Use work-level license info when available; default true (Wellcome is open access).
-      const licInfo = w.licenses?.[0];
+      // License is per item-location; take the first one present. Default open.
+      const licInfo = (w.items ?? [])
+        .flatMap((it) => it.locations ?? [])
+        .map((loc) => loc.license)
+        .find((l) => l && (l.id || l.url));
       const licUrl = licInfo ? str(licInfo.url) || undefined : undefined;
       const licId = licInfo ? str(licInfo.id).toLowerCase() : '';
       const isPublicDomain = licId
