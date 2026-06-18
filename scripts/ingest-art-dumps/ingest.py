@@ -1442,15 +1442,32 @@ if __name__ == "__main__":
     ap.add_argument("--jobs", type=int, default=None,
                     help="max sources to pull in parallel (default: all at once)")
     ap.add_argument("--out", default=OUT, help=f"local output parquet (default: {OUT})")
+    ap.add_argument("--enrich", action="store_true",
+                    help="after publishing, build + push the knowledge-graph entity layer "
+                         "(artist/depicts via a separate WDQS pass); requires --push")
+    ap.add_argument("--enrich-only", action="store_true",
+                    help="skip harvesting — only (re)build the entity layer from the already-"
+                         "published dataset; requires --push")
     args = ap.parse_args()
 
     keys = ([k.strip() for k in args.sources.split(",") if k.strip()]
             if args.sources else list(DEFAULT_SOURCES))
 
     try:
-        built = build_parquet(args.out, keys, jobs=args.jobs)
-        if args.push:
-            publish(args.out, built, args.push)
+        if args.enrich_only:
+            if not args.push:
+                ap.error("--enrich-only requires --push <HF_DATASET>")
+            import enrich_entities
+            enrich_entities.enrich(args.push)
+        else:
+            built = build_parquet(args.out, keys, jobs=args.jobs)
+            if args.push:
+                publish(args.out, built, args.push)
+                if args.enrich:
+                    import enrich_entities
+                    enrich_entities.enrich(args.push)
+        if args.enrich and not args.push:
+            print("Note: --enrich does nothing without --push (it patches the published dataset).")
     except KeyboardInterrupt:
         print("\nAborted. Harvest progress is cached (Met resumes; others rebuild fast) — just re-run.")
         raise SystemExit(130)

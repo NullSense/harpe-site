@@ -288,18 +288,16 @@ def build_name_to_qid(artists: dict[str, dict]) -> dict[str, str]:
     return direct
 
 
-def main() -> None:
-    ap = argparse.ArgumentParser(description="Build the Harpe knowledge-graph entity layer from the published works.")
-    ap.add_argument("--repo", default="NullSense/harpe-art", help="HF dataset repo")
-    ap.add_argument("--out", default=os.path.join(tempfile.gettempdir(), "harpe-train-enriched.parquet"))
-    args = ap.parse_args()
-
+def enrich(repo: str = "NullSense/harpe-art", out: str | None = None) -> None:
+    """Build + publish the knowledge-graph entity layer from the published works.
+    Callable as a final phase of ingest.py (--enrich) or standalone (this script)."""
+    out = out or os.path.join(tempfile.gettempdir(), "harpe-train-enriched.parquet")
     os.environ.setdefault("HF_XET_HIGH_PERFORMANCE", "1")
     from huggingface_hub import HfApi, hf_hub_download
     from huggingface_hub import CommitOperationAdd
 
     print("Downloading published works…")
-    train = hf_hub_download(repo_id=args.repo, repo_type="dataset", filename="data/train.parquet")
+    train = hf_hub_download(repo_id=repo, repo_type="dataset", filename="data/train.parquet")
 
     con = duckdb.connect()
     con.execute(f"SET temp_directory='{tempfile.gettempdir()}';")
@@ -348,7 +346,7 @@ def main() -> None:
     enr_cols = ["artist_qid", "depicts_qids", "collection_qid", "movement"]
     present = [c for c in enr_cols if c in cols]
     excl = f"EXCLUDE ({', '.join(present)})" if present else ""
-    oq = args.out.replace("'", "''")
+    oq = out.replace("'", "''")
     con.execute(
         f"COPY (SELECT w.* {excl}, e.artist_qid, e.depicts_qids, e.collection_qid, e.movement "
         f"FROM read_parquet('{tq}') w LEFT JOIN enr e USING (wikidata_qid)) "
@@ -358,8 +356,8 @@ def main() -> None:
 
     api = HfApi()
     print("Uploading patched works Parquet…")
-    api.upload_file(path_or_fileobj=args.out, path_in_repo="data/train.parquet",
-                    repo_id=args.repo, repo_type="dataset")
+    api.upload_file(path_or_fileobj=out, path_in_repo="data/train.parquet",
+                    repo_id=repo, repo_type="dataset")
 
     # name_to_qid.json → published to the HF CDN as part of the entity layer (a
     # future runtime singleton can resolve non-Wikidata artist names to QIDs from
@@ -388,12 +386,20 @@ def main() -> None:
     # HF caps operations per commit; chunk to be safe.
     CHUNK = 256
     for i in tqdm(range(0, len(ops), CHUNK), desc="commit", unit="chunk"):
-        api.create_commit(repo_id=args.repo, repo_type="dataset", operations=ops[i:i + CHUNK],
+        api.create_commit(repo_id=repo, repo_type="dataset", operations=ops[i:i + CHUNK],
                           commit_message=f"entity files {i // CHUNK + 1}")
 
     print(f"\nDone. {len(artists):,} artists, {len(subjects):,} subjects, "
           f"{sum(len(v) for v in work_ids_by_artist.values()):,} artist↔work links.")
     print("Patched works + entity files are live on the HF CDN — redeploy Vercel to serve them.")
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description="Build the Harpe knowledge-graph entity layer from the published works.")
+    ap.add_argument("--repo", default="NullSense/harpe-art", help="HF dataset repo")
+    ap.add_argument("--out", default=None, help="local patched-Parquet path (default: a temp file)")
+    args = ap.parse_args()
+    enrich(args.repo, args.out)
 
 
 if __name__ == "__main__":
