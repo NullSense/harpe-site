@@ -1436,7 +1436,9 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(
         description="Pull open-data museum dumps into one Parquet and (optionally) publish to Hugging Face. "
                     "Default builds EVERY source in parallel; publishing always merges (never shrinks the dataset).")
-    ap.add_argument("--push", metavar="HF_DATASET", help="publish to this HF dataset, e.g. NullSense/harpe-art")
+    ap.add_argument("--push", metavar="HF_DATASET", nargs="?", const="NullSense/harpe-art", default=None,
+                    help="publish to this HF dataset (default NullSense/harpe-art when given without a value); "
+                         "so `--push --enrich` works")
     ap.add_argument("--sources", help="comma-separated subset to (re)build instead of all; "
                                       f"available: {', '.join(SOURCES)}")
     ap.add_argument("--jobs", type=int, default=None,

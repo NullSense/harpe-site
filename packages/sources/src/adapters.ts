@@ -1686,26 +1686,56 @@ export async function fetchDumpSource(source: DumpSourceKey, q: string): Promise
 // + timeout); the handler layer adds the Upstash cache, mirroring the dump path.
 const HF_ENTITY_CDN = 'https://huggingface.co/datasets/NullSense/harpe-art/resolve/main/data';
 
-// name→QID map (alias/label, normalize()-keyed; non-Latin under a "raw:" prefix),
-// fetched once from the HF CDN and memoised for the instance's lifetime. Lets us
-// attach an artistId to NON-Wikidata dump rows (which lack the artist_qid column)
-// so their cards link to the artist page too. Decoupled from the dump breaker: a
-// miss just means no name-resolution (Wikidata rows still carry artist_qid).
-let _nameToQid: Record<string, string> | null | undefined;
+// Artist-name → QID resolution for NON-Wikidata dump rows (which lack the
+// artist_qid column), so their cards link to the artist page too. The ingest emits
+// only RAW {name: QID} facts; ALL name-matching logic lives HERE (the single
+// source of truth — no Python normalize() to keep in sync): we normalize() each
+// name, add ≥4-char surname suffixes with a collision guard, and key non-Latin
+// names raw. Built once from the CDN map and memoised for the instance's lifetime;
+// decoupled from the dump breaker (a miss just means no name-resolution).
+let _nameIndex: Record<string, string> | null | undefined;
+
+export function buildNameIndex(raw: Record<string, string>): Record<string, string> {
+  const idx: Record<string, string> = {};
+  const suffixHits = new Map<string, Set<string>>();
+  for (const [name, qid] of Object.entries(raw)) {
+    if (!/^Q\d+$/.test(qid)) continue;
+    const norm = normalize(name);
+    if (norm) {
+      if (!(norm in idx)) idx[norm] = qid; // full name, first-wins
+      const w = norm.split(' ');
+      for (let i = 1; i < w.length; i++) {
+        const sfx = w.slice(i).join(' ');
+        if (sfx.length >= 4) (suffixHits.get(sfx) ?? suffixHits.set(sfx, new Set()).get(sfx)!).add(qid);
+      }
+    } else {
+      const key = `raw:${name.toLowerCase()}`; // non-Latin (CJK/…) → normalize() empties it
+      if (!(key in idx)) idx[key] = qid;
+    }
+  }
+  // add only non-colliding surname suffixes ("van gogh"/"gogh"); a suffix shared by
+  // >1 artist is dropped so we never resolve to the wrong person.
+  for (const [sfx, qids] of suffixHits) {
+    if (qids.size === 1 && !(sfx in idx)) idx[sfx] = [...qids][0];
+  }
+  return idx;
+}
+
 async function loadNameToQid(): Promise<Record<string, string>> {
-  if (_nameToQid !== undefined) return _nameToQid ?? {};
+  if (_nameIndex !== undefined) return _nameIndex ?? {};
   const dl = deadline(undefined);
   try {
     const res = await timedFetch(`${HF_ENTITY_CDN}/name_to_qid.json`, dl.signal);
-    _nameToQid = res.ok ? (await res.json() as Record<string, string>) : null;
-  } catch { _nameToQid = null; } finally { dl.clear(); }
-  return _nameToQid ?? {};
+    const raw = res.ok ? (await res.json() as Record<string, string>) : null;
+    _nameIndex = raw ? buildNameIndex(raw) : null;
+  } catch { _nameIndex = null; } finally { dl.clear(); }
+  return _nameIndex ?? {};
 }
 
-/** Resolve a free-text artist name to a Wikidata QID via the name→QID map. */
-function resolveArtistQid(map: Record<string, string>, name: string): string | undefined {
+/** Resolve a free-text artist name to a Wikidata QID via the built index. */
+export function resolveArtistQid(index: Record<string, string>, name: string): string | undefined {
   if (!name) return undefined;
-  const q = map[normalize(name)] ?? map[`raw:${name}`];
+  const q = index[normalize(name)] ?? index[`raw:${name.toLowerCase()}`];
   return q && /^Q\d+$/.test(q) ? q : undefined;
 }
 

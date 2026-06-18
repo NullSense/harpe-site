@@ -34,7 +34,6 @@ import argparse
 import json
 import os
 import tempfile
-import unicodedata
 from collections import defaultdict
 
 import duckdb
@@ -123,34 +122,6 @@ def _val(b: dict, key: str) -> str | None:
 def _batches(items: list[str], n: int):
     for i in range(0, len(items), n):
         yield items[i:i + n]
-
-
-# ── normalize() — must mirror packages/core/src/search.ts normalize() ─────────
-_FOLD = {"æ": "ae", "ø": "o", "å": "a", "œ": "oe", "ß": "ss", "ð": "d", "þ": "th"}
-
-
-def normalize(s: str) -> str:
-    s = (s or "").lower()
-    s = unicodedata.normalize("NFD", s)
-    s = "".join(c for c in s if unicodedata.category(c) != "Mn")  # strip accents
-    s = "".join(_FOLD.get(c, c) for c in s)
-    s = "".join(c if (c.isalnum() or c.isspace()) else " " for c in s)
-    return " ".join(s.split())
-
-
-def _is_latin(s: str) -> bool:
-    return all(ord(c) < 0x250 or c.isspace() for c in s)
-
-
-def suffix_variants(label_norm: str) -> list[str]:
-    """'vincent van gogh' → ['van gogh', 'gogh'] (each ≥ 4 chars)."""
-    w = label_norm.split()
-    out = []
-    for i in range(1, len(w)):
-        s = " ".join(w[i:])
-        if len(s) >= 4:
-            out.append(s)
-    return out
 
 
 # ── Step 2: artwork → creator/depicts/collection/movement ─────────────────────
@@ -273,26 +244,15 @@ def _clean(d: dict) -> dict:
 
 
 def build_name_to_qid(artists: dict[str, dict]) -> dict[str, str]:
-    """alias/label → QID, normalize()-keyed. Suffix variants ('gogh') included with
-    a collision guard; non-Latin labels also stored raw under a 'raw:' prefix."""
-    direct: dict[str, str] = {}
-    suffix_hits: dict[str, set] = defaultdict(set)
+    """RAW name → QID (label + English aliases, first-wins). Deliberately does NO
+    normalization: the runtime (packages/core normalize() + the index builder in
+    adapters.ts) is the single source of truth for name matching — this only emits
+    facts, so there is no Python/TS normalize() to keep in sync."""
+    out: dict[str, str] = {}
     for q, e in artists.items():
-        names = [e.get("labelEn")] + list(e.get("aliases") or [])
-        for nm in filter(None, names):
-            norm = normalize(nm)
-            if norm:
-                direct.setdefault(norm, q)
-            if not _is_latin(nm):
-                direct.setdefault(f"raw:{nm}", q)
-            if e.get("labelEn"):
-                for sfx in suffix_variants(normalize(e["labelEn"])):
-                    suffix_hits[sfx].add(q)
-    # add only non-colliding suffixes (a suffix mapping to >1 artist is dropped)
-    for sfx, qs in suffix_hits.items():
-        if len(qs) == 1 and sfx not in direct:
-            direct[sfx] = next(iter(qs))
-    return direct
+        for nm in filter(None, [e.get("labelEn"), *(e.get("aliases") or [])]):
+            out.setdefault(nm, q)
+    return out
 
 
 def enrich(repo: str = "NullSense/harpe-art", out: str | None = None) -> None:
