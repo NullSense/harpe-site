@@ -6,8 +6,7 @@
 import type { SourceAdapter, ArtItem } from '@harpe/core';
 import {
   fetchCommons, fetchWikiArt, fetchVam,
-  fetchNasjonalmuseet, fetchDigitalNZ,
-  fetchEuropeana, fetchHarvard, fetchParisMusees,
+  fetchNasjonalmuseet, fetchDigitalNZ, fetchParisMusees,
   fetchDumpSource, fetchNypl, dumpDatasetEnv,
 } from './adapters.js';
 import { runSource } from './resilience.js';
@@ -38,19 +37,17 @@ export const SOURCES: SourceAdapter[] = [
   dump('wikidata', 'Wikidata'),
   dump('met', 'Met'),                    // Met's own HF open-access dump (API is Incapsula-walled; CDN is open)
   dump('loc', 'Library of Congress'),    // P&P photography, IIIF images
+  dump('harvard', 'Harvard'),            // full-res IIIF; ingested under non-commercial ToS — see SOURCES.md
+  dump('europeana', 'Europeana'),        // provider full-res (~90%) + Europeana thumb fallback
   // ─ Live-API sources (no usable bulk dump — see SOURCES.md "Not pursued") ─
   { key: 'commons', label: 'Commons', fetch: fetchCommons },
   { key: 'wikiart', label: 'WikiArt', fetch: fetchWikiArt },
   { key: 'vam', label: 'V&A', fetch: fetchVam },
   { key: 'nasjonalmuseet', label: 'Nasjonalmuseet', fetch: fetchNasjonalmuseet },
   { key: 'digitalnz', label: 'DigitalNZ', fetch: fetchDigitalNZ },
-  // Keyed live sources — only queried when their server-only key/env is configured.
-  { key: 'europeana', label: 'Europeana', fetch: fetchEuropeana, requiresEnv: 'EUROPEANA_API_KEY' },
-  { key: 'harvard', label: 'Harvard', fetch: fetchHarvard, requiresEnv: 'HARVARD_API_KEY' },
-  // Paris Musées' Drupal GraphQL has no fast fulltext index; best-effort, also
-  // covered by Europeana. Its own timeout caps latency.
-  { key: 'parismusees', label: 'Paris Musées', fetch: fetchParisMusees, requiresEnv: 'PARIS_MUSEES_TOKEN',
-    disabled: true, note: 'GraphQL schema drift (fieldAuteurs removed) — disabled until the query is rebuilt against the current NodeOeuvre schema' },
+  // Paris Musées — GraphQL query rebuilt against the current NodeOeuvre schema.
+  // Public token yields thumbnails only (HD is private-API); live-queried with token.
+  { key: 'parismusees', label: 'Paris Musées', fetch: fetchParisMusees, requiresEnv: 'PARIS_MUSEES_TOKEN' },
   // NYPL token auth needs HTTP/2; Vercel egress forces HTTP/1.1 (→ "Access
   // denied"). Works locally over h2. Photography is covered by LoC meanwhile.
   { key: 'nypl', label: 'NYPL', fetch: fetchNypl, requiresEnv: 'NYPL_API_TOKEN', disabled: true,

@@ -1388,11 +1388,11 @@ export async function fetchParisMusees(q: string, signal?: AbortSignal): Promise
       `{field: "title", operator: LIKE, value: ${JSON.stringify('%' + q + '%')}}` +
       `]}, limit: 15) { entities { entityLabel ... on NodeOeuvre {` +
       ` title` +
-      ` fieldVisuels { entity { publicUrl vignette } }` +
-      ` fieldAuteurs { entity { entityLabel } }` +
-      ` fieldDateCreation` +
-      ` fieldTechniquesMatieres` +
-      ` fieldMusee { entity { entityLabel } }` +
+      ` fieldVisuelsPrincipals { entity { publicUrl vignette } }` +
+      ` fieldOeuvreAuteurs { entity { entityLabel } }` +
+      ` fieldDateProduction { startYear endYear century }` +
+      ` fieldMateriauxTechnique` +
+      ` fieldMusee { entity { name } }` +
       ` } } } }`;
     const res = await fetch('https://apicollections.parismusees.paris.fr/graphql', {
       method: 'POST',
@@ -1404,11 +1404,11 @@ export async function fetchParisMusees(q: string, signal?: AbortSignal): Promise
     const json = await res.json() as {
       data?: { nodeQuery?: { entities?: Array<{
         entityLabel?: unknown; title?: unknown;
-        fieldVisuels?: Array<{ entity?: { publicUrl?: unknown; vignette?: unknown } }>;
-        fieldAuteurs?: Array<{ entity?: { entityLabel?: unknown } }>;
-        fieldDateCreation?: unknown;
-        fieldTechniquesMatieres?: unknown;
-        fieldMusee?: Array<{ entity?: { entityLabel?: unknown } }>;
+        fieldVisuelsPrincipals?: Array<{ entity?: { publicUrl?: unknown; vignette?: unknown } }>;
+        fieldOeuvreAuteurs?: Array<{ entity?: { entityLabel?: unknown } }>;
+        fieldDateProduction?: { startYear?: unknown; endYear?: unknown; century?: unknown };
+        fieldMateriauxTechnique?: unknown;
+        fieldMusee?: Array<{ entity?: { name?: unknown } }>;
       }> } };
       errors?: Array<{ message?: unknown }>;
     };
@@ -1416,16 +1416,17 @@ export async function fetchParisMusees(q: string, signal?: AbortSignal): Promise
     if (json.errors?.length) throw new Error(`GraphQL: ${str(json.errors[0].message).slice(0, 120)}`);
     const items: ArtItem[] = [];
     for (const e of json.data?.nodeQuery?.entities ?? []) {
-      const v = e.fieldVisuels?.[0]?.entity;
+      const v = e.fieldVisuelsPrincipals?.[0]?.entity;
       const img = str(v?.publicUrl) || str(v?.vignette);
       if (!img) continue;
-      const artist = e.fieldAuteurs?.[0]?.entity
-        ? str(e.fieldAuteurs[0].entity.entityLabel)
+      const artist = e.fieldOeuvreAuteurs?.[0]?.entity
+        ? str(e.fieldOeuvreAuteurs[0].entity.entityLabel)
         : '';
-      const date = str(e.fieldDateCreation) || undefined;
-      const medium = str(e.fieldTechniquesMatieres) || undefined;
+      const dp = e.fieldDateProduction;
+      const date = dp ? (str(dp.startYear) || str(dp.century) || undefined) : undefined;
+      const medium = str(e.fieldMateriauxTechnique) || undefined;
       const museum = e.fieldMusee?.[0]?.entity
-        ? str(e.fieldMusee[0].entity.entityLabel)
+        ? str(e.fieldMusee[0].entity.name)
         : '';
       items.push({
         id: `parismusees-${str(e.entityLabel)}-${items.length}`,
@@ -1469,6 +1470,8 @@ const DUMP_SOURCE_LABELS = {
   wikidata: 'Wikidata',
   met: 'Met',
   loc: 'Library of Congress',
+  harvard: 'Harvard',
+  europeana: 'Europeana',
 } as const satisfies Partial<Record<ArtItem['source'], string>>;
 
 type DumpSourceKey = keyof typeof DUMP_SOURCE_LABELS;

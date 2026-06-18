@@ -54,13 +54,13 @@ describe('activeSources', () => {
   });
 
   it('enables a keyed source when its env var is present', () => {
-    const active = activeSources({ EUROPEANA_API_KEY: 'x' } as NodeJS.ProcessEnv);
-    expect(active.some((s) => s.key === 'europeana')).toBe(true);
+    const active = activeSources({ PARIS_MUSEES_TOKEN: 'x' } as NodeJS.ProcessEnv);
+    expect(active.some((s) => s.key === 'parismusees')).toBe(true);
   });
 
   it('enables all dump-backed museums from the combined dump dataset', () => {
     const active = activeSources({ HARPE_DUMP_DATASET: 'owner/harpe-art' } as NodeJS.ProcessEnv);
-    for (const key of ['moma', 'nga', 'mia', 'aic', 'cleveland', 'wellcome', 'smk', 'si', 'wikidata', 'met', 'loc']) {
+    for (const key of ['moma', 'nga', 'mia', 'aic', 'cleveland', 'wellcome', 'smk', 'si', 'wikidata', 'met', 'loc', 'harvard', 'europeana']) {
       expect(active.some((s) => s.key === key)).toBe(true);
     }
   });
