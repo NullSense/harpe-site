@@ -67,6 +67,10 @@ export interface ArtItem {
   tags?: string[];
   /** Artwork type / object type (Painting, Photograph, Sculpture, Print, Drawing, …). */
   artworkType?: string;
+  /** Art-historical movement or period (e.g. Impressionism, Baroque, Dutch Golden Age). */
+  style?: string;
+  /** Inscriptions, signatures, or marks on the work. */
+  inscriptions?: string;
 }
 
 /**
@@ -111,5 +115,11 @@ export function validateArtItem(it: ArtItem): string[] {
   if (it.width !== undefined && typeof it.width !== 'number') p.push('width not a number');
   if (it.height !== undefined && typeof it.height !== 'number') p.push('height not a number');
   if (it.source && !SOURCE_KEY_SET.has(it.source)) p.push(`unknown source key: ${it.source}`);
+  // Optional enrichment fields — type-check only when present.
+  for (const k of ['accessionNumber', 'licenseUrl', 'artworkType', 'style', 'inscriptions'] as const) {
+    if (it[k] !== undefined && typeof it[k] !== 'string') p.push(`${k} not a string`);
+  }
+  if (it.tags !== undefined && !Array.isArray(it.tags)) p.push('tags not an array');
+  if (Array.isArray(it.tags) && it.tags.some((t) => typeof t !== 'string')) p.push('tags contains non-string element');
   return p;
 }

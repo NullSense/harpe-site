@@ -94,8 +94,14 @@ export function sidecarText(it: ArtItem, res: string): string {
   if (it.date) lines.push(`Date: ${it.date}`);
   if (it.medium) lines.push(`Medium: ${it.medium}`);
   if (it.dimensions) lines.push(`Dimensions: ${it.dimensions}`);
+  if (it.artworkType) lines.push(`Type: ${it.artworkType}`);
+  if (it.style) lines.push(`Style: ${it.style}`);
+  if (it.accessionNumber) lines.push(`Accession Number: ${it.accessionNumber}`);
+  if (it.licenseUrl) lines.push(`License: ${it.licenseUrl}`);
+  if (it.tags && it.tags.length > 0) lines.push(`Tags: ${it.tags.join(', ')}`);
   lines.push(`Resolution: ${res}`, `Source: ${it.source}`, `Source URL: ${artSourceUrl(it)}`);
   if (it.description) lines.push('', it.description);
+  if (it.inscriptions) lines.push('', `Inscriptions: ${it.inscriptions}`);
   return lines.join('\n') + '\n';
 }
 
@@ -154,20 +160,42 @@ export function embed(path: string, it: ArtItem, caption: string): boolean {
   const desc = it.description ?? '';
   const medium = it.medium ?? '';
 
+  // Build extended description: append style and inscriptions when present.
+  // Style has no standard XMP tag, so it's folded into XMP-dc:Description.
+  // Inscriptions are folded similarly — both remain readable in any XMP viewer.
+  let fullDesc = desc;
+  if (it.style) fullDesc = fullDesc ? `${fullDesc}\n[Style: ${it.style}]` : `[Style: ${it.style}]`;
+  if (it.inscriptions) fullDesc = fullDesc ? `${fullDesc}\n[Inscriptions: ${it.inscriptions}]` : `[Inscriptions: ${it.inscriptions}]`;
+
   // --- exiftool ---
   try {
-    const result = spawnSync('exiftool', [
+    const args: string[] = [
       '-overwrite_original', '-q', '-m',
       `-IFD0:ImageDescription=${caption}`,
       `-IFD0:Artist=${artist}`,
       `-XMP-dc:Title=${it.title}`,
       `-XMP-dc:Creator=${artist}`,
-      `-XMP-dc:Description=${desc}`,
+      `-XMP-dc:Description=${fullDesc}`,
       `-XMP-dc:Date=${it.date ?? ''}`,
       `-XMP-dc:Format=${medium}`,
       `-XMP-dc:Source=${src}`,
-      path,
-    ], { stdio: ['ignore', 'ignore', 'ignore'] });
+    ];
+    // tags[] → XMP-dc:Subject (repeatable) + IPTC:Keywords
+    if (it.tags && it.tags.length > 0) {
+      for (const tag of it.tags) {
+        args.push(`-XMP-dc:Subject=${tag}`, `-IPTC:Keywords=${tag}`);
+      }
+    }
+    // licenseUrl → XMP-xmpRights:WebStatement (widely supported; cc:license needs
+    // namespace registration in some tools, xmpRights:WebStatement is always valid)
+    if (it.licenseUrl) args.push(`-XMP-xmpRights:WebStatement=${it.licenseUrl}`);
+    // accessionNumber → XMP-dc:Identifier (dc:identifier is the standard "ID" slot;
+    // the existing code does not write this tag so there is no collision risk)
+    if (it.accessionNumber) args.push(`-XMP-dc:Identifier=${it.accessionNumber}`);
+    // artworkType → XMP-dc:Type (dc:type is the standard semantic type field)
+    if (it.artworkType) args.push(`-XMP-dc:Type=${it.artworkType}`);
+    args.push(path);
+    const result = spawnSync('exiftool', args, { stdio: ['ignore', 'ignore', 'ignore'] });
     if (result.status === 0) return true;
   } catch {
     // fall through to exiv2
@@ -181,11 +209,21 @@ export function embed(path: string, it: ArtItem, caption: string): boolean {
     if (artist) m.push(`-Mset Exif.Image.Artist ${artist}`);
     m.push(`-Mset Xmp.dc.title ${it.title}`);
     if (artist) m.push(`-Mset Xmp.dc.creator ${artist}`);
-    if (desc) m.push(`-Mset Xmp.dc.description ${desc}`);
+    if (fullDesc) m.push(`-Mset Xmp.dc.description ${fullDesc}`);
     if (it.date) m.push(`-Mset Xmp.dc.date ${it.date}`);
     if (medium) m.push(`-Mset Xmp.dc.format ${medium}`);
     if (it.dimensions) m.push(`-Mset Xmp.dc.extent ${it.dimensions}`);
     m.push(`-Mset Xmp.dc.source ${src}`);
+    // tags[] → Xmp.dc.subject (space-separated multi-value; exiv2 writes lang-alt bags)
+    if (it.tags && it.tags.length > 0) {
+      m.push(`-Mset Xmp.dc.subject ${it.tags.join(' ')}`);
+    }
+    // licenseUrl → Xmp.xmpRights.WebStatement
+    if (it.licenseUrl) m.push(`-Mset Xmp.xmpRights.WebStatement ${it.licenseUrl}`);
+    // accessionNumber → Xmp.dc.identifier
+    if (it.accessionNumber) m.push(`-Mset Xmp.dc.identifier ${it.accessionNumber}`);
+    // artworkType → Xmp.dc.type
+    if (it.artworkType) m.push(`-Mset Xmp.dc.type ${it.artworkType}`);
     const result = spawnSync('exiv2', [...m, path], { stdio: ['ignore', 'ignore', 'ignore'] });
     if (result.status === 0) return true;
   } catch {

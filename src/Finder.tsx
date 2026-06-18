@@ -73,6 +73,12 @@ interface ArtItem {
   description?: string;
   sourceUrl?: string;
   provider?: string;
+  artworkType?: string;
+  style?: string;
+  accessionNumber?: string;
+  inscriptions?: string;
+  tags?: string[];
+  licenseUrl?: string;
   /** Present for zoomable/gigapixel images (DZI/Zoomify/IIIF) — drives OSD deep-zoom
    *  and our in-browser full-resolution tile-stitch download. */
   deepzoom?: DeepZoomDescriptor;
@@ -655,6 +661,9 @@ function ArtDetail({
             </span>
           )}
           {item.lossless && <span className="rounded-sm border border-bronze/40 bg-bronze/10 px-1.5 py-0.5 font-mono text-[.62rem] text-bronze-bright">◆ lossless</span>}
+          {item.licenseUrl && (
+            <a href={item.licenseUrl} target="_blank" rel="noopener" className="rounded-sm border border-line px-1.5 py-0.5 font-mono text-[.62rem] text-muted transition hover:border-bronze/60 hover:text-bronze-bright">License ↗</a>
+          )}
         </div>
         <dl className="space-y-1 text-[.82rem]">
           {item.date && <div className="flex gap-2"><dt className="w-24 shrink-0 text-muted/60">Date</dt><dd className="text-ink/85">{item.date}</dd></div>}
@@ -663,7 +672,18 @@ function ArtDetail({
           {item.dimensions && <div className="flex gap-2"><dt className="w-24 shrink-0 text-muted/60">Dimensions</dt><dd className="text-ink/85">{item.dimensions}</dd></div>}
           {resolution && <div className="flex gap-2"><dt className="w-24 shrink-0 text-muted/60">Resolution</dt><dd className="font-mono text-ink/85">{resolution}</dd></div>}
           <div className="flex gap-2"><dt className="w-24 shrink-0 text-muted/60">Format</dt><dd className="font-mono uppercase text-ink/85">{item.format}</dd></div>
+          {item.artworkType && <div className="flex gap-2"><dt className="w-24 shrink-0 text-muted/60">Type</dt><dd className="text-ink/85">{item.artworkType}</dd></div>}
+          {item.style && <div className="flex gap-2"><dt className="w-24 shrink-0 text-muted/60">Style</dt><dd className="text-ink/85">{item.style}</dd></div>}
+          {item.accessionNumber && <div className="flex gap-2"><dt className="w-24 shrink-0 text-muted/60">Accession #</dt><dd className="font-mono text-ink/85">{item.accessionNumber}</dd></div>}
+          {item.inscriptions && <div className="flex gap-2"><dt className="w-24 shrink-0 text-muted/60">Inscriptions</dt><dd className="text-ink/85">{item.inscriptions}</dd></div>}
         </dl>
+        {item.tags && item.tags.length > 0 && (
+          <div className="flex flex-wrap gap-1.5">
+            {item.tags.slice(0, 12).map((tag) => (
+              <span key={tag} className="rounded-sm bg-bronze/10 px-1.5 py-0.5 font-mono text-[.62rem] text-bronze/80">{tag}</span>
+            ))}
+          </div>
+        )}
         {item.description && <p className="text-[.86rem] leading-relaxed text-muted">{item.description}</p>}
         {item.creditLine && <p className="text-[.76rem] italic leading-snug text-muted/60">{item.creditLine}</p>}
 

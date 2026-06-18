@@ -199,4 +199,82 @@ describe('sidecarText', () => {
     const text = sidecarText(it, '');
     expect(text).toContain('Source URL: https://example.org/img.jpg');
   });
+
+  // --- new fields ---
+
+  it('includes new fields when all are present', () => {
+    const it = mkItem({
+      title: 'Starry Night', artist: 'Van Gogh', source: 'moma',
+      accessionNumber: 'MoMA-472.1941',
+      licenseUrl: 'https://creativecommons.org/licenses/by/4.0/',
+      tags: ['post-impressionism', 'night', 'swirling'],
+      artworkType: 'Painting',
+      style: 'Post-Impressionism',
+      inscriptions: 'Vincent [lower left]',
+    });
+    const text = sidecarText(it, '2400x1920');
+    expect(text).toContain('Accession Number: MoMA-472.1941');
+    expect(text).toContain('License: https://creativecommons.org/licenses/by/4.0/');
+    expect(text).toContain('Tags: post-impressionism, night, swirling');
+    expect(text).toContain('Type: Painting');
+    expect(text).toContain('Style: Post-Impressionism');
+    expect(text).toContain('Inscriptions: Vincent [lower left]');
+  });
+
+  it('omits new fields when all are absent', () => {
+    const it = mkItem({ title: 'Untitled', source: 'met' });
+    const text = sidecarText(it, '1x1');
+    expect(text).not.toContain('Accession Number:');
+    expect(text).not.toContain('License:');
+    expect(text).not.toContain('Tags:');
+    expect(text).not.toContain('Type:');
+    expect(text).not.toContain('Style:');
+    expect(text).not.toContain('Inscriptions:');
+  });
+
+  it('omits Tags line when tags array is empty', () => {
+    const it = mkItem({ title: 'T', source: 'aic', tags: [] });
+    const text = sidecarText(it, '');
+    expect(text).not.toContain('Tags:');
+  });
+
+  it('includes each new field independently — licenseUrl only', () => {
+    const it = mkItem({ title: 'T', source: 'aic', licenseUrl: 'https://example.com/cc0' });
+    const text = sidecarText(it, '');
+    expect(text).toContain('License: https://example.com/cc0');
+    expect(text).not.toContain('Accession Number:');
+    expect(text).not.toContain('Tags:');
+  });
+
+  it('includes each new field independently — accessionNumber only', () => {
+    const it = mkItem({ title: 'T', source: 'aic', accessionNumber: 'AIC-1234' });
+    const text = sidecarText(it, '');
+    expect(text).toContain('Accession Number: AIC-1234');
+    expect(text).not.toContain('License:');
+  });
+
+  it('includes each new field independently — tags only', () => {
+    const it = mkItem({ title: 'T', source: 'aic', tags: ['landscape', 'watercolor'] });
+    const text = sidecarText(it, '');
+    expect(text).toContain('Tags: landscape, watercolor');
+  });
+
+  it('inscriptions appears after description block', () => {
+    const it = mkItem({
+      title: 'Icon', source: 'met',
+      description: 'Byzantine icon.',
+      inscriptions: 'IC XC (top corners)',
+    });
+    const text = sidecarText(it, '');
+    const descIdx = text.indexOf('Byzantine icon.');
+    const inscIdx = text.indexOf('Inscriptions:');
+    expect(descIdx).toBeGreaterThanOrEqual(0);
+    expect(inscIdx).toBeGreaterThan(descIdx);
+  });
+
+  it('inscriptions appears without description when description is absent', () => {
+    const it = mkItem({ title: 'T', source: 'aic', inscriptions: 'Signed lower right' });
+    const text = sidecarText(it, '');
+    expect(text).toContain('Inscriptions: Signed lower right');
+  });
 });

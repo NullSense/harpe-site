@@ -23,7 +23,8 @@ export function h2Agent(): Agent {
 }
 
 // ─── AIC (Art Institute of Chicago) ──────────────────────────────────────────
-// GOD-FORMAT: added artwork_type_title → artworkType.
+// GOD-FORMAT: added artwork_type_title → artworkType, classification_titles+subject_titles → tags,
+// style_titles → style, inscriptions → inscriptions, main_reference_number → accessionNumber.
 
 export async function fetchAic(q: string): Promise<ArtItem[]> {
   const controller = new AbortController();
@@ -32,7 +33,7 @@ export async function fetchAic(q: string): Promise<ArtItem[]> {
   try {
     const url =
       `https://api.artic.edu/api/v1/artworks/search` +
-      `?q=${encodeURIComponent(q)}&fields=id,title,artist_title,image_id,is_public_domain,dimensions,date_display,medium_display,description,place_of_origin,credit_line,artwork_type_title&limit=12`;
+      `?q=${encodeURIComponent(q)}&fields=id,title,artist_title,image_id,is_public_domain,dimensions,date_display,medium_display,description,place_of_origin,credit_line,artwork_type_title,classification_titles,subject_titles,style_titles,inscriptions,main_reference_number&limit=12`;
 
     const res = await timedFetch(url, controller.signal);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -51,6 +52,11 @@ export async function fetchAic(q: string): Promise<ArtItem[]> {
         place_of_origin?: unknown;
         credit_line?: unknown;
         artwork_type_title?: unknown;
+        classification_titles?: unknown;
+        subject_titles?: unknown;
+        style_titles?: unknown;
+        inscriptions?: unknown;
+        main_reference_number?: unknown;
       }>;
       config?: { iiif_url?: unknown };
     };
@@ -65,6 +71,20 @@ export async function fetchAic(q: string): Promise<ArtItem[]> {
       const base = `${iiif}/${imageId}`;
       const fullUrl = `${base}/full/full/0/default.jpg`;
       const artType = str(d.artwork_type_title) || undefined;
+
+      // Combine classification_titles and subject_titles into tags.
+      const tagArr: string[] = [];
+      if (Array.isArray(d.classification_titles)) tagArr.push(...(d.classification_titles as unknown[]).map(str).filter(Boolean));
+      if (Array.isArray(d.subject_titles)) tagArr.push(...(d.subject_titles as unknown[]).map(str).filter(Boolean));
+      const tags = tagArr.length ? tagArr : undefined;
+
+      // style_titles: first entry is the most specific movement/period.
+      const styleTitles = Array.isArray(d.style_titles) ? (d.style_titles as unknown[]).map(str).filter(Boolean) : [];
+      const style = styleTitles.length ? styleTitles[0] : undefined;
+
+      const inscriptions = str(d.inscriptions) || undefined;
+      const accessionNumber = str(d.main_reference_number) || undefined;
+
       items.push({
         id: `aic-${str(d.id)}`,
         title: str(d.title) || 'Untitled',
@@ -85,6 +105,10 @@ export async function fetchAic(q: string): Promise<ArtItem[]> {
         description: str(d.description).replace(/<[^>]+>/g, ''), // strip HTML
         sourceUrl: `https://www.artic.edu/artworks/${str(d.id)}`,
         artworkType: artType,
+        tags,
+        style,
+        inscriptions,
+        accessionNumber,
       });
     }
 
@@ -134,6 +158,7 @@ export async function fetchMet(q: string): Promise<ArtItem[]> {
         dimensions?: unknown;
         primaryImage?: unknown;
         primaryImageSmall?: unknown;
+        additionalImages?: unknown[];
         isPublicDomain?: unknown;
         objectDate?: unknown;
         medium?: unknown;
@@ -141,6 +166,10 @@ export async function fetchMet(q: string): Promise<ArtItem[]> {
         objectURL?: unknown;
         objectName?: unknown;
         classification?: unknown;
+        accessionNumber?: unknown;
+        period?: unknown;
+        dynasty?: unknown;
+        tags?: Array<{ term?: unknown }>;
         measurements?: Array<{
           elementMeasurements?: { Height?: unknown; Width?: unknown };
           elementDescription?: unknown;
@@ -168,6 +197,25 @@ export async function fetchMet(q: string): Promise<ArtItem[]> {
 
       const artType = str(d.objectName) || str(d.classification) || undefined;
 
+      // additionalImages → extra download entries (JPEG, same as primary).
+      const downloads: Download[] = [{ label: 'Full JPEG', url: primaryImage, format: 'jpeg', lossless: false }];
+      if (Array.isArray(d.additionalImages)) {
+        for (const imgUrl of d.additionalImages) {
+          const u = str(imgUrl);
+          if (u) downloads.push({ label: 'Additional JPEG', url: u, format: 'jpeg', lossless: false });
+        }
+      }
+
+      // tags[].term → tags string array.
+      const metTags = Array.isArray(d.tags)
+        ? d.tags.map((t) => str(t?.term)).filter(Boolean)
+        : undefined;
+      const tags = metTags?.length ? metTags : undefined;
+
+      // period and dynasty → style (period preferred).
+      const style = str(d.period) || str(d.dynasty) || undefined;
+      const accessionNumber = str(d.accessionNumber) || undefined;
+
       items.push({
         id: `met-${str(d.objectID)}`,
         title: str(d.title) || 'Untitled',
@@ -178,7 +226,7 @@ export async function fetchMet(q: string): Promise<ArtItem[]> {
         fullUrl: primaryImage,
         format: 'jpeg',
         lossless: false,
-        downloads: [{ label: 'Full JPEG', url: primaryImage, format: 'jpeg', lossless: false }],
+        downloads,
         source: 'met',
         date: str(d.objectDate),
         medium: str(d.medium),
@@ -187,6 +235,9 @@ export async function fetchMet(q: string): Promise<ArtItem[]> {
         sourceUrl: str(d.objectURL),
         isPublicDomain: Boolean(d.isPublicDomain),
         artworkType: artType,
+        tags,
+        style,
+        accessionNumber,
       });
     }
 
@@ -230,7 +281,9 @@ export async function fetchCleveland(q: string): Promise<ArtItem[]> {
         culture?: unknown[];
         url?: unknown;
         creditline?: unknown;
+        accession_number?: unknown;
         type?: unknown;
+        subjects?: { name?: unknown[] };
         images?: {
           web?: { url?: unknown };
           print?: { url?: unknown };
@@ -273,6 +326,13 @@ export async function fetchCleveland(q: string): Promise<ArtItem[]> {
 
       const creditLine = str(d.creditline) || undefined;
       const artType = str(d.type) || undefined;
+      const accessionNumber = str(d.accession_number) || undefined;
+
+      // subjects.name[] → tags (Cleveland groups subject terms under this path).
+      const subjectNames = Array.isArray(d.subjects?.name)
+        ? (d.subjects.name as unknown[]).map(str).filter(Boolean)
+        : [];
+      const tags = subjectNames.length ? subjectNames : undefined;
 
       items.push({
         id: `cleveland-${str(d.id)}`,
@@ -296,6 +356,8 @@ export async function fetchCleveland(q: string): Promise<ArtItem[]> {
         sourceUrl: str(d.url),
         creditLine,
         artworkType: artType,
+        accessionNumber,
+        tags,
       });
     }
 
@@ -420,6 +482,9 @@ export async function fetchCommons(q: string): Promise<ArtItem[]> {
 }
 
 // ─── WikiArt (paintings-focused; keyless v2 API) ──────────────────────────────
+// GOD-FORMAT: style, medium, artworkType, tags, accessionNumber require the per-painting
+// detail endpoint (GET /en/api/2/Painting?paintingUrl=…) — deferred for latency.
+// TODO: add per-painting detail fetch for full WikiArt enrichment.
 
 export async function fetchWikiArt(q: string): Promise<ArtItem[]> {
   const controller = new AbortController();
@@ -473,6 +538,11 @@ export async function fetchWikiArt(q: string): Promise<ArtItem[]> {
 }
 
 // ─── Victoria & Albert Museum (UK; keyless v2 API, IIIF images) ───────────────
+// GOD-FORMAT: objectType → artworkType already mapped. accessionNumber, tags,
+// style, inscriptions, medium, creditLine, description require the per-object
+// detail endpoint (GET /v2/object/<systemNumber>) which adds a network request
+// per result — deferred for latency.
+// TODO: add per-object detail fetch for full V&A enrichment.
 
 export async function fetchVam(q: string): Promise<ArtItem[]> {
   const controller = new AbortController();
@@ -628,7 +698,9 @@ export async function fetchWellcome(q: string): Promise<ArtItem[]> {
 }
 
 // ─── SMK — Statens Museum for Kunst (Denmark; keyless, IIIF) ──────────────────
-// GOD-FORMAT: added production_date → date, technique → medium, content_description → description.
+// GOD-FORMAT: added production_date → date, technique → medium, content_description → description,
+// dimensions[] → dimensions string, materials → appended to medium, inscription → inscriptions,
+// object_number → accessionNumber.
 
 export async function fetchSmk(q: string): Promise<ArtItem[]> {
   const controller = new AbortController();
@@ -651,7 +723,10 @@ export async function fetchSmk(q: string): Promise<ArtItem[]> {
         public_domain?: unknown;
         production_date?: Array<{ period?: unknown; start?: unknown; end?: unknown }>;
         technique?: unknown;
+        materials?: unknown[];
+        dimensions?: Array<{ type?: unknown; value?: unknown; unit?: unknown }>;
         content_description?: unknown;
+        inscription?: unknown;
         objectname?: unknown;
       }>;
     };
@@ -673,15 +748,38 @@ export async function fetchSmk(q: string): Promise<ArtItem[]> {
           ? `${str(prodDate.start)}${prodDate.end ? `–${str(prodDate.end)}` : ''}`
           : undefined);
       }
-      const medium = str(it.technique) || undefined;
+      // Combine technique + materials into medium.
+      const tech = str(it.technique);
+      const mats = Array.isArray(it.materials)
+        ? (it.materials as unknown[]).map(str).filter(Boolean).join(', ')
+        : '';
+      const medium = [tech, mats].filter(Boolean).join('; ') || undefined;
+
       const description = str(it.content_description) || undefined;
       const artType = str(it.objectname) || undefined;
+
+      // Build dimensions string from the dimensions[] array.
+      let dimensions = '';
+      if (Array.isArray(it.dimensions) && it.dimensions.length) {
+        dimensions = it.dimensions
+          .map((dim) => {
+            const type = str(dim.type);
+            const val = str(dim.value);
+            const unit = str(dim.unit);
+            return type && val ? `${type}: ${val}${unit ? ' ' + unit : ''}` : val;
+          })
+          .filter(Boolean)
+          .join(', ');
+      }
+
+      const inscriptions = str(it.inscription) || undefined;
+      const accessionNumber = str(it.object_number) || undefined;
 
       items.push({
         id: `smk-${str(it.object_number)}`,
         title,
         artist: first(it.artist),
-        dimensions: '',
+        dimensions,
         thumbUrl: thumb0 || `${iiif}/full/!843,/0/default.jpg`,
         previewUrl: iiif ? `${iiif}/full/!1600,/0/default.jpg` : thumb0,
         fullUrl: full,
@@ -697,6 +795,8 @@ export async function fetchSmk(q: string): Promise<ArtItem[]> {
         medium,
         description,
         artworkType: artType,
+        inscriptions,
+        accessionNumber,
       });
     }
     return items;
@@ -794,6 +894,7 @@ export async function fetchNasjonalmuseet(q: string): Promise<ArtItem[]> {
 }
 
 // ─── DigitalNZ (New Zealand aggregator; keyless) ──────────────────────────────
+// GOD-FORMAT: added rights → licenseUrl, subject → tags.
 
 export async function fetchDigitalNZ(q: string): Promise<ArtItem[]> {
   const controller = new AbortController();
@@ -809,6 +910,7 @@ export async function fetchDigitalNZ(q: string): Promise<ArtItem[]> {
         id?: unknown; title?: unknown; creator?: unknown;
         thumbnail_url?: unknown; large_thumbnail_url?: unknown;
         description?: unknown; date?: unknown; landing_url?: unknown; display_content_partner?: unknown;
+        rights?: unknown; subject?: unknown;
       }> };
     };
     const items: ArtItem[] = [];
@@ -818,6 +920,18 @@ export async function fetchDigitalNZ(q: string): Promise<ArtItem[]> {
       const title = str(r.title) || 'Untitled';
       const artist = first(r.creator);
       const large = str(r.large_thumbnail_url) || thumb;
+
+      // rights → licenseUrl (may be a CC URL or a plain rights statement).
+      const rights = first(r.rights);
+      const licenseUrl = (rights && /^https?:\/\//i.test(rights)) ? rights : undefined;
+
+      // subject → tags (may be a string or array).
+      const subjectRaw = r.subject;
+      const subjectArr = Array.isArray(subjectRaw)
+        ? (subjectRaw as unknown[]).map(str).filter(Boolean)
+        : str(subjectRaw) ? [str(subjectRaw)] : [];
+      const tags = subjectArr.length ? subjectArr : undefined;
+
       items.push({
         id: `digitalnz-${str(r.id)}`,
         title,
@@ -835,6 +949,8 @@ export async function fetchDigitalNZ(q: string): Promise<ArtItem[]> {
         description: first(r.description),
         culture: str(r.display_content_partner),
         sourceUrl: first(r.landing_url),
+        licenseUrl,
+        tags,
       });
     }
     return items;
@@ -848,6 +964,8 @@ export async function fetchDigitalNZ(q: string): Promise<ArtItem[]> {
 // creator (P170) and holding collection (P195). This is how works from the
 // Louvre, Prado, Rijksmuseum, Uffizi, etc. (no usable API) reach the search:
 // their pieces are modelled in Wikidata with Commons images.
+// GOD-FORMAT: added OPTIONAL P135 (movement → style), P2048/P2049 (height/width cm → dimensions),
+// P180/P921 (depicts/main subject → tags), P276 (location → culture supplement).
 
 export async function fetchWikidata(q: string): Promise<ArtItem[]> {
   const controller = new AbortController();
@@ -855,7 +973,7 @@ export async function fetchWikidata(q: string): Promise<ArtItem[]> {
   try {
     const safe = q.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/[\n\r]/g, ' ');
     const sparql =
-      `SELECT ?item ?itemLabel ?itemDescription ?image ?creatorLabel ?collectionLabel ?inception ?materialLabel ?genreLabel WHERE {` +
+      `SELECT ?item ?itemLabel ?itemDescription ?image ?creatorLabel ?collectionLabel ?inception ?materialLabel ?genreLabel ?movementLabel ?height ?width ?depictsLabel ?locationLabel WHERE {` +
       ` SERVICE wikibase:mwapi { bd:serviceParam wikibase:endpoint "www.wikidata.org";` +
       ` wikibase:api "EntitySearch"; mwapi:search "${safe}"; mwapi:language "en".` +
       ` ?item wikibase:apiOutputItem mwapi:item. }` +
@@ -865,6 +983,11 @@ export async function fetchWikidata(q: string): Promise<ArtItem[]> {
       ` OPTIONAL { ?item wdt:P571 ?inception. }` +
       ` OPTIONAL { ?item wdt:P186 ?material. }` +
       ` OPTIONAL { ?item wdt:P136 ?genre. }` +
+      ` OPTIONAL { ?item wdt:P135 ?movement. }` +
+      ` OPTIONAL { ?item wdt:P2048 ?height. }` +
+      ` OPTIONAL { ?item wdt:P2049 ?width. }` +
+      ` OPTIONAL { ?item wdt:P180 ?depicts. }` +
+      ` OPTIONAL { ?item wdt:P276 ?location. }` +
       ` SERVICE wikibase:label { bd:serviceParam wikibase:language "en". } } LIMIT 25`;
     const url = `https://query.wikidata.org/sparql?format=json&query=${encodeURIComponent(sparql)}`;
     const res = await timedFetch(url, controller.signal);
@@ -886,11 +1009,28 @@ export async function fetchWikidata(q: string): Promise<ArtItem[]> {
       const collection = str(b.collectionLabel?.value);
       const sep = fileBase.includes('?') ? '&' : '?';
       const genre = str(b.genreLabel?.value);
+
+      // P135 movement → style.
+      const style = str(b.movementLabel?.value) || undefined;
+
+      // P2048/P2049 height/width in cm → dimensions string if both present.
+      const hCm = b.height ? Number(str(b.height.value)) : 0;
+      const wCm = b.width ? Number(str(b.width.value)) : 0;
+      const dimensions = hCm && wCm ? `${hCm.toFixed(1)} × ${wCm.toFixed(1)} cm` : '';
+
+      // P180 depicts → tags.
+      const depictsLabel = str(b.depictsLabel?.value);
+      const tags = depictsLabel ? [depictsLabel] : undefined;
+
+      // P276 location supplements culture.
+      const locationLabel = str(b.locationLabel?.value);
+      const culture = [genre, locationLabel].filter(Boolean).join('; ') || genre || undefined;
+
       items.push({
         id: `wikidata-${itemUri.split('/').pop()}`,
         title: str(b.itemLabel?.value) || 'Untitled',
         artist: str(b.creatorLabel?.value),
-        dimensions: '', // no pixel dims from P18 — the UI derives resolution from the image
+        dimensions,
         thumbUrl: `${fileBase}${sep}width=843`,
         previewUrl: `${fileBase}${sep}width=1600`,
         fullUrl: fileBase,
@@ -901,10 +1041,12 @@ export async function fetchWikidata(q: string): Promise<ArtItem[]> {
         isPublicDomain: true, // P18 images live on Commons (freely licensed)
         date: str(b.inception?.value).slice(0, 4),
         medium: str(b.materialLabel?.value), // P186 material/technique
-        culture: genre,                       // P136 genre (e.g. "history painting")
+        culture,                              // P136 genre + P276 location
         creditLine: collection,               // P195 holding collection
         description: str(b.itemDescription?.value),
         sourceUrl: itemUri,
+        style,
+        tags,
       });
     }
     return items;
@@ -966,6 +1108,8 @@ function europeanaSearchUrl(key: string, q: string, country?: string): string {
   return `https://api.europeana.eu/record/v2/search.json?${params.toString()}`;
 }
 
+// GOD-FORMAT: added edmRights → licenseUrl, dcSubject → tags, dcType → artworkType,
+// dctermsExtent → dimensions (when empty).
 async function fetchEuropeanaBatch(key: string, q: string, signal: AbortSignal, country?: string): Promise<ArtItem[]> {
   const res = await timedFetch(europeanaSearchUrl(key, q, country), signal);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -975,6 +1119,7 @@ async function fetchEuropeanaBatch(key: string, q: string, signal: AbortSignal, 
       edmIsShownBy?: unknown; isShownBy?: unknown; guid?: unknown; id?: unknown;
       dcDescription?: unknown; year?: unknown; dataProvider?: unknown;
       edmIsShownAt?: unknown; country?: unknown;
+      edmRights?: unknown; dcSubject?: unknown; dcType?: unknown; dctermsExtent?: unknown;
     }>;
   };
   const items: ArtItem[] = [];
@@ -985,11 +1130,29 @@ async function fetchEuropeanaBatch(key: string, q: string, signal: AbortSignal, 
     const fmt = fmtFromUrl(full || thumb);
     const provider = first(it.dataProvider);
     const itemCountry = country || first(it.country);
+
+    // edmRights → licenseUrl (Europeana uses an array).
+    const rights = first(it.edmRights);
+    const licenseUrl = (rights && /^https?:\/\//i.test(rights)) ? rights : undefined;
+
+    // dcSubject → tags.
+    const subjectRaw = it.dcSubject;
+    const subjectArr = Array.isArray(subjectRaw)
+      ? (subjectRaw as unknown[]).map(str).filter(Boolean)
+      : str(subjectRaw) ? [str(subjectRaw)] : [];
+    const tags = subjectArr.length ? subjectArr : undefined;
+
+    // dcType → artworkType.
+    const artworkType = first(it.dcType) || undefined;
+
+    // dctermsExtent → dimensions (if available).
+    const dimensions = first(it.dctermsExtent) || '';
+
     items.push({
       id: `europeana-${str(it.id) || str(it.guid)}`,
       title: first(it.title) || 'Untitled',
       artist: first(it.dcCreator),
-      dimensions: '',
+      dimensions,
       thumbUrl: thumb,
       previewUrl: full || thumb,
       fullUrl: full || thumb,
@@ -1003,6 +1166,9 @@ async function fetchEuropeanaBatch(key: string, q: string, signal: AbortSignal, 
       description: first(it.dcDescription),
       sourceUrl: first(it.edmIsShownAt) || str(it.guid),
       provider,
+      licenseUrl,
+      tags,
+      artworkType,
     });
   }
   return items;
@@ -1042,7 +1208,9 @@ export async function fetchEuropeana(q: string): Promise<ArtItem[]> {
 }
 
 // Harvard Art Museums. Free key: HARVARD_API_KEY
-// GOD-FORMAT: capture pixel dims from images[] width/height → ArtItem width/height.
+// GOD-FORMAT: capture pixel dims from images[] width/height → ArtItem width/height;
+// accessionNumber, classification → artworkType, period/century → style,
+// worktypes → tags, secondary images → extra downloads[].
 export async function fetchHarvard(q: string): Promise<ArtItem[]> {
   const key = process.env.HARVARD_API_KEY!;
   const controller = new AbortController();
@@ -1059,7 +1227,12 @@ export async function fetchHarvard(q: string): Promise<ArtItem[]> {
         people?: Array<{ name?: unknown; role?: unknown }>;
         primaryimageurl?: unknown; iiifbaseuri?: unknown; imagepermissionlevel?: unknown;
         description?: unknown; medium?: unknown; culture?: unknown; creditline?: unknown; url?: unknown;
-        images?: Array<{ width?: unknown; height?: unknown }>;
+        accessionNumber?: unknown;
+        classification?: unknown;
+        period?: unknown;
+        century?: unknown;
+        worktypes?: Array<{ worktype?: unknown }>;
+        images?: Array<{ width?: unknown; height?: unknown; baseimageurl?: unknown; iiifbaseuri?: unknown }>;
       }>;
     };
     const items: ArtItem[] = [];
@@ -1077,6 +1250,23 @@ export async function fetchHarvard(q: string): Promise<ArtItem[]> {
       const width = img0 ? (Number(img0.width) || undefined) : undefined;
       const height = img0 ? (Number(img0.height) || undefined) : undefined;
 
+      // Secondary images → extra download entries.
+      const downloads: Download[] = [{ label: 'Full JPEG', url: primary, format: 'jpeg', lossless: false }];
+      if (Array.isArray(r.images) && r.images.length > 1) {
+        for (const img of r.images.slice(1)) {
+          const imgUrl = str(img.baseimageurl);
+          if (imgUrl) downloads.push({ label: 'Additional JPEG', url: imgUrl, format: 'jpeg', lossless: false });
+        }
+      }
+
+      const accessionNumber = str(r.accessionNumber) || undefined;
+      const artworkType = str(r.classification) || undefined;
+      const style = str(r.period) || str(r.century) || undefined;
+      const worktypeArr = Array.isArray(r.worktypes)
+        ? r.worktypes.map((wt) => str(wt.worktype)).filter(Boolean)
+        : [];
+      const tags = worktypeArr.length ? worktypeArr : undefined;
+
       items.push({
         id: `harvard-${str(r.id)}`,
         title: (str(r.title) || 'Untitled') + (date ? ` (${date})` : ''),
@@ -1089,7 +1279,7 @@ export async function fetchHarvard(q: string): Promise<ArtItem[]> {
         height,
         format: 'jpeg',
         lossless: false,
-        downloads: [{ label: 'Full JPEG', url: primary, format: 'jpeg', lossless: false }],
+        downloads,
         source: 'harvard',
         isPublicDomain: true, // imagepermissionlevel 0
         date,
@@ -1098,6 +1288,10 @@ export async function fetchHarvard(q: string): Promise<ArtItem[]> {
         creditLine: str(r.creditline),
         description: str(r.description),
         sourceUrl: str(r.url),
+        accessionNumber,
+        artworkType,
+        style,
+        tags,
       });
     }
     return items;
@@ -1154,6 +1348,13 @@ export async function fetchSmithsonian(q: string): Promise<ArtItem[]> {
       const description = ft.notes?.[0] ? str(ft.notes[0].content) : undefined;
       const recordLink = str(r.content?.descriptiveNonRepeating?.record_link);
       const sourceUrl = recordLink || undefined;
+
+      // topic → tags.
+      const topicArr = Array.isArray(ft.topic)
+        ? ft.topic.map((t) => str(t.content)).filter(Boolean)
+        : [];
+      const tags = topicArr.length ? topicArr : undefined;
+
       items.push({
         id: `si-${str(r.id)}`,
         title: str(r.title) || 'Untitled',
@@ -1173,6 +1374,7 @@ export async function fetchSmithsonian(q: string): Promise<ArtItem[]> {
         creditLine,
         description,
         sourceUrl,
+        tags,
       });
     }
     return items;
@@ -1415,7 +1617,7 @@ export async function fetchDumpSource(source: DumpSourceKey, q: string): Promise
 // P&P catalog — incl. the FSA/OWI archive (Dorothea Lange, Walker Evans, Russell
 // Lee…) and Carol Highsmith, exactly the photographers the painting-heavy sources
 // miss. Real derivatives live on tile.loc.gov; largest listed is ~1024px.
-// GOD-FORMAT: map item.notes → description, item.subject → tags/culture supplement.
+// GOD-FORMAT: map item.notes → description, item.subject → tags, item.call_number → accessionNumber.
 function locName(raw: string): string {
   // "lange, dorothea" → "Dorothea Lange"
   const s = raw.includes(',') ? raw.split(',').reverse().join(' ') : raw;
@@ -1457,11 +1659,22 @@ export async function fetchLoc(q: string): Promise<ArtItem[]> {
       const pd = r.unrestricted === true && r.access_restricted !== true;
       const digits = sourceUrl.replace(/\D+/g, '').slice(0, 12);
 
-      // GOD-FORMAT: map notes → description.
+      // GOD-FORMAT: map notes → description, subject → tags, call_number → accessionNumber.
       const notes: unknown = item.notes;
       const description: string | undefined = Array.isArray(notes) && notes.length
         ? str((notes as unknown[])[0])
         : typeof notes === 'string' ? notes : undefined;
+
+      const subjectRaw: unknown = item.subject;
+      const subjectArr = Array.isArray(subjectRaw)
+        ? (subjectRaw as unknown[]).map(str).filter(Boolean)
+        : str(subjectRaw) ? [str(subjectRaw as unknown)] : [];
+      const tags = subjectArr.length ? subjectArr : undefined;
+
+      const callNumber: unknown = item.call_number;
+      const accessionNumber = Array.isArray(callNumber)
+        ? str((callNumber as unknown[])[0]) || undefined
+        : str(callNumber) || undefined;
 
       items.push({
         id: `loc-${digits || items.length}`,
@@ -1481,6 +1694,8 @@ export async function fetchLoc(q: string): Promise<ArtItem[]> {
         medium: med,
         sourceUrl,
         description,
+        tags,
+        accessionNumber,
       });
     }
     return items;
@@ -1544,7 +1759,8 @@ export async function fetchNypl(q: string): Promise<ArtItem[]> {
       const thumb = nyplPick(links, ['w', 'r', 't']) || full;
       const uuid = str(r.uuid);
 
-      // GOD-FORMAT: use dateString (not dateDigitized), map contributor → artist.
+      // GOD-FORMAT: use dateString (not dateDigitized), map contributor → artist,
+      // physicalDescription → medium, note → description, subject → tags.
       const contribNode = r.contributor;
       let artist = '';
       if (Array.isArray(contribNode)) {
@@ -1553,6 +1769,22 @@ export async function fetchNypl(q: string): Promise<ArtItem[]> {
         artist = str(contribNode);
       }
       const dateStr = str(r.dateString) || str(r.dateDigitized);
+
+      const physDescNode = r.physicalDescription;
+      const medium = Array.isArray(physDescNode)
+        ? str((physDescNode as unknown[])[0]) || undefined
+        : str(physDescNode) || undefined;
+
+      const noteNode = r.note;
+      const description = Array.isArray(noteNode)
+        ? str((noteNode as unknown[])[0]) || undefined
+        : str(noteNode) || undefined;
+
+      const subjectNode = r.subject;
+      const subjectArr = Array.isArray(subjectNode)
+        ? (subjectNode as unknown[]).map(str).filter(Boolean)
+        : str(subjectNode) ? [str(subjectNode)] : [];
+      const tags = subjectArr.length ? subjectArr : undefined;
 
       items.push({
         id: `nypl-${uuid || items.length}`,
@@ -1569,6 +1801,9 @@ export async function fetchNypl(q: string): Promise<ArtItem[]> {
         isPublicDomain: true,
         date: dateStr || undefined,
         sourceUrl: uuid ? `https://digitalcollections.nypl.org/items/${uuid}` : '',
+        medium,
+        description,
+        tags,
       });
     }
     return items;
