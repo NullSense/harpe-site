@@ -928,7 +928,15 @@ def wikidata_sql(jsonl_path: str) -> str:
             "medium:'VARCHAR',dimensions:'VARCHAR',culture:'VARCHAR',credit_line:'VARCHAR',"
             "description:'VARCHAR',image_thumb:'VARCHAR',image_full:'VARCHAR',width:'INTEGER',"
             "height:'INTEGER',source_url:'VARCHAR',rights_type:'VARCHAR',is_public_domain:'BOOLEAN'}")
-    return f"SELECT * FROM read_json('{p}', format='newline_delimited', columns={cols})"
+    # Extract the knowledge-graph spine QID from the existing `wd-Q…` id at zero
+    # SPARQL cost (the harvest already wrote it). Lets dedupe() fold Wikidata works
+    # with the Commons P6243 QID and across languages; other sources read
+    # `union_by_name` NULL for this column. artist_qid/depicts_qids/movement come
+    # from a separate entity-enrichment pass (future ingest step; see notes/).
+    return (
+        f"SELECT *, regexp_extract(id, '^wd-(Q[0-9]+)$', 1) AS wikidata_qid "
+        f"FROM read_json('{p}', format='newline_delimited', columns={cols})"
+    )
 
 
 # ─── Library of Congress (Prints & Photographs) ──────────────────────────────
