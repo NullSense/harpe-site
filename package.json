@@ -6,7 +6,7 @@
   "packageManager": "pnpm@10.25.0",
   "scripts": {
     "dev": "vite --port=3000 --host=0.0.0.0",
-    "build": "pnpm --filter @harpe/core build && vite build",
+    "build": "pnpm --filter @harpe/core build && pnpm --filter @harpe/sources build && vite build",
     "preview": "vite preview",
     "clean": "rm -rf dist packages/*/dist apps/*/dist",
     "typecheck": "tsc --noEmit -p packages/core/tsconfig.json && tsc --noEmit -p packages/cli/tsconfig.json && tsc --noEmit && tsc --noEmit -p tsconfig.api.json",
@@ -17,10 +17,11 @@
     "test:e2e": "playwright test",
     "monitor": "node tests/live/monitor.mjs",
     "verify": "pnpm run typecheck && pnpm test && pnpm run build && pnpm run check:api && pnpm --filter @harpe/extension build && pnpm --filter @harpe/extension test",
-    "postinstall": "pnpm --filter @harpe/core build"
+    "postinstall": "pnpm --filter @harpe/core build && pnpm --filter @harpe/sources build"
   },
   "dependencies": {
     "@harpe/core": "workspace:*",
+    "@harpe/sources": "workspace:*",
     "@upstash/ratelimit": "^2.0.8",
     "@upstash/redis": "^1.38.0",
     "node-html-parser": "^6.1.13",

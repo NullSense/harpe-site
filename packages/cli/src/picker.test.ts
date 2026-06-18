@@ -1,76 +1,109 @@
 /**
  * Tests for the pure picker helpers.
  * No fzf is spawned — only TSV building and selection parsing are exercised.
+ * Updated to use ArtItem instead of Candidate (monorepo-phase1 refactor).
  */
 import { describe, it, expect } from 'vitest';
 import {
   artTsv,
+  artRes,
+  artSpec,
   parseArtSelection,
   pageTsv,
   parsePageSelection,
   type PageRow,
-} from './picker';
-import type { Candidate } from './models';
+} from './picker.js';
+import type { ArtItem } from '@harpe/core';
 
 // ---------------------------------------------------------------------------
 // Fixtures
 // ---------------------------------------------------------------------------
 
-function makeCand(overrides: Partial<Candidate> = {}): Candidate {
+function makeItem(overrides: Partial<ArtItem> = {}): ArtItem {
   return {
-    area: 1000000,
-    res: '1000×1000',
-    source: 'rijksmuseum',
+    id: 'test-1',
     title: 'The Night Watch',
     artist: 'Rembrandt',
+    dimensions: '363 × 437 cm',
+    thumbUrl: 'https://example.org/thumb.jpg',
+    previewUrl: 'https://example.org/preview.jpg',
+    fullUrl: 'https://example.org/art.jpg',
+    width: 1000,
+    height: 1000,
+    format: 'jpeg',
+    lossless: false,
+    downloads: [{ label: 'Full', url: 'https://example.org/art.jpg', format: 'jpeg', lossless: false }],
+    source: 'vam',
+    isPublicDomain: true,
     date: '1642',
-    spec: 'url:https://example.org/art.jpg',
-    thumb: 'https://example.org/thumb.jpg',
     medium: 'oil on canvas',
-    desc: 'A famous painting',
-    physdim: '363×437 cm',
+    description: 'A famous painting',
     ...overrides,
   };
 }
 
-const CAND_A = makeCand({ title: 'A', artist: 'Alpha' });
-const CAND_B = makeCand({ title: 'B', artist: 'Beta', res: '500×500' });
-const CANDS = [CAND_A, CAND_B];
+const ITEM_A = makeItem({ id: 'a', title: 'A', artist: 'Alpha' });
+const ITEM_B = makeItem({ id: 'b', title: 'B', artist: 'Beta', width: 500, height: 500 });
+const ITEMS = [ITEM_A, ITEM_B];
+
+// ---------------------------------------------------------------------------
+// artRes / artSpec helpers
+// ---------------------------------------------------------------------------
+describe('artRes', () => {
+  it('returns WxH string when width and height are present', () => {
+    expect(artRes(makeItem({ width: 1200, height: 800 }))).toBe('1200x800');
+  });
+
+  it('returns empty string when dimensions are absent', () => {
+    expect(artRes(makeItem({ width: undefined, height: undefined }))).toBe('');
+  });
+
+  it('returns empty string when width is 0', () => {
+    expect(artRes(makeItem({ width: 0, height: 800 }))).toBe('');
+  });
+});
+
+describe('artSpec', () => {
+  it('returns fullUrl', () => {
+    const it = makeItem({ fullUrl: 'https://example.org/full.jpg' });
+    expect(artSpec(it)).toBe('https://example.org/full.jpg');
+  });
+});
 
 // ---------------------------------------------------------------------------
 // artTsv
 // ---------------------------------------------------------------------------
 describe('artTsv', () => {
-  it('returns one line per candidate', () => {
-    const lines = artTsv(CANDS);
+  it('returns one line per item', () => {
+    const lines = artTsv(ITEMS);
     expect(lines).toHaveLength(2);
   });
 
   it('first field is the 0-based index', () => {
-    const lines = artTsv(CANDS);
+    const lines = artTsv(ITEMS);
     expect(lines[0]!.startsWith('0\t')).toBe(true);
     expect(lines[1]!.startsWith('1\t')).toBe(true);
   });
 
   it('fields are tab-separated with the correct order', () => {
-    const [line] = artTsv([CAND_A]);
+    const [line] = artTsv([ITEM_A]);
     const fields = line!.split('\t');
     // 0=index 1=res 2=source 3=title 4=artist 5=date 6=spec 7=thumb 8=medium 9=desc 10=physdim
     expect(fields[0]).toBe('0');
-    expect(fields[1]).toBe(CAND_A.res);
-    expect(fields[2]).toBe(CAND_A.source);
-    expect(fields[3]).toBe(CAND_A.title);
-    expect(fields[4]).toBe(CAND_A.artist);
-    expect(fields[5]).toBe(CAND_A.date);
-    expect(fields[6]).toBe(CAND_A.spec);
-    expect(fields[7]).toBe(CAND_A.thumb);
-    expect(fields[8]).toBe(CAND_A.medium);
-    expect(fields[9]).toBe(CAND_A.desc);
-    expect(fields[10]).toBe(CAND_A.physdim);
+    expect(fields[1]).toBe(artRes(ITEM_A));    // '1000x1000'
+    expect(fields[2]).toBe(ITEM_A.source);    // 'vam'
+    expect(fields[3]).toBe(ITEM_A.title);     // 'A'
+    expect(fields[4]).toBe(ITEM_A.artist);    // 'Alpha'
+    expect(fields[5]).toBe(ITEM_A.date);      // '1642'
+    expect(fields[6]).toBe(ITEM_A.fullUrl);   // 'https://example.org/art.jpg'
+    expect(fields[7]).toBe(ITEM_A.thumbUrl);  // 'https://example.org/thumb.jpg'
+    expect(fields[8]).toBe(ITEM_A.medium);    // 'oil on canvas'
+    expect(fields[9]).toBe(ITEM_A.description); // 'A famous painting'
+    expect(fields[10]).toBe(ITEM_A.dimensions); // '363 × 437 cm'
   });
 
   it('sanitises tabs and newlines inside field values', () => {
-    const c = makeCand({ title: 'Tab\there', desc: 'Line\nOne\rTwo' });
+    const c = makeItem({ title: 'Tab\there', description: 'Line\nOne\rTwo' });
     const [line] = artTsv([c]);
     expect(line).not.toMatch(/\r/);
     // should not have extra field splits due to embedded tab
@@ -81,29 +114,38 @@ describe('artTsv', () => {
   it('returns empty array for empty input', () => {
     expect(artTsv([])).toEqual([]);
   });
+
+  it('uses empty string for optional fields when absent', () => {
+    const c = makeItem({ date: undefined, medium: undefined, description: undefined });
+    const [line] = artTsv([c]);
+    const fields = line!.split('\t');
+    expect(fields[5]).toBe('');  // date
+    expect(fields[8]).toBe('');  // medium
+    expect(fields[9]).toBe('');  // description
+  });
 });
 
 // ---------------------------------------------------------------------------
 // parseArtSelection
 // ---------------------------------------------------------------------------
 describe('parseArtSelection', () => {
-  it('resolves a valid line back to the candidate', () => {
-    const lines = artTsv(CANDS);
-    expect(parseArtSelection(lines[0]!, CANDS)).toBe(CAND_A);
-    expect(parseArtSelection(lines[1]!, CANDS)).toBe(CAND_B);
+  it('resolves a valid line back to the item', () => {
+    const lines = artTsv(ITEMS);
+    expect(parseArtSelection(lines[0]!, ITEMS)).toBe(ITEM_A);
+    expect(parseArtSelection(lines[1]!, ITEMS)).toBe(ITEM_B);
   });
 
   it('returns null for an empty line', () => {
-    expect(parseArtSelection('', CANDS)).toBeNull();
-    expect(parseArtSelection('   ', CANDS)).toBeNull();
+    expect(parseArtSelection('', ITEMS)).toBeNull();
+    expect(parseArtSelection('   ', ITEMS)).toBeNull();
   });
 
   it('returns null when the index is out of range', () => {
-    expect(parseArtSelection('99\tres\tsrc', CANDS)).toBeNull();
+    expect(parseArtSelection('99\tres\tsrc', ITEMS)).toBeNull();
   });
 
   it('returns null for a non-numeric first field', () => {
-    expect(parseArtSelection('NaN\tres\tsrc', CANDS)).toBeNull();
+    expect(parseArtSelection('NaN\tres\tsrc', ITEMS)).toBeNull();
   });
 });
 

@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@harpe/core": "workspace:*",
+    "@harpe/sources": "workspace:*",
     "node-html-parser": "^6.1.13"
   }
 }

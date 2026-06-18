@@ -1,16 +1,37 @@
 /**
  * Filename slugs, captions, lossless metadata embedding, and the resolution cap.
- * Ported from harpe/metadata.py.
+ * Ported from harpe/metadata.py. Updated to use ArtItem (was Candidate).
+ *
+ * Candidate → ArtItem field mapping:
+ *   c.artist   → it.artist
+ *   c.date     → it.date ?? ''
+ *   c.title    → it.title
+ *   c.source   → it.source
+ *   c.medium   → it.medium ?? ''
+ *   c.physdim  → it.dimensions
+ *   c.desc     → it.description ?? ''
+ *   sourceUrl(c) → artSourceUrl(it)  (it.sourceUrl ?? it.fullUrl)
  *
  * Pure functions (buildSlug, captions, sidecarText) are unit-testable without
- * subprocesses.  The I/O functions (imageRes, capImage, embed, writeSidecar)
+ * subprocesses. The I/O functions (imageRes, capImage, embed, writeSidecar)
  * shell out to exiftool / exiv2 / magick via node:child_process.
  */
 import { execFileSync, spawnSync } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
 import { MAXPX } from './config.js';
-import type { Candidate } from './models.js';
-import { sourceUrl } from './models.js';
+import type { ArtItem } from '@harpe/core';
+
+// ---------------------------------------------------------------------------
+// Source URL helper
+// ---------------------------------------------------------------------------
+
+/**
+ * The canonical page URL for an ArtItem — used in sidecar files and metadata
+ * embed. Prefers the explicit `sourceUrl` (museum page) over the image URL.
+ */
+export function artSourceUrl(it: ArtItem): string {
+  return it.sourceUrl || it.fullUrl;
+}
 
 // ---------------------------------------------------------------------------
 // Pure helpers
@@ -20,24 +41,24 @@ import { sourceUrl } from './models.js';
  * Return [displayName, artist, year] tuple.  Drops nationality/life-date
  * suffixes like "(Dutch, 1853–1890)" from the artist field.
  */
-export function nameParts(c: Candidate): [string, string, string] {
-  const artist = (c.artist || '').replace(/\s*\(.*\)$/, '');
-  const ym = /\d{3,4}/.exec(c.date || '');
+export function nameParts(it: ArtItem): [string, string, string] {
+  const artist = (it.artist || '').replace(/\s*\(.*\)$/, '');
+  const ym = /\d{3,4}/.exec(it.date || '');
   const year = ym ? ym[0] : '';
-  let name = c.title || 'artwork';
-  if (artist) name = `${artist} - ${c.title}`;
+  let name = it.title || 'artwork';
+  if (artist) name = `${artist} - ${it.title}`;
   if (year) name = `${name} (${year})`;
-  name = `${name} [${c.source}]`;
+  name = `${name} [${it.source}]`;
   return [name, artist, year];
 }
 
 /**
- * Filesystem-safe filename slug derived from the candidate's display name.
+ * Filesystem-safe filename slug derived from the item's display name.
  * Strips path-hostile chars, control chars, and collapses whitespace.
  * Max 150 chars. Falls back to "artwork".  Pure.
  */
-export function buildSlug(c: Candidate): string {
-  const [name] = nameParts(c);
+export function buildSlug(it: ArtItem): string {
+  const [name] = nameParts(it);
   let slug = name.replace(/[/\\:*?"<>|]+/g, ' ');
   slug = slug.replace(/[\x00-\x1f]/g, '');
   slug = slug.replace(/\s+/g, ' ').trim().slice(0, 150);
@@ -49,16 +70,17 @@ export function buildSlug(c: Candidate): string {
  * caption: "Artist — Title (year)"
  * body:    medium\nphysdim\nres · source\n\ndesc
  */
-export function captions(c: Candidate, res: string): { caption: string; body: string } {
-  const [, artist, year] = nameParts(c);
-  let caption = c.title;
-  if (artist) caption = `${artist} — ${c.title}`; // em-dash
+export function captions(it: ArtItem, res: string): { caption: string; body: string } {
+  const [, artist, year] = nameParts(it);
+  let caption = it.title;
+  if (artist) caption = `${artist} — ${it.title}`; // em-dash
   if (year) caption = `${caption} (${year})`;
-  const parts = [c.medium, c.physdim].filter(Boolean);
+  const parts = [it.medium, it.dimensions].filter(Boolean);
   let body = parts.join('\n');
-  const line = `${res} · ${c.source}`; // middle dot
+  const line = `${res} · ${it.source}`; // middle dot
   body = body ? `${body}\n${line}` : line;
-  if (c.desc) body = `${body}\n\n${c.desc}`;
+  const desc = it.description;
+  if (desc) body = `${body}\n\n${desc}`;
   return { caption, body };
 }
 
@@ -66,14 +88,14 @@ export function captions(c: Candidate, res: string): { caption: string; body: st
  * Build the full sidecar text (lines) without touching the filesystem.  Pure.
  * Used by writeSidecar and unit-testable independently.
  */
-export function sidecarText(c: Candidate, res: string): string {
-  const lines: string[] = [`Title: ${c.title}`];
-  if (c.artist) lines.push(`Artist: ${c.artist}`);
-  if (c.date) lines.push(`Date: ${c.date}`);
-  if (c.medium) lines.push(`Medium: ${c.medium}`);
-  if (c.physdim) lines.push(`Dimensions: ${c.physdim}`);
-  lines.push(`Resolution: ${res}`, `Source: ${c.source}`, `Source URL: ${sourceUrl(c)}`);
-  if (c.desc) lines.push('', c.desc);
+export function sidecarText(it: ArtItem, res: string): string {
+  const lines: string[] = [`Title: ${it.title}`];
+  if (it.artist) lines.push(`Artist: ${it.artist}`);
+  if (it.date) lines.push(`Date: ${it.date}`);
+  if (it.medium) lines.push(`Medium: ${it.medium}`);
+  if (it.dimensions) lines.push(`Dimensions: ${it.dimensions}`);
+  lines.push(`Resolution: ${res}`, `Source: ${it.source}`, `Source URL: ${artSourceUrl(it)}`);
+  if (it.description) lines.push('', it.description);
   return lines.join('\n') + '\n';
 }
 
@@ -126,9 +148,11 @@ export function capImage(path: string): void {
  *   Xmp.dc.title, Xmp.dc.creator, Xmp.dc.description, Xmp.dc.date,
  *   Xmp.dc.format, Xmp.dc.extent, Xmp.dc.source
  */
-export function embed(path: string, c: Candidate, caption: string): boolean {
-  const [, artist] = nameParts(c);
-  const src = sourceUrl(c);
+export function embed(path: string, it: ArtItem, caption: string): boolean {
+  const [, artist] = nameParts(it);
+  const src = artSourceUrl(it);
+  const desc = it.description ?? '';
+  const medium = it.medium ?? '';
 
   // --- exiftool ---
   try {
@@ -136,11 +160,11 @@ export function embed(path: string, c: Candidate, caption: string): boolean {
       '-overwrite_original', '-q', '-m',
       `-IFD0:ImageDescription=${caption}`,
       `-IFD0:Artist=${artist}`,
-      `-XMP-dc:Title=${c.title}`,
+      `-XMP-dc:Title=${it.title}`,
       `-XMP-dc:Creator=${artist}`,
-      `-XMP-dc:Description=${c.desc}`,
-      `-XMP-dc:Date=${c.date}`,
-      `-XMP-dc:Format=${c.medium}`,
+      `-XMP-dc:Description=${desc}`,
+      `-XMP-dc:Date=${it.date ?? ''}`,
+      `-XMP-dc:Format=${medium}`,
       `-XMP-dc:Source=${src}`,
       path,
     ], { stdio: ['ignore', 'ignore', 'ignore'] });
@@ -155,12 +179,12 @@ export function embed(path: string, c: Candidate, caption: string): boolean {
       `-Mset Exif.Image.ImageDescription ${caption}`,
     ];
     if (artist) m.push(`-Mset Exif.Image.Artist ${artist}`);
-    m.push(`-Mset Xmp.dc.title ${c.title}`);
+    m.push(`-Mset Xmp.dc.title ${it.title}`);
     if (artist) m.push(`-Mset Xmp.dc.creator ${artist}`);
-    if (c.desc) m.push(`-Mset Xmp.dc.description ${c.desc}`);
-    if (c.date) m.push(`-Mset Xmp.dc.date ${c.date}`);
-    if (c.medium) m.push(`-Mset Xmp.dc.format ${c.medium}`);
-    if (c.physdim) m.push(`-Mset Xmp.dc.extent ${c.physdim}`);
+    if (desc) m.push(`-Mset Xmp.dc.description ${desc}`);
+    if (it.date) m.push(`-Mset Xmp.dc.date ${it.date}`);
+    if (medium) m.push(`-Mset Xmp.dc.format ${medium}`);
+    if (it.dimensions) m.push(`-Mset Xmp.dc.extent ${it.dimensions}`);
     m.push(`-Mset Xmp.dc.source ${src}`);
     const result = spawnSync('exiv2', [...m, path], { stdio: ['ignore', 'ignore', 'ignore'] });
     if (result.status === 0) return true;
@@ -175,7 +199,7 @@ export function embed(path: string, c: Candidate, caption: string): boolean {
  * Write a plain-text sidecar file `<path>.txt` as a fallback when no metadata
  * embedder is installed.
  */
-export function writeSidecar(path: string, c: Candidate, res: string): void {
+export function writeSidecar(path: string, it: ArtItem, res: string): void {
   const sidecarPath = `${path}.txt`;
-  writeFileSync(sidecarPath, sidecarText(c, res), 'utf8');
+  writeFileSync(sidecarPath, sidecarText(it, res), 'utf8');
 }

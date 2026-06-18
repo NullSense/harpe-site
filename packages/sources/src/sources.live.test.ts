@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { validateArtItem } from '@harpe/core';
-import { activeSources } from '@harpe/sources';
+import { activeSources } from './registry.js';
 
 /**
  * LIVE integration test: hits each active source's real API and asserts it
@@ -10,9 +10,6 @@ import { activeSources } from '@harpe/sources';
  *   pnpm run test:live          # or: RUN_LIVE=1 vitest run --project live
  *   LIVE_QUERY="monet" RUN_LIVE=1 vitest run sources.live
  * Keyed sources only run when their key/env is present.
- *
- * The canonical test lives at packages/sources/src/sources.live.test.ts;
- * this file re-runs the same assertions so the live project glob still picks it up.
  */
 const LIVE = !!process.env.RUN_LIVE;
 const QUERY = process.env.LIVE_QUERY || 'portrait';

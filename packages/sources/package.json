@@ -1,0 +1,23 @@
+{
+  "name": "@harpe/sources",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Node-only museum/gallery source adapters for Harpe. Returns ArtItem[] via unified fetch adapters, the SOURCES registry, activeSources() and gatherSources(). Consumed by the Vercel API handler and the CLI.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@harpe/core": "workspace:*",
+    "undici": "^6.21.0"
+  }
+}

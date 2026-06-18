@@ -4,12 +4,14 @@ Every art source is one **adapter** in the `SOURCES` registry. Add one entry and
 search, ranking, streaming, the unified-shape validator and the live test pick it
 up automatically. There is exactly one place to add a gallery.
 
-Harpe is now a pnpm-workspaces monorepo. The source fetchers and `SOURCES`
-registry live in the repo-root web/API app at `src/lib/server/handlers/art.ts`;
-the shared `ArtItem`, `SourceAdapter`, and `validateArtItem` contract lives in
-`packages/core/src/art-source.ts`; the browser extension lives under
-`apps/extension`. Adding a source should not require source-specific branches in
-the extension or other callers.
+Harpe is a pnpm-workspaces monorepo. The source fetchers and `SOURCES` registry
+live in `packages/sources/src/` (`adapters.ts`, `registry.ts`); the shared
+`ArtItem`, `SourceAdapter`, and `validateArtItem` contract lives in
+`packages/core/src/art-source.ts`; the Vercel handler at
+`src/lib/server/handlers/art.ts` is now a thin wrapper that imports from
+`@harpe/sources`; the browser extension lives under `apps/extension`. Adding a
+source should not require source-specific branches in the extension or other
+callers.
 
 ## Research gate
 
@@ -58,9 +60,10 @@ live test asserts `[]` for every item your adapter returns.
 
 ## Steps
 
-1. **Write the fetcher** in `art.ts` (use the shared helpers):
+1. **Write the fetcher** in `packages/sources/src/adapters.ts` (use the shared
+   helpers imported from `./helpers.js`):
    ```ts
-   async function fetchPrado(q: string): Promise<ArtItem[]> {
+   export async function fetchPrado(q: string): Promise<ArtItem[]> {
      const controller = new AbortController();
      const t = setTimeout(() => controller.abort(), TIMEOUT_MS);
      try {
@@ -93,13 +96,16 @@ live test asserts `[]` for every item your adapter returns.
      }
    }
    ```
-   Helpers available in `art.ts`: `timedFetch(url, signal)`, `TIMEOUT_MS`,
-   `MAX_ITEMS`, `str(v)`, `fmtFromUrl(url)`, `fmtFromMime(mime)`.
+   Helpers imported from `./helpers.js`: `timedFetch(url, signal)`, `TIMEOUT_MS`,
+   `MAX_ITEMS`, `str(v)`, `fmtFromUrl(url)`, `fmtFromMime(mime)`, `UA`,
+   `iiifImage(base, size)`, `mapPool(items, limit, fn)`.
+   
+   Then export it from `packages/sources/src/index.ts`.
 
 2. **Add the key to the shared `SourceKey` union** in
    `packages/core/src/art-source.ts` (one word, the adapter `key`).
 
-3. **Register it** in `SOURCES`:
+3. **Register it** in `packages/sources/src/registry.ts` → `SOURCES`:
    ```ts
    { key: 'prado', label: 'Prado', fetch: fetchPrado },
    // keyed?            add  requiresEnv: 'PRADO_API_KEY'

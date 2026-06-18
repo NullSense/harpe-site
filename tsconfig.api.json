@@ -13,7 +13,8 @@
     "allowImportingTsExtensions": true,
     "baseUrl": ".",
     "paths": {
-      "@harpe/core": ["./packages/core/src/index.ts"]
+      "@harpe/core": ["./packages/core/src/index.ts"],
+      "@harpe/sources": ["./packages/sources/src/index.ts"]
     }
   },
   "include": ["api", "src/lib/server"]

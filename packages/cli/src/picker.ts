@@ -1,16 +1,50 @@
 /**
  * fzf pickers — ported from harpe/picker.py.
+ * Updated to use ArtItem instead of Candidate (monorepo-phase1 refactor).
+ *
  * Pure TSV helpers are exported for unit-testing without spawning fzf.
  * The real pickers (pickArt / pickPage) shell out to fzf via spawnSync.
+ *
+ * Candidate field → ArtItem field mapping used in the TSV:
+ *   res     → artRes(it)   derived from width×height or 'WxH'
+ *   source  → it.source
+ *   title   → it.title
+ *   artist  → it.artist
+ *   date    → it.date ?? ''
+ *   spec    → artSpec(it)  fullUrl (the download URL)
+ *   thumb   → it.thumbUrl
+ *   medium  → it.medium ?? ''
+ *   desc    → it.description ?? ''
+ *   physdim → it.dimensions
  */
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { GRAB_THUMB } from './config.js';
-import type { Candidate } from './models.js';
+import type { ArtItem } from '@harpe/core';
 
 /** Sanitise a value for use in a TSV field (replace whitespace control chars). */
 function clean(s: unknown): string {
   return String(s ?? '').replace(/\t/g, ' ').replace(/\n/g, ' ').replace(/\r/g, ' ');
+}
+
+// ---------------------------------------------------------------------------
+// ArtItem → display helpers (derive Candidate-equivalent fields)
+// ---------------------------------------------------------------------------
+
+/** Resolution string: "WxH" from pixel dims, or empty string. */
+export function artRes(it: ArtItem): string {
+  if (it.width && it.height) return `${it.width}x${it.height}`;
+  return '';
+}
+
+/**
+ * Spec: the URL to fetch for download. For dezoomify targets, the source
+ * URL (e.g. museum page) is used; for direct images, the fullUrl.
+ * Since @harpe/sources adapters no longer return IIIF manifests in the search
+ * flow, this is always the fullUrl.
+ */
+export function artSpec(it: ArtItem): string {
+  return it.fullUrl;
 }
 
 // ---------------------------------------------------------------------------
@@ -22,24 +56,24 @@ function clean(s: unknown): string {
  * Fields (1-indexed, as fzf sees them):
  *   1=index  2=res  3=source  4=title  5=artist  6=date  7=spec  8=thumb  9=medium  10=desc  11=physdim
  */
-export function artTsv(cands: Candidate[]): string[] {
-  return cands.map((c, i) =>
-    [i, c.res, c.source, c.title, c.artist, c.date, c.spec, c.thumb, c.medium, c.desc, c.physdim]
+export function artTsv(items: ArtItem[]): string[] {
+  return items.map((it, i) =>
+    [i, artRes(it), it.source, it.title, it.artist, it.date ?? '', artSpec(it), it.thumbUrl, it.medium ?? '', it.description ?? '', it.dimensions]
       .map(clean)
       .join('\t'),
   );
 }
 
 /**
- * Parse a single selected fzf line back to the originating Candidate.
+ * Parse a single selected fzf line back to the originating ArtItem.
  * Returns null when the line is empty or the index is out of range.
  */
-export function parseArtSelection(line: string, cands: Candidate[]): Candidate | null {
+export function parseArtSelection(line: string, items: ArtItem[]): ArtItem | null {
   const trimmed = line.trim();
   if (!trimmed) return null;
   const index = parseInt(trimmed.split('\t')[0] ?? '', 10);
-  if (!Number.isFinite(index) || index < 0 || index >= cands.length) return null;
-  return cands[index] ?? null;
+  if (!Number.isFinite(index) || index < 0 || index >= items.length) return null;
+  return items[index] ?? null;
 }
 
 // ---------------------------------------------------------------------------
@@ -92,11 +126,11 @@ function runFzf(lines: string[], args: string[]): string[] {
 
 /**
  * Single-select art picker.
- * Returns the chosen Candidate or null if the user cancelled / fzf not found.
+ * Returns the chosen ArtItem or null if the user cancelled / fzf not found.
  */
-export function pickArt(cands: Candidate[]): Candidate | null {
-  if (!cands.length) return null;
-  const lines = artTsv(cands);
+export function pickArt(items: ArtItem[]): ArtItem | null {
+  if (!items.length) return null;
+  const lines = artTsv(items);
   const hasThumb = existsSync(GRAB_THUMB);
 
   const args: string[] = [
@@ -112,7 +146,7 @@ export function pickArt(cands: Candidate[]): Candidate | null {
 
   const sel = runFzf(lines, args);
   if (!sel.length) return null;
-  return parseArtSelection(sel[0] ?? '', cands);
+  return parseArtSelection(sel[0] ?? '', items);
 }
 
 /**

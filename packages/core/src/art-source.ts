@@ -59,6 +59,14 @@ export interface ArtItem {
   sourceUrl?: string;
   /** Upstream institution/provider for aggregate or dump-backed sources. */
   provider?: string;
+  /** Accession / inventory number from the holding institution. */
+  accessionNumber?: string;
+  /** Machine-readable license URI (CC0, CC-BY-SA, etc.) for downstream attribution. */
+  licenseUrl?: string;
+  /** Subject/keyword tags (e.g. from AIC subject_titles, Met tags, Wikidata depicts). */
+  tags?: string[];
+  /** Artwork type / object type (Painting, Photograph, Sculpture, Print, Drawing, …). */
+  artworkType?: string;
 }
 
 /**

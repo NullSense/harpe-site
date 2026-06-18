@@ -25,9 +25,9 @@ import { video, audio, gallery, dezoomify, slugFromUrl } from './backends.js';
 import { fetchImages, scanPage, enumerateImages, type FetchResult } from './engine.js';
 import { isArtUrl, isReferencePage, hasVideo, queryFromUrl } from './routing.js';
 import { searchArt } from './sources.js';
-import { type Candidate, sourceUrl } from './models.js';
+import type { ArtItem } from '@harpe/core';
 import { pickArt, pickPage } from './picker.js';
-import { buildSlug, captions, imageRes, capImage, embed, writeSidecar } from './metadata.js';
+import { artSourceUrl, buildSlug, captions, imageRes, capImage, embed, writeSidecar } from './metadata.js';
 import { reverseSearch } from './reverse.js';
 import { pageDescription } from './describe.js';
 import { send as notify } from './notify.js';
@@ -150,32 +150,38 @@ async function flowPage(page: string, json: boolean): Promise<number> {
   return saveAndNotify(results);
 }
 
-async function downloadCandidate(cand: Candidate): Promise<string | null> {
-  const url = sourceUrl(cand);
+async function downloadArtItem(it: ArtItem): Promise<string | null> {
+  const url = artSourceUrl(it);
   await mkdir(ART_DIR, { recursive: true });
-  if (cand.spec.startsWith('iiif:')) {
-    const out = join(ART_DIR, `${buildSlug(cand)}.jpg`);
+  // Dezoomify for IIIF manifests (URL ends in .json or /info.json).
+  // In practice, server-side adapters emit direct image URLs; this path handles
+  // any custom IIIF manifest URLs passed through the search flow.
+  if (/\/(info\.json|manifest\.json?)$/i.test(url) || url.endsWith('.json')) {
+    const out = join(ART_DIR, `${buildSlug(it)}.jpg`);
     const code = await dezoomify(url, out, MAXPX);
     return code === 0 ? out : null;
   }
   const [res] = await fetchImages([url], {
-    roots: { image: ART_DIR }, group: 'none', items: { [url]: { name: buildSlug(cand) } },
+    roots: { image: ART_DIR }, group: 'none', items: { [url]: { name: buildSlug(it) } },
   });
   return res?.ok ? (res.path ?? null) : null;
 }
 
 async function searchInteractive(query: string, pageUrl?: string): Promise<number> {
-  const cands = await searchArt(query);
-  if (!cands.length) { process.stderr.write('no results\n'); return 1; }
-  const cand = pickArt(cands);
-  if (!cand) return 1;
-  const path = await downloadCandidate(cand);
-  if (!path) { process.stderr.write(`failed: ${sourceUrl(cand)}\n`); return 1; }
+  const items = await searchArt(query);
+  if (!items.length) { process.stderr.write('no results\n'); return 1; }
+  const it = pickArt(items);
+  if (!it) return 1;
+  const path = await downloadArtItem(it);
+  if (!path) { process.stderr.write(`failed: ${artSourceUrl(it)}\n`); return 1; }
   if (MAXPX > 0) capImage(path);
   const res = imageRes(path);
-  if (!cand.desc && pageUrl) cand.desc = await pageDescription(pageUrl);
-  const { caption, body } = captions(cand, res);
-  if (!embed(path, cand, caption)) writeSidecar(path, cand, res);
+  // If no description and we have a page URL, fetch from the page.
+  // ArtItem is immutable so we keep the fetched description locally.
+  const desc = it.description || (pageUrl ? await pageDescription(pageUrl) : undefined);
+  const itWithDesc: ArtItem = desc && !it.description ? { ...it, description: desc } : it;
+  const { caption, body } = captions(itWithDesc, res);
+  if (!embed(path, itWithDesc, caption)) writeSidecar(path, itWithDesc, res);
   process.stdout.write(`saved → ${path}\n`);
   notify(path, caption, body);
   return 0;

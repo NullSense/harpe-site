@@ -20,9 +20,12 @@ import { resolve } from 'node:path';
 
 const FUNCTION_LIMIT = 12; // Vercel Hobby plan
 
-// Bundle the workspace package from source so its import graph is verified too
-// (otherwise `packages: 'external'` would skip @harpe/core and miss a break).
-const ALIAS = { '@harpe/core': resolve('packages/core/src/index.ts') };
+// Bundle workspace packages from source so their import graph is verified too
+// (otherwise `packages: 'external'` would skip them and miss a break).
+const ALIAS = {
+  '@harpe/core': resolve('packages/core/src/index.ts'),
+  '@harpe/sources': resolve('packages/sources/src/index.ts'),
+};
 
 const entries = (await readdir('api')).filter(
   (f) => f.endsWith('.ts') && !f.endsWith('.test.ts') && !f.endsWith('.d.ts'),

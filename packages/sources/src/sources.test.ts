@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { SOURCE_KEYS, validateArtItem, type ArtItem } from '@harpe/core';
-import { SOURCES, activeSources, mapPool } from '@harpe/sources';
+import { SOURCES, activeSources, mapPool } from './registry.js';
 
 // Guards the source registry + the unified-shape validator. Deterministic (no
 // network) — the live per-source checks live in sources.live.test.ts.
@@ -219,7 +219,7 @@ describe('Commons extmetadata license mapping', () => {
 
 // ─── IIIF image URL helper ────────────────────────────────────────────────────
 
-import { iiifImage, IIIF } from '../../../../packages/sources/src/helpers.js';
+import { iiifImage, IIIF } from './helpers.js';
 
 describe('iiifImage helper', () => {
   const base = 'https://iiif.wellcomecollection.org/image/V0017241';
