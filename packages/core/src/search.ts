@@ -293,6 +293,15 @@ export interface Fusable {
    *  Data) — a language-independent identity that folds the same work across
    *  Commons + Wikidata regardless of title language. */
   wikidataId?: string;
+  /** Wikidata QID of the P170 creator (knowledge-graph link; merge-filled). */
+  artistId?: string;
+  /** P180 "depicts" subject QIDs/labels (union-merged across copies). */
+  depicts?: string[];
+  /** Offline pHash/CLIP near-duplicate cluster index — a fourth union signal that
+   *  folds the same work across sources sharing no QID/file (no-QID case). */
+  clusterId?: number;
+  /** Art-historical movement label (merge-filled). */
+  movement?: string;
 }
 
 /** Language-independent work identity: the explicit Wikidata QID if present, else
@@ -366,9 +375,9 @@ function artistCompatible(a: { artist?: string }, b: { artist?: string }): boole
 const MERGE_FILL_FIELDS = [
   'date', 'medium', 'culture', 'creditLine', 'description', 'sourceUrl',
   'accessionNumber', 'licenseUrl', 'artworkType', 'style', 'inscriptions',
-  'dimensions', 'width', 'height', 'wikidataId',
+  'dimensions', 'width', 'height', 'wikidataId', 'artistId', 'movement',
 ] as const;
-const MERGE_UNION_FIELDS = ['tags', 'downloads'] as const;
+const MERGE_UNION_FIELDS = ['tags', 'downloads', 'depicts'] as const;
 
 // Per-source fields retained on `variants` (feeds the AI analysis AND the
 // "other copies" strip — hence each copy's own image + dimensions).
@@ -462,6 +471,21 @@ export function dedupe<T extends Fusable>(items: T[]): T[] {
     if (qk) { const j = byQid.get(qk); if (j !== undefined) union(i, j); else byQid.set(qk, i); }
     const tk = safeTitleKey(it);
     if (tk) (titleBuckets.get(tk) ?? titleBuckets.set(tk, []).get(tk)!).push(i);
+  });
+
+  // 1c) Offline near-duplicate cluster — precomputed pHash/CLIP cluster_id from
+  //     ingest. Folds the same work across sources that share no QID and no
+  //     identical file: different photographs of one painting, cross-language
+  //     titles, "(detail)" crops. Trusted as-is — the CLIP false-positive guard
+  //     (title-mismatch veto) is applied OFFLINE at ingest when the embeddings are
+  //     available (a runtime title veto would wrongly block the cross-language
+  //     folds, whose whole point is that titles differ). null = singleton.
+  const byCluster = new Map<number, number>();
+  items.forEach((it, i) => {
+    const ck = (it as Fusable).clusterId;
+    if (ck == null) return;
+    const j = byCluster.get(ck);
+    if (j !== undefined) union(i, j); else byCluster.set(ck, i);
   });
   for (const idxs of titleBuckets.values()) {
     for (let x = 0; x < idxs.length; x++) {

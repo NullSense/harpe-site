@@ -76,10 +76,49 @@ export interface ArtItem {
    *  "digital representation of"). Language-independent, so it folds the same
    *  painting across Commons (any language) + Wikidata into one card in dedupe(). */
   wikidataId?: string;
+  /** Wikidata QID of the P170 creator — drives /artist/<qid> knowledge-graph
+   *  navigation and cross-source "more by this artist". Resolved at ingest (the
+   *  wikidata source) or from a name→QID map for other sources. */
+  artistId?: string;
+  /** P180 "depicts" subject QIDs (or labels) — drives /depicts/<qid> thematic
+   *  browse. Union-merged across copies in dedupe(). */
+  depicts?: string[];
+  /** Offline pHash/CLIP near-duplicate cluster index (set at ingest). Consumed by
+   *  dedupe() to fold the same work across sources that share no QID/file — never
+   *  exposed in URLs or external state. */
+  clusterId?: number;
+  /** Art-historical movement label (Wikidata P135 or ArtGraph enrichment). */
+  movement?: string;
   /** When this item is the merge of several sources (set by dedupe()), the
    *  per-source catalogue records that were collapsed — so the AI analysis can
    *  still draw on EVERY source's facts/descriptions even after de-duplication. */
   variants?: SourceVariant[];
+}
+
+/** A knowledge-graph artist node (Wikidata-backed), served as a static JSON file
+ *  on the HF CDN and rendered by the /artist/<qid> page. */
+export interface ArtistEntity {
+  qid: string;
+  labelEn: string;
+  description?: string;
+  aliases?: string[];
+  birthYear?: number;
+  deathYear?: number;
+  nationality?: string;
+  movementLabels?: string[];
+  ulanId?: string;
+  imageCommons?: string;
+  workCount: number;
+}
+
+/** A knowledge-graph subject ("depicts") node, served as a static JSON file on
+ *  the HF CDN and rendered by the /depicts/<qid> page. */
+export interface SubjectEntity {
+  qid: string;
+  labelEn: string;
+  description?: string;
+  imageCommons?: string;
+  workCount: number;
 }
 
 /** A single source's catalogue record, retained on a merged ArtItem.variants.

@@ -266,7 +266,7 @@ type Item = {
   thumbUrl?: string; previewUrl?: string; fullUrl?: string;
   width?: number; height?: number;
   date?: string; medium?: string; tags?: string[]; downloads?: unknown[];
-  wikidataId?: string;
+  wikidataId?: string; artistId?: string; depicts?: string[]; clusterId?: number; movement?: string;
   // set at runtime by dedupe()
   dupCount?: number; mergedSources?: string[];
   variants?: Array<{ source: string; date?: string; medium?: string }>;
@@ -352,6 +352,35 @@ describe('dedupe', () => {
       mk({ id: 'wikidata-Q42', source: 'wikidata', title: 'Whole Work', artist: 'X', fullUrl: 'https://m/whole.jpg' }),
     ]);
     expect(out).toHaveLength(1);
+  });
+
+  it('folds no-QID copies that share an offline cluster_id (different files + titles)', () => {
+    // Two different photographs of one painting, no shared QID/file, cross-language
+    // titles — only the precomputed cluster_id links them.
+    const out = dedupe([
+      mk({ id: 'wikiart-1', source: 'wikiart', title: 'Bitwa pod Grunwaldem', artist: 'Matejko', fullUrl: 'https://wikiart/a.jpg', clusterId: 7, width: 800, height: 500 }),
+      mk({ id: 'commons-2', source: 'commons', title: 'Battle of Grunwald', artist: 'Jan Matejko', fullUrl: 'https://commons/b.jpg', clusterId: 7, width: 4000, height: 2500 }),
+    ]);
+    expect(out).toHaveLength(1);
+    expect(out[0].dupCount).toBe(2);
+  });
+
+  it('different cluster_ids do NOT merge; null cluster_id is a singleton', () => {
+    const out = dedupe([
+      mk({ id: 'a', source: 'met', title: 'Sunset over the Lagoon', artist: 'A', fullUrl: 'https://m/a.jpg', clusterId: 9 }),
+      mk({ id: 'b', source: 'aic', title: 'Portrait of a Banker', artist: 'B', fullUrl: 'https://m/b.jpg', clusterId: 10 }),
+      mk({ id: 'c', source: 'commons', title: 'Lone Work', artist: 'C', fullUrl: 'https://m/c.jpg' }),
+    ]);
+    expect(out).toHaveLength(3);
+  });
+
+  it('union-merges depicts QIDs across folded copies', () => {
+    const out = dedupe([
+      mk({ id: 'commons-1', source: 'commons', title: 'The Night Watch', artist: 'Rembrandt', fullUrl: 'https://m/a.jpg', wikidataId: 'Q219831', depicts: ['Q5'], width: 100, height: 80 }),
+      mk({ id: 'wikidata-Q219831', source: 'wikidata', title: 'The Night Watch', artist: 'Rembrandt', fullUrl: 'https://m/b.jpg', depicts: ['Q12271', 'Q5'], width: 4000, height: 3000 }),
+    ]);
+    expect(out).toHaveLength(1);
+    expect(new Set(out[0].depicts)).toEqual(new Set(['Q5', 'Q12271']));
   });
 
   it('never merges on an empty / missing QID', () => {
