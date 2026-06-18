@@ -1467,6 +1467,8 @@ const DUMP_SOURCE_LABELS = {
   smk: 'SMK',
   si: 'Smithsonian',
   wikidata: 'Wikidata',
+  met: 'Met',
+  loc: 'Library of Congress',
 } as const satisfies Partial<Record<ArtItem['source'], string>>;
 
 type DumpSourceKey = keyof typeof DUMP_SOURCE_LABELS;

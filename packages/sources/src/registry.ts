@@ -5,9 +5,9 @@
  */
 import type { SourceAdapter, ArtItem } from '@harpe/core';
 import {
-  fetchMet, fetchCommons, fetchWikiArt, fetchVam,
+  fetchCommons, fetchWikiArt, fetchVam,
   fetchNasjonalmuseet, fetchDigitalNZ,
-  fetchLoc, fetchEuropeana, fetchHarvard, fetchParisMusees,
+  fetchEuropeana, fetchHarvard, fetchParisMusees,
   fetchDumpSource, fetchNypl, dumpDatasetEnv,
 } from './adapters.js';
 import { runSource } from './resilience.js';
@@ -36,15 +36,14 @@ export const SOURCES: SourceAdapter[] = [
   dump('smk', 'SMK'),
   dump('si', 'Smithsonian'),
   dump('wikidata', 'Wikidata'),
-  // ─ Live-API sources (not dump-backed: Met is behind Incapsula for bulk; the
-  //   rest have no usable bulk dump — see SOURCES.md "Not pursued") ─
-  { key: 'met', label: 'Met', fetch: fetchMet },
+  dump('met', 'Met'),                    // Met's own HF open-access dump (API is Incapsula-walled; CDN is open)
+  dump('loc', 'Library of Congress'),    // P&P photography, IIIF images
+  // ─ Live-API sources (no usable bulk dump — see SOURCES.md "Not pursued") ─
   { key: 'commons', label: 'Commons', fetch: fetchCommons },
   { key: 'wikiart', label: 'WikiArt', fetch: fetchWikiArt },
   { key: 'vam', label: 'V&A', fetch: fetchVam },
   { key: 'nasjonalmuseet', label: 'Nasjonalmuseet', fetch: fetchNasjonalmuseet },
   { key: 'digitalnz', label: 'DigitalNZ', fetch: fetchDigitalNZ },
-  { key: 'loc', label: 'Library of Congress', fetch: fetchLoc },
   // Keyed live sources — only queried when their server-only key/env is configured.
   { key: 'europeana', label: 'Europeana', fetch: fetchEuropeana, requiresEnv: 'EUROPEANA_API_KEY' },
   { key: 'harvard', label: 'Harvard', fetch: fetchHarvard, requiresEnv: 'HARVARD_API_KEY' },
