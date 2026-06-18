@@ -48,6 +48,17 @@ describe('qualityScore', () => {
     const photo = qualityScore(art('photograph', 'digitalnz'), 'starry night');
     expect(painting).toBeGreaterThan(photo);
   });
+  it('demotes amateur photo-of-artwork variants (tilted / with frame / detail)', () => {
+    const clean = art('oil on canvas', 'commons', 'Le Pandemonium by John Martin');
+    const tilted = art('oil on canvas', 'commons', 'Le Pandemonium by John Martin (Louvre)-tilted');
+    const framed = art('', 'commons', 'Le Pandemonium - John Martin - Louvre - avec cadre');
+    expect(qualityScore(tilted, 'john martin painting')).toBeLessThan(qualityScore(clean, 'john martin painting'));
+    expect(qualityScore(framed, 'john martin painting')).toBeLessThan(qualityScore(clean, 'john martin painting'));
+  });
+  it('does NOT demote framing/angle terms when the user wants photos', () => {
+    const t = art('photograph', 'commons', 'detail of a fresco');
+    expect(qualityScore(t, 'fresco detail photograph')).toBeGreaterThanOrEqual(qualityScore(t, ''));
+  });
 });
 
 describe('mediumCategory', () => {

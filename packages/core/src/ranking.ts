@@ -19,6 +19,12 @@ const REPRO_RE = /\b(photograph|photo|negative|gelatin silver|transparency|lante
 // Book / catalog records: pagination ("348 p."), plates, frontispiece, binding…
 const BOOK_RE = /\b(book|bound volume|frontispiece|title page|folio|pamphlet|magazine|periodical|leaflet|spine|binding|dust jacket)\b|\b\d{1,4}\s*p\.|leaves of plate|\bp\.\s*illus|\billus\./;
 const WANT_BOOK_RE = /\b(book|magazine|periodical|pamphlet|manuscript|illustration)\b/;
+// Amateur "photo OF an artwork" — angle / frame / condition / crop cues in the
+// title, the junk that litters Wikimedia Commons ("…-tilted", "avec cadre" = with
+// frame, "(Louvre)-cropped", "detail", "verso", "before restoration", "raking
+// light"). These bury the clean flat reproduction of the same painting; demote
+// them hard unless the user is actually after photographs.
+const PHOTO_OF_ART_RE = /\b(tilted|cropped|detail|verso|recto|framed|reframed|unframed|before restoration|after (cleaning|restoration)|raking light|infra-?red|x-?ray|backside|reverse side|in its frame|with frame|in frame|angled|perspective view|wide shot|close-?up)\b|avec\s+cadre|sans\s+cadre/i;
 const SRC_PRIOR: Record<string, number> = { digitalnz: -5, commons: -1, si: -1 };
 
 /** Strip HTML tags + decode the common entities so raw "<em>…" never shows. */
@@ -64,10 +70,14 @@ export function qualityScore(item: RankableItem, query = ''): number {
   const q = query.toLowerCase();
   const wantsRepro = REPRO_RE.test(q);          // user searched a print/photo medium
   const wantsBook = WANT_BOOK_RE.test(q);
+  const wantsPhotoOfArt = PHOTO_OF_ART_RE.test(q);
   if (PAINT_RE.test(med) && !wantsRepro) s += 4;
   if (REPRO_RE.test(med) && !wantsRepro) s -= 3;
   if ((BOOK_RE.test(med) || BOOK_RE.test(t)) && !wantsBook) s -= 4;
   if (/\bafter [a-z]|reproduction|postcard|photograph of\b/.test(t)) s -= 2;
+  // Amateur photo-of-artwork (tilted / framed / detail / …): demote so the clean
+  // reproduction of the same work outranks someone's snapshot of it in a gallery.
+  if (PHOTO_OF_ART_RE.test(t) && !wantsPhotoOfArt) s -= 5;
   // Internet-Archive / Commons book-scan uploads: title ends in a long numeric
   // media id, e.g. "The gods of the Egyptians (1904) (14763839232)". Dozens of
   // near-identical plates from one book; demote hard so real works rank above them.
