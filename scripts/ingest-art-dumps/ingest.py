@@ -1271,6 +1271,16 @@ OUT = "harpe-art.parquet"
 # concurrent bars don't overlap (other sources just print a ✓/⚠ line on finish).
 _BAR_SOURCES = ("met", "si", "wikidata")
 
+# Unified text columns coerced to VARCHAR per-source before the cross-source merge,
+# so a source whose dump made DuckDB infer a column as JSON (or some other type)
+# can't break union_by_name with a type clash. Numeric/bool columns (width, height,
+# is_public_domain) are intentionally excluded so they keep their type.
+_TEXT_COLS = frozenset({
+    "source", "id", "title", "artist", "date", "medium", "dimensions", "culture",
+    "credit_line", "description", "image_thumb", "image_full", "source_url", "rights_type",
+    "wikidata_qid", "artist_qid", "depicts_qids", "depicts_labels", "collection_qid", "movement",
+})
+
 
 def _prepare_source_parquet(key: str, workdir: str, pos) -> tuple[str, str, int]:
     """Run one source end-to-end (harvest + DuckDB read) → its own parquet.
@@ -1285,7 +1295,25 @@ def _prepare_source_parquet(key: str, workdir: str, pos) -> tuple[str, str, int]
     con.execute(f"SET temp_directory='{workdir}';")      # spill to the run dir, not the repo
     con.execute("SET preserve_insertion_order=false;")   # let DuckDB parallelize the scan
     out = os.path.join(workdir, f"{key}.parquet")
-    con.execute(f"COPY ({sql}) TO '{out}' (FORMAT parquet, COMPRESSION zstd);")
+    con.execute(f"COPY ({sql}) TO '{out}' (FORMAT parquet, COMPRESSION zstd);")  # one streamed fetch
+    # Coerce any unified text column DuckDB stored as JSON (auto-inferred from a
+    # dump) or another non-VARCHAR type to VARCHAR, so the cross-source merge can't
+    # hit a type clash (e.g. Cleveland's JSON `description` vs LoC's VARCHAR). JSON
+    # strings are unwrapped via ->> '$' so we keep the text, not a quoted literal.
+    # Reads the local parquet footer (cheap) and rewrites ONLY when a column drifted.
+    oq = out.replace("'", "''")
+    repl = []
+    for name, typ, *_ in con.execute(f"DESCRIBE SELECT * FROM read_parquet('{oq}')").fetchall():
+        if name not in _TEXT_COLS or typ == "VARCHAR":
+            continue
+        repl.append(
+            f'COALESCE("{name}" ->> \'$\', CAST("{name}" AS VARCHAR)) AS "{name}"' if typ == "JSON"
+            else f'CAST("{name}" AS VARCHAR) AS "{name}"')
+    if repl:
+        fixed = out + ".fixed"
+        con.execute(f"COPY (SELECT * REPLACE ({', '.join(repl)}) FROM read_parquet('{oq}')) "
+                    f"TO '{fixed}' (FORMAT parquet, COMPRESSION zstd);")
+        os.replace(fixed, out)
     cnt = con.execute(f"SELECT count(*) FROM '{out}'").fetchone()[0]
     con.close()
     if cnt == 0:
