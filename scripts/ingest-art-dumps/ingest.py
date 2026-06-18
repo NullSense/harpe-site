@@ -632,7 +632,17 @@ def harvest_met(workers=16) -> str:
         print(f"Reusing existing Met harvest at {out_path} (delete to re-harvest).")
         return out_path
 
-    _met_preflight()  # fail fast before the 475 MB CSV download
+    try:
+        _met_preflight()  # cheap probe before the 475 MB CSV download
+    except HarvestBlocked as e:
+        # Walled right now — but if a previous run left salvaged rows, ingest those
+        # rather than contributing nothing. Re-run later from a friendlier network.
+        if os.path.exists(partial) and os.path.getsize(partial) > 0:
+            n = sum(1 for _ in open(partial, encoding="utf-8"))
+            print(f"[met] API walled ({e}); ingesting {n:,} previously-salvaged images — "
+                  "re-run `--sources met --push` later to grow it.")
+            return partial
+        raise
     pd_rows = list(_iter_met_pd_rows())
     by_id = {r["_raw_id"]: r for r in pd_rows}
     logger.info("Met PD rows from CSV: %d", len(pd_rows))
@@ -695,27 +705,27 @@ def harvest_met(workers=16) -> str:
                 except StopIteration:
                     pass
     except KeyboardInterrupt:
-        fh.flush()
-        fh.close()
-        pool.shutdown(wait=False, cancel_futures=True)
-        bar.close()
+        fh.flush(); fh.close(); pool.shutdown(wait=False, cancel_futures=True); bar.close()
         print(f"\n⏸  Interrupted — {written:,} Met rows saved to {partial}. "
               f"Re-run `--sources met` to resume from here.")
-        raise
-    except BaseException:
-        fh.flush()
-        fh.close()
-        pool.shutdown(wait=False, cancel_futures=True)
-        bar.close()
-        raise
-    fh.flush()
-    fh.close()
-    pool.shutdown(wait=True)
-    bar.close()
+        raise                                         # Ctrl-C stops the whole run
+    except Exception as e:
+        # GREEDY: the wall/error doesn't discard what we already pulled. Keep the
+        # partial for resume and ingest the salvaged images into this build.
+        fh.flush(); fh.close(); pool.shutdown(wait=False, cancel_futures=True); bar.close()
+        incomplete = str(e) or type(e).__name__
+    else:
+        fh.flush(); fh.close(); pool.shutdown(wait=True); bar.close()
+        incomplete = None
 
     if written == 0:
-        os.remove(partial)
-        raise HarvestBlocked("Met: 0 images resolved — not caching.")
+        if os.path.exists(partial):
+            os.remove(partial)
+        raise HarvestBlocked(f"Met: 0 images resolved{f' ({incomplete})' if incomplete else ''}.")
+    if incomplete:
+        print(f"[met] INCOMPLETE ({incomplete}) — ingesting {written:,} salvaged images; "
+              f"re-run `--sources met --push` to continue.")
+        return partial
     os.replace(partial, out_path)
     print(f"Met harvest done: {written:,} rows → {out_path}")
     return out_path
@@ -865,14 +875,15 @@ class _WdRetryable(Exception):
 
 @tenacity.retry(
     retry=tenacity.retry_if_exception_type(_WdRetryable),
-    stop=tenacity.stop_after_attempt(4),
-    wait=tenacity.wait_exponential(multiplier=3, max=45) + tenacity.wait_random(0, 1),
+    stop=tenacity.stop_after_attempt(6),
+    wait=tenacity.wait_exponential(multiplier=3, max=60) + tenacity.wait_random(0, 2),
     reraise=True,
 )
 def _wd_fetch(client, cls, limit, offset):
-    """Fetch one WDQS page. tenacity retries transient blips/429s with backoff;
-    raises _WdTruncated on a partial JSON body (→ caller shrinks the batch) and
-    HarvestBlocked on a persistent refusal."""
+    """Fetch one WDQS page. tenacity retries transient conditions (429 + any 5xx
+    gateway error — WDQS throws 502/504 constantly at deep offsets — and connection
+    blips) with backoff; raises _WdTruncated on a partial JSON body (→ caller
+    shrinks the batch) and HarvestBlocked on a persistent refusal."""
     q = _WD_QUERY.format(cls=cls, limit=limit, offset=offset)
     try:
         resp = client.get(_WDQS, params={"query": q},
@@ -880,7 +891,7 @@ def _wd_fetch(client, cls, limit, offset):
                           timeout=90)
     except (httpx.TransportError, httpx.TimeoutException, OSError) as e:
         raise _WdRetryable(str(e)) from e
-    if resp.status_code in (429, 503):
+    if resp.status_code == 429 or resp.status_code >= 500:
         raise _WdRetryable(f"HTTP {resp.status_code}")
     if resp.status_code in (401, 403):
         raise HarvestBlocked(f"Wikidata WDQS refused (HTTP {resp.status_code}).")
@@ -957,6 +968,20 @@ def harvest_wikidata(max_batches=None) -> str:
                         offset += batch                           # skip this small window, move on
                         offsets[cls] = offset
                         continue
+                    except _WdRetryable as e:
+                        # Transient server error (504/502/…) survived all retries at this
+                        # offset — skip the window and keep going rather than abort the whole
+                        # harvest. Resume/re-run + merge-on-push fills any skipped gaps.
+                        min_fails += 1
+                        tqdm.write(f"  wikidata: {label}@{offset} {e}; skipping window")
+                        if min_fails >= 8:
+                            raise HarvestBlocked(
+                                f"Wikidata WDQS failing repeatedly ({label}@{offset}); "
+                                "progress saved — re-run to resume.")
+                        offset += batch
+                        offsets[cls] = offset
+                        time.sleep(3)
+                        continue
                     min_fails = 0
                     if not bindings:
                         break
@@ -998,16 +1023,32 @@ def harvest_wikidata(max_batches=None) -> str:
     except KeyboardInterrupt:
         bar.close()
         print(f"\n⏸  Wikidata interrupted — {total:,} saved to {partial}. Re-run to resume.")
-        raise
-    except Exception:
-        bar.close()                                   # keep partial + state for resume
-        raise
-    bar.close()
+        raise                                         # Ctrl-C means stop the whole run
+    except (HarvestBlocked, Exception) as e:
+        # GREEDY: a failure mid-harvest (WDQS gave up, network died, …) does NOT
+        # throw away what we already pulled. Keep the partial + state for resume,
+        # and fall through to ingest the salvaged rows so this build still gets them.
+        bar.close()
+        incomplete = str(e) or type(e).__name__
+    else:
+        bar.close()
+        incomplete = None
+
     if total == 0:
         for f in (partial, state_path):
             if os.path.exists(f):
                 os.remove(f)
+        if incomplete:
+            raise HarvestBlocked(f"Wikidata: 0 rows harvested ({incomplete}).")
         raise HarvestBlocked("Wikidata: harvested 0 rows — not caching.")
+
+    if incomplete:
+        # Salvage: hand back the partial as-is (NOT renamed to the final cache) so
+        # this build ingests the rows we got AND the next run resumes from here.
+        print(f"[wikidata] INCOMPLETE ({incomplete}) — ingesting {total:,} salvaged rows; "
+              f"re-run `--sources wikidata --push` to continue from where it stopped.")
+        return partial
+
     os.replace(partial, out_path)
     if os.path.exists(state_path):
         os.remove(state_path)
