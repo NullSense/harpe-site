@@ -24,18 +24,30 @@ function item(id: string, source = 'commons'): ArtItem {
 const sig = () => new AbortController().signal;
 const reply = (entities: unknown) => ({ ok: true, json: async () => ({ entities }) });
 
+// A realistic P6243 "digital representation of" statement (wikibase-entityid snak),
+// the shape `simplifyClaims` expects.
+const p6243 = (qid: string) => ({
+  P6243: [{
+    mainsnak: {
+      snaktype: 'value', property: 'P6243', datatype: 'wikibase-item',
+      datavalue: { type: 'wikibase-entityid', value: { 'entity-type': 'item', 'numeric-id': Number(qid.slice(1)), id: qid } },
+    },
+    type: 'statement', rank: 'normal',
+  }],
+});
+
 beforeEach(() => timedFetchMock.mockReset());
 
 describe('enrichCommonsWikidataIds', () => {
   it('sets wikidataId from P6243 (digital representation of)', async () => {
-    timedFetchMock.mockResolvedValue(reply({ M111: { statements: { P6243: [{ mainsnak: { datavalue: { value: { id: 'Q1144558' } } } }] } } }));
+    timedFetchMock.mockResolvedValue(reply({ M111: { statements: p6243('Q1144558') } }));
     const items = [item('commons-111')];
     await enrichCommonsWikidataIds(items, sig());
     expect(items[0].wikidataId).toBe('Q1144558');
   });
 
   it('handles the older `claims` key as well as `statements`', async () => {
-    timedFetchMock.mockResolvedValue(reply({ M112: { claims: { P6243: [{ mainsnak: { datavalue: { value: { id: 'Q7' } } } }] } } }));
+    timedFetchMock.mockResolvedValue(reply({ M112: { claims: p6243('Q7') } }));
     const items = [item('commons-112')];
     await enrichCommonsWikidataIds(items, sig());
     expect(items[0].wikidataId).toBe('Q7');

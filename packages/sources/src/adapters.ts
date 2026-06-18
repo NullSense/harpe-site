@@ -8,6 +8,7 @@
  * are applied in-line (see audit comment on each adapter).
  */
 import { fetch, Agent } from 'undici';
+import { WBK, simplifyClaims } from 'wikibase-sdk';
 import type { ArtItem, Download } from '@harpe/core';
 import {
   str, num, fmtFromMime, fmtFromUrl, first, timedFetch, iiifImage, IIIF,
@@ -485,8 +486,10 @@ export async function fetchCommons(q: string, signal?: AbortSignal): Promise<Art
 // QID is language-independent, so the Polish and English scans of one painting —
 // and the matching Wikidata item — all share it, letting dedupe() fold them into
 // one card. Best-effort: ANY failure leaves items unchanged (search must never
-// break because Structured Data was slow/unavailable). One batched wbgetentities
-// call per ≤50 files; an in-instance cache spares repeat lookups across queries.
+// break because Structured Data was slow/unavailable). `wikibase-sdk` builds the
+// wbgetentities URLs (incl. the >50-id batching) and simplifies the claims, so we
+// don't hand-parse Wikibase's snak format; an in-instance cache spares repeats.
+const _wbkCommons = WBK({ instance: 'https://commons.wikimedia.org' }); // Commons MediaInfo Wikibase
 const _sdcCache = new Map<string, string | null>(); // pageid → QID | null (resolved miss)
 
 export async function enrichCommonsWikidataIds(items: ArtItem[], signal: AbortSignal): Promise<void> {
@@ -499,30 +502,22 @@ export async function enrichCommonsWikidataIds(items: ArtItem[], signal: AbortSi
     need.set(m[1], it);
   }
   if (need.size === 0) return;
-  const pids = [...need.keys()];
+  // MediaInfo entity id is "M" + the file's pageid.
+  const mids = [...need.keys()].map((p) => `M${p}`) as `M${number}`[];
   try {
-    for (let i = 0; i < pids.length; i += 50) {
-      const batch = pids.slice(i, i + 50);
-      const ids = batch.map((p) => `M${p}`).join('|');
-      const url =
-        `https://commons.wikimedia.org/w/api.php?action=wbgetentities&format=json` +
-        `&props=claims&ids=${encodeURIComponent(ids)}`;
+    for (const url of _wbkCommons.getManyEntities({ ids: mids, props: ['claims'] })) {
       const res = await timedFetch(url, signal);
       if (!res.ok) return; // give up quietly — items keep flowing without a QID
-      const json = await res.json() as {
-        entities?: Record<string, {
-          statements?: Record<string, Array<{ mainsnak?: { datavalue?: { value?: { id?: unknown } } } }>>;
-          claims?: Record<string, Array<{ mainsnak?: { datavalue?: { value?: { id?: unknown } } } }>>;
-        }>;
-      };
-      for (const p of batch) {
-        const ent = json.entities?.[`M${p}`];
-        // MediaInfo entities expose statements under `statements` (older API: `claims`).
-        const claims = ent?.statements ?? ent?.claims;
-        const qid = str(claims?.P6243?.[0]?.mainsnak?.datavalue?.value?.id);
-        const valid = /^Q\d+$/.test(qid) ? qid : null;
-        _sdcCache.set(p, valid);
-        if (valid) { const it = need.get(p); if (it) it.wikidataId = valid; }
+      const json = await res.json() as { entities?: Record<string, { statements?: unknown; claims?: unknown }> };
+      for (const [mid, ent] of Object.entries(json.entities ?? {})) {
+        const pid = mid.slice(1); // strip the leading "M"
+        // MediaInfo exposes statements under `statements` (older API: `claims`).
+        const claims = (ent.statements ?? ent.claims) as Parameters<typeof simplifyClaims>[0];
+        // P6243 "digital representation of" → the depicted artwork's QID.
+        const qid = claims ? (simplifyClaims(claims).P6243?.[0] as string | undefined) : undefined;
+        const valid = typeof qid === 'string' && /^Q\d+$/.test(qid) ? qid : null;
+        _sdcCache.set(pid, valid);
+        if (valid) { const it = need.get(pid); if (it) it.wikidataId = valid; }
       }
     }
   } catch { /* best-effort: leave items unenriched */ }

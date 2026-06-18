@@ -114,6 +114,9 @@ importers:
       undici:
         specifier: ^6.21.0
         version: 6.27.0
+      wikibase-sdk:
+        specifier: ^11.6.2
+        version: 11.6.2
 
 packages:
 
@@ -1112,6 +1115,10 @@ packages:
     engines: {node: '>=8'}
     hasBin: true
 
+  wikibase-sdk@11.6.2:
+    resolution: {integrity: sha512-LdmJcGEjQeFTn2YzQ7LTq/nsweGDhp8UXj/nelRPlb2s0+TXMhr8YHuUdqYEecDjpj9xrBD1kY12LKP5Sgy9cA==}
+    engines: {node: '>= 12.0.0'}
+
 snapshots:
 
   '@emnapi/core@1.10.0':
@@ -1876,3 +1883,5 @@ snapshots:
     dependencies:
       siginfo: 2.0.0
       stackback: 0.0.2
+
+  wikibase-sdk@11.6.2: {}

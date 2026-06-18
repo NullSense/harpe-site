@@ -12,14 +12,17 @@
       "default": "./dist/index.js"
     }
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json"
   },
   "dependencies": {
     "@harpe/core": "workspace:*",
     "cockatiel": "^4.0.0",
-    "undici": "^6.21.0"
+    "undici": "^6.21.0",
+    "wikibase-sdk": "^11.6.2"
   },
   "engines": {
     "node": ">=22"
