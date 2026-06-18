@@ -71,6 +71,11 @@ export interface ArtItem {
   style?: string;
   /** Inscriptions, signatures, or marks on the work. */
   inscriptions?: string;
+  /** Wikidata QID of the artwork itself (e.g. "Q1144558"), when known — from the
+   *  wikidata source, or resolved from a Commons file's Structured Data (P6243
+   *  "digital representation of"). Language-independent, so it folds the same
+   *  painting across Commons (any language) + Wikidata into one card in dedupe(). */
+  wikidataId?: string;
   /** When this item is the merge of several sources (set by dedupe()), the
    *  per-source catalogue records that were collapsed — so the AI analysis can
    *  still draw on EVERY source's facts/descriptions even after de-duplication. */

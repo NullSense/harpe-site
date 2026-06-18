@@ -246,11 +246,36 @@ export function isRelevant(item: Scorable, query: string): boolean {
 
 // ─── Result fusion (metasearch ranking) ────────────────────────────────────────
 
+// Title noise that fragments the work-identity key without changing the work, so
+// the same painting catalogued differently fails to collapse: trailing museum
+// inventory/accession codes ("… MNK ND 11610", "inv. 1234") and crop/condition
+// qualifiers ("(detail)", "fragment", "verso"). Stripped from the KEY only — the
+// displayed title is untouched — so a full painting and its "(detail)" crop, or
+// the same work with/without an accession suffix, fold into one card. Accession
+// codes are matched on the RAW title (uppercase survives) to avoid eating real
+// words like "Kyiv"; qualifiers are matched after diacritic-folding.
+const TITLE_QUALIFIER_PARENS = /\s*[([{][^)\]}]*\b(detail|d[ée]tail|fragment|verso|recto|obverse|reverse|cropped)\b[^)\]}]*[)\]}]/gi;
+function stripRawTitleNoise(title: string): string {
+  return title
+    .replace(TITLE_QUALIFIER_PARENS, ' ')
+    // keyword accession codes: "inv. 1234", "no. 5", "acc. 1990.1"
+    .replace(/[\s,;]+(?:inv\.?|no\.?|nr\.?|acc\.?|cat\.?)\s*[A-Za-z0-9.\-/]+\s*$/g, ' ')
+    // bare uppercase museum codes at the end: 1–3 ALL-CAPS tokens then a number
+    .replace(/(?:\b[A-Z]{2,5}\s+){1,3}\d{2,}\s*$/g, ' ');
+}
+
+/** Canonical, noise-stripped title for the work-identity key (display untouched). */
+function canonTitle(title: string): string {
+  return normalize(stripRawTitleNoise(title || ''))
+    .replace(/\b(the|a|an)\b/g, ' ')
+    .replace(/\b(detail|fragment|verso|recto)\s*$/g, ' ') // trailing qualifier, no parens
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 /** Group key for "the same work across sources" (diacritic-folded title+artist). */
 export function workKey(it: { title?: string; artist?: string }): string {
-  const t = normalize(it.title || '').replace(/\b(the|a|an)\b/g, '').replace(/\s+/g, ' ').trim();
-  const a = normalize(it.artist || '');
-  return `${t}|${a}`;
+  return `${canonTitle(it.title || '')}|${normalize(it.artist || '')}`;
 }
 
 export interface Fusable {
@@ -264,6 +289,18 @@ export interface Fusable {
   dupCount?: number;
   /** Set by `dedupe()`: the distinct source keys this merged item came from. */
   mergedSources?: string[];
+  /** Wikidata QID of the artwork (from the wikidata source or Commons Structured
+   *  Data) — a language-independent identity that folds the same work across
+   *  Commons + Wikidata regardless of title language. */
+  wikidataId?: string;
+}
+
+/** Language-independent work identity: the explicit Wikidata QID if present, else
+ *  the QID embedded in a `wikidata-Q…` id. '' when none — never merges on empty. */
+export function wikidataKey(it: { id?: string; wikidataId?: string }): string {
+  if (it.wikidataId && /^Q\d+$/.test(it.wikidataId)) return it.wikidataId;
+  const m = /^wikidata-(Q\d+)$/.exec(it.id || '');
+  return m ? m[1] : '';
 }
 
 // ─── Cross-source de-duplication ───────────────────────────────────────────────
@@ -300,9 +337,9 @@ export function imageIdentity(it: { thumbUrl?: string; previewUrl?: string; full
   return low.split('#')[0].split('?')[0];
 }
 
-/** Diacritic-folded, de-articled title (for the work-identity bucket). */
+/** Diacritic-folded, de-articled, noise-stripped title (for the work-identity bucket). */
 function titleKey(it: { title?: string }): string {
-  return normalize(it.title || '').replace(/\b(the|a|an)\b/g, '').replace(/\s+/g, ' ').trim();
+  return canonTitle(it.title || '');
 }
 
 /** Bucket key for work identity, or '' when too generic / artist-less to merge. */
@@ -329,7 +366,7 @@ function artistCompatible(a: { artist?: string }, b: { artist?: string }): boole
 const MERGE_FILL_FIELDS = [
   'date', 'medium', 'culture', 'creditLine', 'description', 'sourceUrl',
   'accessionNumber', 'licenseUrl', 'artworkType', 'style', 'inscriptions',
-  'dimensions', 'width', 'height',
+  'dimensions', 'width', 'height', 'wikidataId',
 ] as const;
 const MERGE_UNION_FIELDS = ['tags', 'downloads'] as const;
 
@@ -409,12 +446,17 @@ export function dedupe<T extends Fusable>(items: T[]): T[] {
 
   // 1) image identity — exact same file → union immediately (a stable key).
   const byImage = new Map<string, number>();
+  // 1b) Wikidata QID — the same artwork across Commons (any language) + Wikidata.
+  //     A hard identity link (Commons P6243 / a wikidata-Q id), so unioned directly.
+  const byQid = new Map<string, number>();
   // 2) work identity — collect items per safe title, then union pairs within a
   //    title bucket whose artists are compatible (handles name-spelling variants).
   const titleBuckets = new Map<string, number[]>();
   items.forEach((it, i) => {
     const ik = imageIdentity(it as Record<string, unknown>);
     if (ik) { const j = byImage.get(ik); if (j !== undefined) union(i, j); else byImage.set(ik, i); }
+    const qk = wikidataKey(it);
+    if (qk) { const j = byQid.get(qk); if (j !== undefined) union(i, j); else byQid.set(qk, i); }
     const tk = safeTitleKey(it);
     if (tk) (titleBuckets.get(tk) ?? titleBuckets.set(tk, []).get(tk)!).push(i);
   });

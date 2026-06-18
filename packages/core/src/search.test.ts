@@ -92,6 +92,23 @@ describe('workKey', () => {
     expect(workKey({ title: 'The Scream', artist: 'Edvard Munch' }))
       .toBe(workKey({ title: 'Scream', artist: 'Edvard Munch' }));
   });
+  it('strips a trailing museum accession code', () => {
+    expect(workKey({ title: 'Boleslaw at the Golden Gate in Kyiv MNK ND 11610', artist: 'Jan Matejko' }))
+      .toBe(workKey({ title: 'Boleslaw at the Golden Gate in Kyiv', artist: 'Jan Matejko' }));
+  });
+  it('strips keyword accession codes (inv. / no.)', () => {
+    expect(workKey({ title: 'Sunflowers, inv. 1888.4', artist: 'Vincent van Gogh' }))
+      .toBe(workKey({ title: 'Sunflowers', artist: 'Vincent van Gogh' }));
+  });
+  it('folds a "(detail)" crop onto the full work', () => {
+    expect(workKey({ title: 'Battle of Grunwald (detail)', artist: 'Jan Matejko' }))
+      .toBe(workKey({ title: 'Battle of Grunwald', artist: 'Jan Matejko' }));
+  });
+  it('does NOT eat a real word that looks code-ish but is lowercase', () => {
+    // "in Kyiv" must survive — only ALL-CAPS trailing codes are stripped.
+    expect(workKey({ title: 'The Golden Gate in Kyiv', artist: 'Jan Matejko' }))
+      .not.toBe(workKey({ title: 'The Golden Gate', artist: 'Jan Matejko' }));
+  });
 });
 
 describe('fuse (reciprocal rank fusion)', () => {
@@ -249,6 +266,7 @@ type Item = {
   thumbUrl?: string; previewUrl?: string; fullUrl?: string;
   width?: number; height?: number;
   date?: string; medium?: string; tags?: string[]; downloads?: unknown[];
+  wikidataId?: string;
   // set at runtime by dedupe()
   dupCount?: number; mergedSources?: string[];
   variants?: Array<{ source: string; date?: string; medium?: string }>;
@@ -311,6 +329,37 @@ describe('dedupe', () => {
     ]);
     expect(out).toHaveLength(1);
     expect(out[0].dupCount).toBe(2);
+  });
+
+  it('folds the SAME painting across languages via Wikidata QID (different files + titles)', () => {
+    // The cross-language case: a Polish-titled Commons scan, an English-titled
+    // Commons scan, and the Wikidata item — different files, different titles, no
+    // shared artist spelling — all carry the same artwork QID, so they collapse.
+    const out = dedupe([
+      mk({ id: 'commons-1', source: 'commons', title: 'Bitwa pod Grunwaldem', artist: 'Jan Matejko', fullUrl: 'https://upload.wikimedia.org/wikipedia/commons/3/38/Grunwald_pl.jpg', wikidataId: 'Q1144558', width: 1280, height: 800 }),
+      mk({ id: 'commons-2', source: 'commons', title: 'Battle of Grunwald', artist: 'Matejko', fullUrl: 'https://upload.wikimedia.org/wikipedia/commons/9/99/Grunwald_en.jpg', wikidataId: 'Q1144558', width: 4000, height: 2500 }),
+      mk({ id: 'wikidata-Q1144558', source: 'wikidata', title: 'The Battle of Grunwald', artist: 'Jan Matejko', fullUrl: 'https://commons.wikimedia.org/wiki/Special:FilePath/wd.jpg' }),
+    ]);
+    expect(out).toHaveLength(1);
+    expect(out[0].dupCount).toBe(2); // commons + wikidata (2 distinct sources)
+    expect(out[0].fullUrl).toContain('Grunwald_en'); // largest image wins
+    expect(out[0].wikidataId).toBe('Q1144558');
+  });
+
+  it('unions a Commons file (QID via Structured Data) with a wikidata-Q id', () => {
+    const out = dedupe([
+      mk({ id: 'commons-77', source: 'commons', title: 'A detail crop', artist: 'X', fullUrl: 'https://upload.wikimedia.org/wikipedia/commons/a/aa/Crop.jpg', wikidataId: 'Q42' }),
+      mk({ id: 'wikidata-Q42', source: 'wikidata', title: 'Whole Work', artist: 'X', fullUrl: 'https://m/whole.jpg' }),
+    ]);
+    expect(out).toHaveLength(1);
+  });
+
+  it('never merges on an empty / missing QID', () => {
+    const out = dedupe([
+      mk({ id: 'commons-1', source: 'commons', title: 'Thing One', artist: 'A', fullUrl: 'https://m/1.jpg' }),
+      mk({ id: 'commons-2', source: 'commons', title: 'Thing Two', artist: 'B', fullUrl: 'https://m/2.jpg' }),
+    ]);
+    expect(out).toHaveLength(2);
   });
 
   it('does NOT merge distinct "Untitled" works by the same artist', () => {

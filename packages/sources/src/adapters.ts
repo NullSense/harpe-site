@@ -472,10 +472,60 @@ export async function fetchCommons(q: string, signal?: AbortSignal): Promise<Art
       });
     }
 
+    await enrichCommonsWikidataIds(items, dl.signal);
     return items;
   } finally {
     dl.clear();
   }
+}
+
+// ─── Commons → Wikidata QID enrichment (the cross-language unifier) ────────────
+// A Commons file's Structured Data carries P6243 "digital representation of" → the
+// artwork's Wikidata QID (used for 2-D artwork scans/photos under PD-art). That
+// QID is language-independent, so the Polish and English scans of one painting —
+// and the matching Wikidata item — all share it, letting dedupe() fold them into
+// one card. Best-effort: ANY failure leaves items unchanged (search must never
+// break because Structured Data was slow/unavailable). One batched wbgetentities
+// call per ≤50 files; an in-instance cache spares repeat lookups across queries.
+const _sdcCache = new Map<string, string | null>(); // pageid → QID | null (resolved miss)
+
+export async function enrichCommonsWikidataIds(items: ArtItem[], signal: AbortSignal): Promise<void> {
+  const need = new Map<string, ArtItem>(); // uncached pageid → item
+  for (const it of items) {
+    const m = /^commons-(\d+)$/.exec(it.id);
+    if (!m) continue;
+    const cached = _sdcCache.get(m[1]);
+    if (cached !== undefined) { if (cached) it.wikidataId = cached; continue; }
+    need.set(m[1], it);
+  }
+  if (need.size === 0) return;
+  const pids = [...need.keys()];
+  try {
+    for (let i = 0; i < pids.length; i += 50) {
+      const batch = pids.slice(i, i + 50);
+      const ids = batch.map((p) => `M${p}`).join('|');
+      const url =
+        `https://commons.wikimedia.org/w/api.php?action=wbgetentities&format=json` +
+        `&props=claims&ids=${encodeURIComponent(ids)}`;
+      const res = await timedFetch(url, signal);
+      if (!res.ok) return; // give up quietly — items keep flowing without a QID
+      const json = await res.json() as {
+        entities?: Record<string, {
+          statements?: Record<string, Array<{ mainsnak?: { datavalue?: { value?: { id?: unknown } } } }>>;
+          claims?: Record<string, Array<{ mainsnak?: { datavalue?: { value?: { id?: unknown } } } }>>;
+        }>;
+      };
+      for (const p of batch) {
+        const ent = json.entities?.[`M${p}`];
+        // MediaInfo entities expose statements under `statements` (older API: `claims`).
+        const claims = ent?.statements ?? ent?.claims;
+        const qid = str(claims?.P6243?.[0]?.mainsnak?.datavalue?.value?.id);
+        const valid = /^Q\d+$/.test(qid) ? qid : null;
+        _sdcCache.set(p, valid);
+        if (valid) { const it = need.get(p); if (it) it.wikidataId = valid; }
+      }
+    }
+  } catch { /* best-effort: leave items unenriched */ }
 }
 
 // ─── WikiArt (paintings-focused; keyless v2 API) ──────────────────────────────
