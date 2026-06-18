@@ -23,3 +23,6 @@ demo/web.mp4
 
 # build artifact from ingest pipeline (pushed to HF, not git)
 harpe-art.parquet
+
+# DuckDB temp spill (ingest script)
+.tmp/
