@@ -34,8 +34,12 @@ Verified row counts are from live validation runs (see git history / agent repor
 | `si` | Smithsonian Open Access | ~86k (8 art units) | S3 art-unit files (`00..ff.txt`, ~350 MB) | CC0 |
 | `wikidata` | Wikidata (paintings/sculpture/print/drawing) | ~680k | WDQS SPARQL paging → JSONL, adaptive + resumable | CC0 meta, per-item img |
 | `loc` | Library of Congress (Prints & Photographs) | ~tens of k (capped; ~1M full) | keyless JSON API, year-window paged → JSONL; IIIF images | mostly PD / no known restrictions |
+| `harvard` | Harvard Art Museums | ~200k (full) | **key-gated** REST API → full-res IIIF; `HARVARD_API_KEY` | ⚠ **non-commercial ToS** — opt-in |
+| `europeana` | Europeana (aggregator) | up to ~21M (capped 500k default) | **key-gated** cursor Search API; provider full-res (~90%) + Europeana thumb fallback | per-item; `reusability=open` |
 
-**Combined deep-searchable total: ~1.6M+ works** (vs. 3 dump-backed sources before).
+**Combined deep-searchable total: ~1.6M+ works** (CC0 core) — up to several M more if the
+key-gated `harvard`/`europeana` are ingested. Run those explicitly (`--sources harvard` /
+`--sources europeana`) with their env keys set; they skip cleanly when no key is present.
 
 > **`met` is now dump-backed (no crawl).** The Met *API* (collectionapi) is behind an
 > Imperva/Incapsula wall, but its *image CDN* (images.metmuseum.org) is open, and the
@@ -86,11 +90,17 @@ URL) skips just that source — the rest still build and the Parquet is written.
 
 ### Site registry — DONE (flipped 2026-06-18)
 `packages/sources/src/registry.ts` now serves `moma, nga, mia, aic, cleveland, wellcome,
-smk, si, wikidata, met, loc` (11) from the dump (`fetchDumpSource`, gated on
-`HARPE_DUMP_DATASET`), so the site searches the deep index instead of sampling those live
-APIs. The remaining live-API sources are commons, wikiart, vam, nasjonalmuseet, digitalnz,
-europeana, harvard, parismusees. To dump-back a new source later: add it to
-`DUMP_SOURCE_LABELS` in `adapters.ts`, then add a `dump('<key>', '<Label>')` line in `registry.ts`.
+smk, si, wikidata, met, loc, harvard, europeana` (13) from the dump (`fetchDumpSource`, gated
+on `HARPE_DUMP_DATASET`), so the site searches the deep index instead of sampling those live
+APIs. Remaining live-API: commons, wikiart, vam, nasjonalmuseet, digitalnz, **parismusees**
+(query rebuilt against the current NodeOeuvre schema — thumbnails only on a public token;
+HD is private-API). To dump-back a new source later: add it to `DUMP_SOURCE_LABELS` in
+`adapters.ts`, then add a `dump('<key>', '<Label>')` line in `registry.ts`.
+
+> **Full-res with your keys (2026-06-18):** Harvard serves full-res IIIF (validated 200
+> image/jpeg) and Europeana's `edmIsShownBy` provider images load ~90% of the time (thumb
+> fallback for the rest) — so both are real full-res sources, not thumbnail-only. Paris
+> Musées HD is genuinely gated to a *private* API; a public token returns thumbnails only.
 
 ### Site runtime resilience — `resilience.ts` (cockatiel)
 The per-request fan-out is wrapped in resilience policies so one degraded upstream can't
@@ -119,14 +129,16 @@ transport; the old `hf_transfer` / `HF_HUB_ENABLE_HF_TRANSFER` is deprecated and
 
 ## ⏸️ Deferred — feasible, but key-gated or low-ROI
 
-### Europeana — `europeana`  (HELD — built but not enabled)
-A working harvester exists (cursor Search API, `qf=TYPE:IMAGE&reusability=open`, using
-Europeana's own hosted thumbnail API so images reliably hotlink). **Held out of the
-default ingest on purpose:** (1) needs a free `EUROPEANA_API_KEY` (a full ~21M-record
-harvest is multi-day on the free quota); (2) **thumbnails only** (~200–400px, no full-res);
-(3) it re-aggregates Rijksmuseum / Wellcome / SMK etc. that we already carry in full —
-so it mostly adds *duplicate, lower-res* rows and would dilute quality more than it adds
-reach. Enable later only if breadth matters more than that trade-off.
+### Europeana — `europeana`  (IMPLEMENTED, key-gated opt-in)
+Now a real source (see implemented table): provider full-res via `edmIsShownBy` (~90% load,
+HEAD-verified) with Europeana's hosted thumbnail as fallback. Needs `EUROPEANA_API_KEY`;
+default-capped at 500k rows; run explicitly. Caveat: re-aggregates Rijksmuseum/Wellcome/SMK
+etc. we already carry, so expect some duplication.
+
+### Harvard Art Museums — `harvard`  (IMPLEMENTED, key-gated, ⚠ non-commercial ToS)
+Now a real source: full-res IIIF (`baseimageurl` → `/full/full/0/default.jpg`, validated 200).
+Needs `HARVARD_API_KEY`. ⚠ Harvard's API ToS is **non-commercial + attribution** — only
+ingest if your use qualifies; that's an operator decision. Rate limit 2,500/day.
 
 ### Nasjonalmuseet (Norway) — `nasjonalmuseet`  (needs a free KulturIT/DiMu key)
 - v1 Collection API retired Jan 2025; v2 not shipped. Harvest via **DiMu Solr**:
@@ -147,16 +159,8 @@ reach. Enable later only if breadth matters more than that trade-off.
   **non-commercial** clause is a deliberate decision for a public site. Keep live-only
   unless that's cleared. (IIIF base + `systemNumber` are in every record.)
 
-### Harvard Art Museums — `harvard`  (needs key; ToS)
-- ~261k objects, IIIF images, but **2,500 API calls/day/key** (a full harvest takes 2+ days)
-  and ToS forbids caching responses >2 weeks + is **non-commercial**. The rate cap and
-  the non-commercial term make a published dump non-viable without written permission.
-  Keep live-only.
-
-### Paris Musées — `parismusees`  (needs token)
-- ~150k CC0 works, but **no bulk dump** — GraphQL only, and **full-HD images are behind a
-  private API** requiring an institutional agreement (public tier serves thumbnails only).
-  Keep live-only (thumbnails).
+(Harvard and Paris Musées moved out of this section — Harvard is now an opt-in key-gated
+dump source, and Paris Musées is fixed + live again; see above.)
 
 ### DigitalNZ — `digitalnz`  (needs key)
 - Aggregator; **no dump** (promised in 2014, never shipped). Per-contributor rights, no IIIF,

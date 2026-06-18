@@ -53,6 +53,7 @@ import tempfile
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -1050,6 +1051,217 @@ def loc_sql(jsonl_path: str) -> str:
             "WHERE image_thumb IS NOT NULL AND image_full IS NOT NULL")
 
 
+# ─── Harvard Art Museums (key-gated; full-res IIIF) ──────────────────────────
+# Env: HARVARD_API_KEY (free, instant). ⚠ ToS is NON-COMMERCIAL + attribution —
+# only ingest if your use qualifies. Image CDN (ids.lib.harvard.edu) hotlinks.
+HARVARD_API_BASE = "https://api.harvardartmuseums.org/object"
+HARVARD_FIELDS = ("id,title,people,dated,medium,dimensions,culture,creditline,"
+                  "primaryimageurl,baseimageurl,url,imagepermissionlevel,accesslevel,copyright")
+
+
+def harvest_harvard(max_pages: int = 2000) -> str:
+    """Page the Harvard Art Museums API → JSONL (objects with a usable image).
+    Full-res via IIIF baseimageurl. Key-gated; greedy salvage on failure."""
+    key = os.environ.get("HARVARD_API_KEY", "").strip()
+    if not key:
+        raise HarvestBlocked("harvard: HARVARD_API_KEY not set (free at harvardartmuseums.org/collections/api).")
+    dest = os.path.join(tempfile.gettempdir(), "harpe-harvard.jsonl")
+    if os.path.exists(dest):
+        print(f"Reusing existing Harvard harvest at {dest} (delete to re-harvest).")
+        return dest
+    print("Harvesting Harvard Art Museums …")
+    tmp, total, page, incomplete = dest + ".tmp", 0, 1, None
+
+    def _page(p):
+        url = (f"{HARVARD_API_BASE}?apikey={key}&size=100&page={p}&hasimage=1&fields={HARVARD_FIELDS}")
+        req = urllib.request.Request(url, headers={"User-Agent": "harpe-ingest/1.0 (non-commercial)"})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return json.load(r)
+
+    def _row(o):
+        if (o.get("imagepermissionlevel") or 0) >= 2 or (o.get("accesslevel") or 0) != 1:
+            return None
+        base = (o.get("baseimageurl") or "").strip()
+        primary = (o.get("primaryimageurl") or "").strip()
+        if not base and not primary:
+            return None
+        full = f"{base}/full/full/0/default.jpg" if base else primary
+        thumb = f"{base}/full/!400,400/0/default.jpg" if base else primary
+        artist = None
+        for pp in (o.get("people") or []):
+            if (pp.get("role") or "").lower() == "artist":
+                artist = (pp.get("name") or "").strip() or None
+                break
+        if artist is None and o.get("people"):
+            artist = (o["people"][0].get("name") or "").strip() or None
+        cr = (o.get("copyright") or "").strip()
+        return {
+            "source": "harvard", "id": f"harvard-{o['id']}",
+            "title": (o.get("title") or "").strip() or "Untitled", "artist": artist,
+            "date": (o.get("dated") or "").strip() or None,
+            "medium": (o.get("medium") or "").strip() or None,
+            "dimensions": (o.get("dimensions") or "").strip() or None,
+            "culture": (o.get("culture") or "").strip() or None,
+            "credit_line": (o.get("creditline") or "").strip() or None,
+            "description": None, "image_thumb": thumb, "image_full": full,
+            "width": None, "height": None,
+            "source_url": (o.get("url") or "").strip() or None,
+            "rights_type": (cr[:200] if cr else None),
+            "is_public_domain": "public domain" in cr.lower() if cr else False,
+        }
+
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            while True:
+                if _ABORT.is_set():
+                    raise KeyboardInterrupt
+                data = _retry(f"Harvard page={page}", lambda p=page: _page(p))
+                info = data.get("info") or {}
+                for o in (data.get("records") or []):
+                    row = _row(o)
+                    if row:
+                        fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+                        total += 1
+                fh.flush()
+                if page % 20 == 0:
+                    print(f"  Harvard page {page} → {total:,} rows")
+                if not info.get("next") or page >= max_pages:
+                    break
+                page += 1
+                time.sleep(0.3)
+    except KeyboardInterrupt:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        raise
+    except (HarvestBlocked, Exception) as e:
+        incomplete = str(e) or type(e).__name__
+    if total == 0:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        raise HarvestBlocked(f"Harvard: 0 rows{f' ({incomplete})' if incomplete else ''}.")
+    os.replace(tmp, dest)
+    print(f"[harvard] {'INCOMPLETE (' + incomplete + ') — ' if incomplete else ''}{total:,} rows → {dest}")
+    return dest
+
+
+def harvard_sql(jsonl_path: str) -> str:
+    p = jsonl_path.replace("'", "''")
+    cols = ("{source:'VARCHAR',id:'VARCHAR',title:'VARCHAR',artist:'VARCHAR',date:'VARCHAR',"
+            "medium:'VARCHAR',dimensions:'VARCHAR',culture:'VARCHAR',credit_line:'VARCHAR',"
+            "description:'VARCHAR',image_thumb:'VARCHAR',image_full:'VARCHAR',width:'INTEGER',"
+            "height:'INTEGER',source_url:'VARCHAR',rights_type:'VARCHAR',is_public_domain:'BOOLEAN'}")
+    return (f"SELECT * FROM read_json('{p}', format='newline_delimited', columns={cols}) "
+            "WHERE image_thumb IS NOT NULL AND image_full IS NOT NULL")
+
+
+# ─── Europeana (key-gated; full-res where the provider allows) ────────────────
+# Env: EUROPEANA_API_KEY (free; "apidemo" works for small runs). image_full =
+# provider's edmIsShownBy (~90% hotlink), image_thumb = Europeana's own reliable
+# thumbnail. reusability=open. NOTE: re-aggregates sources we already carry.
+_EU_SEARCH = "https://api.europeana.eu/record/v2/search.json"
+
+
+def harvest_europeana(max_rows: int | None = 500_000) -> str:
+    """Cursor-page Europeana open IMAGE records → JSONL. Key-gated, resumable, greedy."""
+    key = os.environ.get("EUROPEANA_API_KEY", "").strip() or "apidemo"
+    out_path = os.path.join(tempfile.gettempdir(), "harpe-europeana.jsonl")
+    state_path = out_path + ".state.json"
+    if os.path.exists(out_path) and not os.path.exists(state_path):
+        print(f"Reusing existing Europeana harvest at {out_path} (delete to re-harvest).")
+        return out_path
+    cursor, total = "*", 0
+    if os.path.exists(state_path):
+        try:
+            st = json.load(open(state_path, encoding="utf-8"))
+            cursor, total = st.get("cursor", "*"), st.get("total", 0)
+            print(f"Resuming Europeana ({total:,} rows already).")
+        except Exception:
+            pass
+    tmp = out_path + ".partial"
+    incomplete = None
+
+    def _page(cur):
+        params = {"query": "*", "qf": "TYPE:IMAGE", "reusability": "open", "profile": "rich",
+                  "rows": "100", "cursor": cur, "wskey": key}
+        qs = "&".join(f"{k}={urllib.parse.quote(str(v))}" for k, v in params.items())
+        req = urllib.request.Request(f"{_EU_SEARCH}?{qs}", headers={"User-Agent": "harpe-ingest/1.0"})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return json.load(r)
+
+    def _row(it):
+        rid = it.get("id", "")
+        if not rid:
+            return None
+        full = (it.get("edmIsShownBy") or [None])[0]
+        thumb = (it.get("edmPreview") or [None])[0]
+        thumb = thumb or full
+        if not thumb:
+            return None
+        rights = (it.get("rights") or [""])[0]
+        is_pd = any(x in rights.lower() for x in ("publicdomain/zero", "publicdomain/mark"))
+
+        def first(f):
+            v = it.get(f)
+            return (v[0] if isinstance(v, list) and v else (v or None)) if v else None
+        return {
+            "source": "europeana", "id": f"europeana-{rid.lstrip('/').replace('/', '-')}",
+            "title": first("title"), "artist": first("dcCreator"),
+            "date": first("year"), "medium": first("dcType"), "dimensions": None,
+            "culture": first("edmCountry"), "credit_line": first("dataProvider"),
+            "description": None, "image_thumb": thumb, "image_full": full or thumb,
+            "width": None, "height": None, "source_url": first("edmIsShownAt"),
+            "rights_type": rights or None, "is_public_domain": is_pd,
+        }
+
+    try:
+        with open(tmp, "a" if os.path.exists(tmp) else "w", encoding="utf-8") as fh:
+            while True:
+                if _ABORT.is_set():
+                    raise KeyboardInterrupt
+                data = _retry(f"Europeana cursor={cursor[:24]}", lambda c=cursor: _page(c))
+                if not data.get("success", True):
+                    raise HarvestBlocked(f"Europeana refused: {data.get('error') or 'success=false'} "
+                                         "(set EUROPEANA_API_KEY).")
+                for it in (data.get("items") or []):
+                    row = _row(it)
+                    if row:
+                        fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+                        total += 1
+                fh.flush()
+                nxt = data.get("nextCursor")
+                json.dump({"cursor": nxt or cursor, "total": total}, open(state_path, "w", encoding="utf-8"))
+                if total % 1000 == 0:
+                    print(f"  Europeana: {total:,} rows")
+                if (max_rows and total >= max_rows) or not nxt:
+                    break
+                cursor = nxt
+                time.sleep(1.0)
+    except KeyboardInterrupt:
+        print(f"\n⏸  Europeana interrupted — {total:,} saved; re-run to resume.")
+        raise
+    except (HarvestBlocked, Exception) as e:
+        incomplete = str(e) or type(e).__name__
+    if total == 0:
+        for f in (tmp, state_path):
+            if os.path.exists(f):
+                os.remove(f)
+        raise HarvestBlocked(f"Europeana: 0 rows{f' ({incomplete})' if incomplete else ''}.")
+    os.replace(tmp, out_path)
+    if os.path.exists(state_path):
+        os.remove(state_path)
+    print(f"[europeana] {'INCOMPLETE (' + incomplete + ') — ' if incomplete else ''}{total:,} rows → {out_path}")
+    return out_path
+
+
+def europeana_sql(jsonl_path: str) -> str:
+    p = jsonl_path.replace("'", "''")
+    cols = ("{source:'VARCHAR',id:'VARCHAR',title:'VARCHAR',artist:'VARCHAR',date:'VARCHAR',"
+            "medium:'VARCHAR',dimensions:'VARCHAR',culture:'VARCHAR',credit_line:'VARCHAR',"
+            "description:'VARCHAR',image_thumb:'VARCHAR',image_full:'VARCHAR',width:'INTEGER',"
+            "height:'INTEGER',source_url:'VARCHAR',rights_type:'VARCHAR',is_public_domain:'BOOLEAN'}")
+    return f"SELECT * FROM read_json('{p}', format='newline_delimited', columns={cols})"
+
+
 # ─── Source registry ─────────────────────────────────────────────────────────
 # key → zero-arg callable returning that source's SELECT (running any harvest
 # step first). MoMA/NGA are the always-on base; the rest are opt-in.
@@ -1065,6 +1277,8 @@ SOURCES = {
     "loc": lambda: loc_sql(harvest_loc()),
     "si": lambda: si_sql(os.path.join(download_si_art(), "*.txt")),
     "wikidata": lambda: wikidata_sql(harvest_wikidata()),
+    "harvard": lambda: harvard_sql(harvest_harvard()),       # needs HARVARD_API_KEY (non-commercial ToS)
+    "europeana": lambda: europeana_sql(harvest_europeana()),  # needs EUROPEANA_API_KEY
 }
 DEFAULT_SOURCES = list(SOURCES)   # default = every source
 
