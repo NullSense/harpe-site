@@ -102,8 +102,15 @@ export interface SourceAdapter {
   key: SourceKey;
   /** Display name, used in chips and per-source warnings. */
   label: string;
-  /** Query the source and return normalized, unified ArtItems. */
-  fetch: (q: string) => Promise<ArtItem[]>;
+  /** Query the source and return normalized, unified ArtItems.
+   *  The optional AbortSignal is supplied by the resilience layer's timeout
+   *  policy; adapters should pass it to fetch() and fall back to their own
+   *  deadline when it's absent (direct/CLI calls). */
+  fetch: (q: string, signal?: AbortSignal) => Promise<ArtItem[]>;
+  /** Served from the dump-backed HF index (one shared, retried, breakered
+   *  /search call) rather than a live API — so the per-source live breaker/
+   *  timeout is skipped for it. Set by the registry's dump() helper. */
+  dumpBacked?: boolean;
   /** Env var that must be set for this source to run. Omit for keyless sources. */
   requiresEnv?: string;
   /** Any one of these env vars can enable the source. */

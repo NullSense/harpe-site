@@ -18,6 +18,10 @@
   },
   "dependencies": {
     "@harpe/core": "workspace:*",
+    "cockatiel": "^4.0.0",
     "undici": "^6.21.0"
+  },
+  "engines": {
+    "node": ">=22"
   }
 }

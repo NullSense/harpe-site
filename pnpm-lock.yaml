@@ -108,6 +108,9 @@ importers:
       '@harpe/core':
         specifier: workspace:*
         version: link:../core
+      cockatiel:
+        specifier: ^4.0.0
+        version: 4.0.0
       undici:
         specifier: ^6.21.0
         version: 6.27.0
@@ -714,6 +717,10 @@ packages:
   chai@6.2.2:
     resolution: {integrity: sha512-NUPRluOfOiTKBKvWPtSD4PhFvWCqOi0BGStNWs57X9js7XGTprSmFoz5F0tWhR4WPjNeR9jXqdC7/UpSJTnlRg==}
     engines: {node: '>=18'}
+
+  cockatiel@4.0.0:
+    resolution: {integrity: sha512-XpUZJnogsd03BGB19T9sv7Xb8SwvD8JddZV2Tlp0LNspopZ6Idv24ZwCl8vAGJ6JwODZ0zLRYVj3NWvmRcUDqA==}
+    engines: {node: '>=22'}
 
   color-convert@2.0.1:
     resolution: {integrity: sha512-RRECPsj7iu/xb5oKYcsFHSppFNnsj/52OVTRKb4zP5onXwVF3zVmmToNcOfGC+CRDpfK/U584fMg38ZHCaElKQ==}
@@ -1526,6 +1533,8 @@ snapshots:
   boolbase@1.0.0: {}
 
   chai@6.2.2: {}
+
+  cockatiel@4.0.0: {}
 
   color-convert@2.0.1:
     dependencies:

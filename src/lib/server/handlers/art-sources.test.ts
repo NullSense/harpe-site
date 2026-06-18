@@ -45,8 +45,11 @@ describe('SOURCES registry', () => {
 describe('activeSources', () => {
   it('with no env: only keyless, non-disabled sources', () => {
     const active = activeSources({});
-    expect(active.length).toBeGreaterThanOrEqual(12);
+    expect(active.length).toBeGreaterThanOrEqual(6);
     expect(active.every((s) => !s.requiresEnv && !s.requiresAnyEnv && !s.disabled)).toBe(true);
+    // The dump-backed museums are inactive without a dump dataset configured.
+    expect(active.some((s) => s.key === 'aic')).toBe(false);
+    expect(active.some((s) => s.key === 'wikidata')).toBe(false);
   });
 
   it('enables a keyed source when its env var is present', () => {
@@ -54,11 +57,11 @@ describe('activeSources', () => {
     expect(active.some((s) => s.key === 'europeana')).toBe(true);
   });
 
-  it('enables dump-backed museums from the combined dump dataset', () => {
+  it('enables all dump-backed museums from the combined dump dataset', () => {
     const active = activeSources({ HARPE_DUMP_DATASET: 'owner/harpe-art' } as NodeJS.ProcessEnv);
-    expect(active.some((s) => s.key === 'moma')).toBe(true);
-    expect(active.some((s) => s.key === 'nga')).toBe(true);
-    expect(active.some((s) => s.key === 'mia')).toBe(true);
+    for (const key of ['moma', 'nga', 'mia', 'aic', 'cleveland', 'wellcome', 'smk', 'si', 'wikidata']) {
+      expect(active.some((s) => s.key === key)).toBe(true);
+    }
   });
 
   it('enables a dump-backed museum from its per-source dump dataset', () => {

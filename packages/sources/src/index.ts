@@ -11,6 +11,7 @@
  */
 export { SOURCES, activeSources, gatherSources } from './registry.js';
 export { mapPool } from './helpers.js';
+export { runSource, sourceBreaker } from './resilience.js';
 
 // Re-export individual adapters so callers (e.g. CLI wrapper) can use them directly.
 export {

@@ -11,8 +11,9 @@ import { fetch, Agent } from 'undici';
 import type { ArtItem, Download } from '@harpe/core';
 import {
   str, num, fmtFromMime, fmtFromUrl, first, timedFetch, iiifImage, IIIF,
-  LOSSLESS_FORMATS, TIMEOUT_MS, MAX_ITEMS, mapPool, UA,
+  LOSSLESS_FORMATS, MAX_ITEMS, mapPool, UA, deadline,
 } from './helpers.js';
+import { dumpHttpPolicy, isBrokenCircuitError } from './resilience.js';
 
 // HTTP/2 dispatcher (lazy). NYPL's HTTP/1.1 path returns "HTTP Basic: Access
 // denied" and ignores the Token auth scheme; over HTTP/2 (what curl uses) the
@@ -26,16 +27,15 @@ export function h2Agent(): Agent {
 // GOD-FORMAT: added artwork_type_title → artworkType, classification_titles+subject_titles → tags,
 // style_titles → style, inscriptions → inscriptions, main_reference_number → accessionNumber.
 
-export async function fetchAic(q: string): Promise<ArtItem[]> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+export async function fetchAic(q: string, signal?: AbortSignal): Promise<ArtItem[]> {
+  const dl = deadline(signal);
 
   try {
     const url =
       `https://api.artic.edu/api/v1/artworks/search` +
       `?q=${encodeURIComponent(q)}&fields=id,title,artist_title,image_id,is_public_domain,dimensions,date_display,medium_display,description,place_of_origin,credit_line,artwork_type_title,classification_titles,subject_titles,style_titles,inscriptions,main_reference_number&limit=25`;
 
-    const res = await timedFetch(url, controller.signal);
+    const res = await timedFetch(url, dl.signal);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
     const json = await res.json() as {
@@ -114,23 +114,22 @@ export async function fetchAic(q: string): Promise<ArtItem[]> {
 
     return items;
   } finally {
-    clearTimeout(timer);
+    dl.clear();
   }
 }
 
 // ─── Met (Metropolitan Museum of Art) ────────────────────────────────────────
 // GOD-FORMAT: added objectName → artworkType; dimensions from measurements array.
 
-export async function fetchMet(q: string): Promise<ArtItem[]> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+export async function fetchMet(q: string, signal?: AbortSignal): Promise<ArtItem[]> {
+  const dl = deadline(signal);
 
   try {
     const searchUrl =
       `https://collectionapi.metmuseum.org/public/collection/v1/search` +
       `?q=${encodeURIComponent(q)}&hasImages=true`;
 
-    const searchRes = await timedFetch(searchUrl, controller.signal);
+    const searchRes = await timedFetch(searchUrl, dl.signal);
     if (!searchRes.ok) throw new Error(`HTTP ${searchRes.status}`);
 
     const searchJson = await searchRes.json() as { objectIDs?: unknown[] };
@@ -142,7 +141,7 @@ export async function fetchMet(q: string): Promise<ArtItem[]> {
       ids.map((id) =>
         timedFetch(
           `https://collectionapi.metmuseum.org/public/collection/v1/objects/${id}`,
-          controller.signal,
+          dl.signal,
         ).then((r) => r.json()),
       ),
     );
@@ -243,16 +242,15 @@ export async function fetchMet(q: string): Promise<ArtItem[]> {
 
     return items;
   } finally {
-    clearTimeout(timer);
+    dl.clear();
   }
 }
 
 // ─── Cleveland Museum of Art ──────────────────────────────────────────────────
 // GOD-FORMAT: added creditline → creditLine (was dropped before).
 
-export async function fetchCleveland(q: string): Promise<ArtItem[]> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+export async function fetchCleveland(q: string, signal?: AbortSignal): Promise<ArtItem[]> {
+  const dl = deadline(signal);
 
   try {
     // No cc0 filter — that excluded famous casts (e.g. Cleveland's The Thinker).
@@ -261,7 +259,7 @@ export async function fetchCleveland(q: string): Promise<ArtItem[]> {
       `https://openaccess-api.clevelandart.org/api/artworks/` +
       `?q=${encodeURIComponent(q)}&has_image=1&limit=25`;
 
-    const res = await timedFetch(url, controller.signal);
+    const res = await timedFetch(url, dl.signal);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
     const json = await res.json() as {
@@ -363,7 +361,7 @@ export async function fetchCleveland(q: string): Promise<ArtItem[]> {
 
     return items;
   } finally {
-    clearTimeout(timer);
+    dl.clear();
   }
 }
 
@@ -372,9 +370,8 @@ export async function fetchCleveland(q: string): Promise<ArtItem[]> {
 // ImageDescription → description, Credit → creditLine, LicenseUrl → licenseUrl,
 // and constructed sourceUrl from page title.
 
-export async function fetchCommons(q: string): Promise<ArtItem[]> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+export async function fetchCommons(q: string, signal?: AbortSignal): Promise<ArtItem[]> {
+  const dl = deadline(signal);
 
   try {
     const url =
@@ -382,7 +379,7 @@ export async function fetchCommons(q: string): Promise<ArtItem[]> {
       `&generator=search&gsrsearch=${encodeURIComponent(q)}&gsrnamespace=6&gsrlimit=25` +
       `&prop=imageinfo&iiprop=url%7Csize%7Cmime%7Cextmetadata&iiurlwidth=1024`;
 
-    const res = await timedFetch(url, controller.signal);
+    const res = await timedFetch(url, dl.signal);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
     const json = await res.json() as {
@@ -477,7 +474,7 @@ export async function fetchCommons(q: string): Promise<ArtItem[]> {
 
     return items;
   } finally {
-    clearTimeout(timer);
+    dl.clear();
   }
 }
 
@@ -486,13 +483,12 @@ export async function fetchCommons(q: string): Promise<ArtItem[]> {
 // detail endpoint (GET /en/api/2/Painting?paintingUrl=…) — deferred for latency.
 // TODO: add per-painting detail fetch for full WikiArt enrichment.
 
-export async function fetchWikiArt(q: string): Promise<ArtItem[]> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+export async function fetchWikiArt(q: string, signal?: AbortSignal): Promise<ArtItem[]> {
+  const dl = deadline(signal);
 
   try {
     const url = `https://www.wikiart.org/en/api/2/PaintingSearch?term=${encodeURIComponent(q)}`;
-    const res = await timedFetch(url, controller.signal);
+    const res = await timedFetch(url, dl.signal);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
     const json = await res.json() as {
@@ -533,7 +529,7 @@ export async function fetchWikiArt(q: string): Promise<ArtItem[]> {
 
     return items;
   } finally {
-    clearTimeout(timer);
+    dl.clear();
   }
 }
 
@@ -544,15 +540,14 @@ export async function fetchWikiArt(q: string): Promise<ArtItem[]> {
 // per result — deferred for latency.
 // TODO: add per-object detail fetch for full V&A enrichment.
 
-export async function fetchVam(q: string): Promise<ArtItem[]> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+export async function fetchVam(q: string, signal?: AbortSignal): Promise<ArtItem[]> {
+  const dl = deadline(signal);
 
   try {
     const url =
       `https://api.vam.ac.uk/v2/objects/search` +
       `?q=${encodeURIComponent(q)}&images_exist=1&page_size=25`;
-    const res = await timedFetch(url, controller.signal);
+    const res = await timedFetch(url, dl.signal);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
     const json = await res.json() as {
@@ -594,7 +589,7 @@ export async function fetchVam(q: string): Promise<ArtItem[]> {
     }
     return items;
   } finally {
-    clearTimeout(timer);
+    dl.clear();
   }
 }
 
@@ -603,15 +598,14 @@ export async function fetchVam(q: string): Promise<ArtItem[]> {
 // physicalDescription → medium; inspect actual license from work-level licenses
 // instead of hardcoding isPublicDomain=true.
 
-export async function fetchWellcome(q: string): Promise<ArtItem[]> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+export async function fetchWellcome(q: string, signal?: AbortSignal): Promise<ArtItem[]> {
+  const dl = deadline(signal);
 
   try {
     const url =
       `https://api.wellcomecollection.org/catalogue/v2/works` +
       `?query=${encodeURIComponent(q)}&pageSize=25&include=items,contributors,production,notes`;
-    const res = await timedFetch(url, controller.signal);
+    const res = await timedFetch(url, dl.signal);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
     const json = await res.json() as {
@@ -697,7 +691,7 @@ export async function fetchWellcome(q: string): Promise<ArtItem[]> {
     }
     return items;
   } finally {
-    clearTimeout(timer);
+    dl.clear();
   }
 }
 
@@ -706,14 +700,13 @@ export async function fetchWellcome(q: string): Promise<ArtItem[]> {
 // dimensions[] → dimensions string, materials → appended to medium, inscription → inscriptions,
 // object_number → accessionNumber.
 
-export async function fetchSmk(q: string): Promise<ArtItem[]> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+export async function fetchSmk(q: string, signal?: AbortSignal): Promise<ArtItem[]> {
+  const dl = deadline(signal);
   try {
     const url =
       `https://api.smk.dk/api/v1/art/search?keys=${encodeURIComponent(q)}` +
       `&filters=%5Bhas_image%3Atrue%5D&offset=0&rows=25`;
-    const res = await timedFetch(url, controller.signal);
+    const res = await timedFetch(url, dl.signal);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const json = await res.json() as {
       items?: Array<{
@@ -805,19 +798,18 @@ export async function fetchSmk(q: string): Promise<ArtItem[]> {
     }
     return items;
   } finally {
-    clearTimeout(timer);
+    dl.clear();
   }
 }
 
 // ─── Nasjonalmuseet (Norway; keyless, IIIF) ───────────────────────────────────
 // GOD-FORMAT: added sourceUrl (from inventoryNumber), culture (from classifications/production).
 
-export async function fetchNasjonalmuseet(q: string): Promise<ArtItem[]> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+export async function fetchNasjonalmuseet(q: string, signal?: AbortSignal): Promise<ArtItem[]> {
+  const dl = deadline(signal);
   try {
     const url = `https://api.nasjonalmuseet.no/api/v1/objects/text-search?q=${encodeURIComponent(q)}`;
-    const res = await timedFetch(url, controller.signal);
+    const res = await timedFetch(url, dl.signal);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const json = await res.json() as {
       data?: Array<{
@@ -893,21 +885,20 @@ export async function fetchNasjonalmuseet(q: string): Promise<ArtItem[]> {
     }
     return items;
   } finally {
-    clearTimeout(timer);
+    dl.clear();
   }
 }
 
 // ─── DigitalNZ (New Zealand aggregator; keyless) ──────────────────────────────
 // GOD-FORMAT: added rights → licenseUrl, subject → tags.
 
-export async function fetchDigitalNZ(q: string): Promise<ArtItem[]> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+export async function fetchDigitalNZ(q: string, signal?: AbortSignal): Promise<ArtItem[]> {
+  const dl = deadline(signal);
   try {
     const url =
       `https://api.digitalnz.org/v3/records.json?text=${encodeURIComponent(q)}` +
       `&i%5Bcategory%5D=Images&per_page=25`;
-    const res = await timedFetch(url, controller.signal);
+    const res = await timedFetch(url, dl.signal);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const json = await res.json() as {
       search?: { results?: Array<{
@@ -959,7 +950,7 @@ export async function fetchDigitalNZ(q: string): Promise<ArtItem[]> {
     }
     return items;
   } finally {
-    clearTimeout(timer);
+    dl.clear();
   }
 }
 
@@ -971,9 +962,8 @@ export async function fetchDigitalNZ(q: string): Promise<ArtItem[]> {
 // GOD-FORMAT: added OPTIONAL P135 (movement → style), P2048/P2049 (height/width cm → dimensions),
 // P180/P921 (depicts/main subject → tags), P276 (location → culture supplement).
 
-export async function fetchWikidata(q: string): Promise<ArtItem[]> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+export async function fetchWikidata(q: string, signal?: AbortSignal): Promise<ArtItem[]> {
+  const dl = deadline(signal);
   try {
     const safe = q.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/[\n\r]/g, ' ');
     const sparql =
@@ -994,7 +984,7 @@ export async function fetchWikidata(q: string): Promise<ArtItem[]> {
       ` OPTIONAL { ?item wdt:P276 ?location. }` +
       ` SERVICE wikibase:label { bd:serviceParam wikibase:language "en". } } LIMIT 25`;
     const url = `https://query.wikidata.org/sparql?format=json&query=${encodeURIComponent(sparql)}`;
-    const res = await timedFetch(url, controller.signal);
+    const res = await timedFetch(url, dl.signal);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const json = await res.json() as {
       results?: { bindings?: Array<Record<string, { value?: unknown }>> };
@@ -1055,7 +1045,7 @@ export async function fetchWikidata(q: string): Promise<ArtItem[]> {
     }
     return items;
   } finally {
-    clearTimeout(timer);
+    dl.clear();
   }
 }
 
@@ -1191,23 +1181,22 @@ async function fetchEuropeanaBatch(key: string, q: string, signal: AbortSignal, 
 const EUROPEANA_FANOUT_CONCURRENCY = Number(process.env.EUROPEANA_FANOUT_CONCURRENCY) || 6;
 const EUROPEANA_SPARSE_MIN = Number(process.env.EUROPEANA_SPARSE_MIN) || 12;
 
-export async function fetchEuropeana(q: string): Promise<ArtItem[]> {
+export async function fetchEuropeana(q: string, signal?: AbortSignal): Promise<ArtItem[]> {
   const key = process.env.EUROPEANA_API_KEY!;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  const dl = deadline(signal);
   try {
-    const base = await fetchEuropeanaBatch(key, q, controller.signal);
+    const base = await fetchEuropeanaBatch(key, q, dl.signal);
     // Base is rich enough — country fan-out would only add discarded noise.
     if (base.length >= EUROPEANA_SPARSE_MIN) return base;
 
     // Sparse base: fan out per-country to lift recall, then dedupe by record id.
     const extra = await mapPool(EUROPEANA_COUNTRY_FOCUS, EUROPEANA_FANOUT_CONCURRENCY, (country) =>
-      fetchEuropeanaBatch(key, q, controller.signal, country),
+      fetchEuropeanaBatch(key, q, dl.signal, country),
     );
     const items = [base, ...extra.map((b) => b ?? [])].flat();
     return [...new Map(items.map((item) => [item.id, item])).values()];
   } finally {
-    clearTimeout(timer);
+    dl.clear();
   }
 }
 
@@ -1215,15 +1204,14 @@ export async function fetchEuropeana(q: string): Promise<ArtItem[]> {
 // GOD-FORMAT: capture pixel dims from images[] width/height → ArtItem width/height;
 // accessionNumber, classification → artworkType, period/century → style,
 // worktypes → tags, secondary images → extra downloads[].
-export async function fetchHarvard(q: string): Promise<ArtItem[]> {
+export async function fetchHarvard(q: string, signal?: AbortSignal): Promise<ArtItem[]> {
   const key = process.env.HARVARD_API_KEY!;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  const dl = deadline(signal);
   try {
     const url =
       `https://api.harvardartmuseums.org/object?apikey=${encodeURIComponent(key)}` +
       `&keyword=${encodeURIComponent(q)}&hasimage=1&size=30&sort=rank`;
-    const res = await timedFetch(url, controller.signal);
+    const res = await timedFetch(url, dl.signal);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const json = await res.json() as {
       records?: Array<{
@@ -1300,21 +1288,20 @@ export async function fetchHarvard(q: string): Promise<ArtItem[]> {
     }
     return items;
   } finally {
-    clearTimeout(timer);
+    dl.clear();
   }
 }
 
 // Smithsonian Open Access (CC0). Free key: SMITHSONIAN_API_KEY
 // GOD-FORMAT: map freetext date, physicalDescription, place, creditLine, notes, sourceUrl.
-export async function fetchSmithsonian(q: string): Promise<ArtItem[]> {
+export async function fetchSmithsonian(q: string, signal?: AbortSignal): Promise<ArtItem[]> {
   const key = process.env.SMITHSONIAN_API_KEY!;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  const dl = deadline(signal);
   try {
     const url =
       `https://api.si.edu/openaccess/api/v1.0/search?api_key=${encodeURIComponent(key)}` +
       `&q=${encodeURIComponent(`${q} AND online_media_type:Images`)}&rows=25`;
-    const res = await timedFetch(url, controller.signal);
+    const res = await timedFetch(url, dl.signal);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const json = await res.json() as {
       response?: { rows?: Array<{
@@ -1383,7 +1370,7 @@ export async function fetchSmithsonian(q: string): Promise<ArtItem[]> {
     }
     return items;
   } finally {
-    clearTimeout(timer);
+    dl.clear();
   }
 }
 
@@ -1391,10 +1378,9 @@ export async function fetchSmithsonian(q: string): Promise<ArtItem[]> {
 // GOD-FORMAT: request fieldAuteurs → artist, fieldDateCreation → date,
 // fieldTechniquesMatieres → medium, fieldMusee → creditLine.
 // NOTE: GraphQL search syntax is best-effort — verify once the token is live.
-export async function fetchParisMusees(q: string): Promise<ArtItem[]> {
+export async function fetchParisMusees(q: string, signal?: AbortSignal): Promise<ArtItem[]> {
   const token = process.env.PARIS_MUSEES_TOKEN!;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  const dl = deadline(signal);
   try {
     const query =
       `{ nodeQuery(filter: {conditions: [` +
@@ -1410,7 +1396,7 @@ export async function fetchParisMusees(q: string): Promise<ArtItem[]> {
       ` } } } }`;
     const res = await fetch('https://apicollections.parismusees.paris.fr/graphql', {
       method: 'POST',
-      signal: controller.signal,
+      signal: dl.signal,
       headers: { 'Content-Type': 'application/json', 'auth-token': token, 'User-Agent': 'Mozilla/5.0' },
       body: JSON.stringify({ query }),
     }) as unknown as Response;
@@ -1461,7 +1447,7 @@ export async function fetchParisMusees(q: string): Promise<ArtItem[]> {
     }
     return items;
   } finally {
-    clearTimeout(timer);
+    dl.clear();
   }
 }
 
@@ -1475,6 +1461,12 @@ const DUMP_SOURCE_LABELS = {
   moma: 'MoMA',
   nga: 'NGA',
   mia: 'MIA',
+  aic: 'AIC',
+  cleveland: 'Cleveland',
+  wellcome: 'Wellcome',
+  smk: 'SMK',
+  si: 'Smithsonian',
+  wikidata: 'Wikidata',
 } as const satisfies Partial<Record<ArtItem['source'], string>>;
 
 type DumpSourceKey = keyof typeof DUMP_SOURCE_LABELS;
@@ -1546,6 +1538,9 @@ function fetchDumpSearch(dataset: string, q: string): Promise<ArtItem[]> {
       return items;
     })();
     dumpSearchCache.set(memKey, cached);
+    // Never cache a failed call (breaker-open / exhausted retries) for the life of
+    // the warm instance — drop it so the next query can try again.
+    cached.catch(() => dumpSearchCache.delete(memKey));
     // Bound the in-memory cache. `while`, not `if`: concurrent invocations can
     // insert several entries before any eviction runs, so a single `if` lets it grow.
     while (dumpSearchCache.size > 32) {
@@ -1558,15 +1553,14 @@ function fetchDumpSearch(dataset: string, q: string): Promise<ArtItem[]> {
 }
 
 async function fetchDumpSearchUncached(q: string, dataset: string): Promise<ArtItem[]> {
-  const controller = new AbortController();
-  // HF's /search can be slow when its index is cold — give it more headroom than
-  // the per-museum timeout so it doesn't abort on the first hit after idle.
-  const timer = setTimeout(() => controller.abort(), 13_000);
-  try {
-    const url =
-      `https://datasets-server.huggingface.co/search?dataset=${encodeURIComponent(dataset)}` +
-      `&config=default&split=train&query=${encodeURIComponent(q)}&offset=0&length=100`;
-    const res = await timedFetch(url, controller.signal);
+  const url =
+    `https://datasets-server.huggingface.co/search?dataset=${encodeURIComponent(dataset)}` +
+    `&config=default&split=train&query=${encodeURIComponent(q)}&offset=0&length=100`;
+  // Run through the shared retry + breaker + (cooperative) timeout policy. The
+  // timeout supplies the AbortSignal; HF's cold-index latency gets the policy's
+  // headroom rather than a hand-rolled controller.
+  return dumpHttpPolicy.execute(async ({ signal }) => {
+    const res = await timedFetch(url, signal);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const json = await res.json() as { rows?: Array<{ row?: Record<string, unknown> }> };
     const items: ArtItem[] = [];
@@ -1604,16 +1598,21 @@ async function fetchDumpSearchUncached(q: string, dataset: string): Promise<ArtI
       });
     }
     return items;
-  } finally {
-    clearTimeout(timer);
-  }
+  });
 }
 
 export async function fetchDumpSource(source: DumpSourceKey, q: string): Promise<ArtItem[]> {
   const dataset = dumpDatasetFor(source);
   if (!dataset) return [];
-  const all = await fetchDumpSearch(dataset, q);
-  return all.filter((it) => it.source === source).slice(0, MAX_ITEMS);
+  try {
+    const all = await fetchDumpSearch(dataset, q);
+    return all.filter((it) => it.source === source).slice(0, MAX_ITEMS);
+  } catch (e) {
+    // HF /search breaker open (or its retries exhausted): degrade quietly to no
+    // dump results for this query rather than erroring all 9 dump sources.
+    if (isBrokenCircuitError(e)) return [];
+    throw e;
+  }
 }
 
 // ─── Library of Congress (Prints & Photographs) ──────────────────────────────
@@ -1628,13 +1627,12 @@ function locName(raw: string): string {
   return s.replace(/\s+/g, ' ').trim().replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-export async function fetchLoc(q: string): Promise<ArtItem[]> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+export async function fetchLoc(q: string, signal?: AbortSignal): Promise<ArtItem[]> {
+  const dl = deadline(signal);
   try {
     const url =
       `https://www.loc.gov/photos/?q=${encodeURIComponent(q)}&fo=json&c=20&at=results`;
-    const res = await timedFetch(url, controller.signal);
+    const res = await timedFetch(url, dl.signal);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const json = await res.json() as {
       results?: Array<{
@@ -1704,7 +1702,7 @@ export async function fetchLoc(q: string): Promise<ArtItem[]> {
     }
     return items;
   } finally {
-    clearTimeout(timer);
+    dl.clear();
   }
 }
 
@@ -1722,12 +1720,11 @@ function nyplPick(links: string[], codes: string[]): string {
   return links[0] || '';
 }
 
-export async function fetchNypl(q: string): Promise<ArtItem[]> {
+export async function fetchNypl(q: string, signal?: AbortSignal): Promise<ArtItem[]> {
   // Tolerate a value pasted with surrounding quotes or a `Token token=` prefix.
   const token = (process.env.NYPL_API_TOKEN || process.env.NYPL_API_KEY || '')
     .trim().replace(/^Token\s+token=/i, '').replace(/^["']|["']$/g, '').trim();
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  const dl = deadline(signal);
   try {
     // v2 + `Authorization: Token token="…"` is the documented scheme (v1 is now
     // disabled). Must go over HTTP/2 (see h2Agent) — NYPL's HTTP/1.1 path replies
@@ -1737,7 +1734,7 @@ export async function fetchNypl(q: string): Promise<ArtItem[]> {
       `&publicDomainOnly=true&per_page=20`;
     const res = await fetch(url, {
       dispatcher: h2Agent(),   // NYPL honours the Token scheme only over HTTP/2
-      signal: controller.signal,
+      signal: dl.signal,
       headers: { 'User-Agent': UA, Accept: 'application/json', Authorization: `Token token="${token}"` },
     } as Parameters<typeof fetch>[1]) as unknown as Response;
     if (!res.ok) {
@@ -1812,6 +1809,6 @@ export async function fetchNypl(q: string): Promise<ArtItem[]> {
     }
     return items;
   } finally {
-    clearTimeout(timer);
+    dl.clear();
   }
 }

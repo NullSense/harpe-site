@@ -51,6 +51,22 @@ export function first(v: unknown): string {
   return str(v);
 }
 
+/**
+ * Resolve the AbortSignal an adapter should use for its fetch deadline.
+ *
+ * In production the resilience layer's cooperative timeout policy supplies a
+ * signal (already counting down) — we just pass it through, and `clear()` is a
+ * no-op (the policy owns the timer). When an adapter is called directly with no
+ * signal (CLI / tests), we fall back to a self-managed AbortController + timer so
+ * it still enforces its own deadline. Replaces the per-adapter boilerplate.
+ */
+export function deadline(signal: AbortSignal | undefined, ms = TIMEOUT_MS): { signal: AbortSignal; clear: () => void } {
+  if (signal) return { signal, clear: () => {} };
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ms);
+  return { signal: controller.signal, clear: () => clearTimeout(timer) };
+}
+
 export async function timedFetch(url: string, signal: AbortSignal): Promise<Response> {
   return fetch(url, {
     signal,
