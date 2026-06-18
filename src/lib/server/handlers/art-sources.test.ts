@@ -53,9 +53,9 @@ describe('activeSources', () => {
     expect(active.some((s) => s.key === 'met')).toBe(false);
   });
 
-  it('enables a keyed source when its env var is present', () => {
+  it('keeps a disabled source off even when its key is present', () => {
     const active = activeSources({ PARIS_MUSEES_TOKEN: 'x' } as NodeJS.ProcessEnv);
-    expect(active.some((s) => s.key === 'parismusees')).toBe(true);
+    expect(active.some((s) => s.key === 'parismusees')).toBe(false);
   });
 
   it('enables all dump-backed museums from the combined dump dataset', () => {

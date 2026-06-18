@@ -45,9 +45,11 @@ export const SOURCES: SourceAdapter[] = [
   { key: 'vam', label: 'V&A', fetch: fetchVam },
   { key: 'nasjonalmuseet', label: 'Nasjonalmuseet', fetch: fetchNasjonalmuseet },
   { key: 'digitalnz', label: 'DigitalNZ', fetch: fetchDigitalNZ },
-  // Paris Musées — GraphQL query rebuilt against the current NodeOeuvre schema.
-  // Public token yields thumbnails only (HD is private-API); live-queried with token.
-  { key: 'parismusees', label: 'Paris Musées', fetch: fetchParisMusees, requiresEnv: 'PARIS_MUSEES_TOKEN' },
+  // Paris Musées — DISABLED again: the rebuilt field names (from docs, not live
+  // introspection) are still wrong (`fieldVisuelsPrincipals` rejected). Needs a real
+  // introspection of NodeOeuvre with the token to fix once and for all. See SOURCES.md.
+  { key: 'parismusees', label: 'Paris Musées', fetch: fetchParisMusees, requiresEnv: 'PARIS_MUSEES_TOKEN',
+    disabled: true, note: 'GraphQL schema unknown without token introspection; thumbnails-only even when fixed' },
   // NYPL token auth needs HTTP/2; Vercel egress forces HTTP/1.1 (→ "Access
   // denied"). Works locally over h2. Photography is covered by LoC meanwhile.
   { key: 'nypl', label: 'NYPL', fetch: fetchNypl, requiresEnv: 'NYPL_API_TOKEN', disabled: true,
