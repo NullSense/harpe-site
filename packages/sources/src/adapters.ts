@@ -9,7 +9,7 @@
  */
 import { fetch, Agent } from 'undici';
 import { WBK, simplifyClaims } from 'wikibase-sdk';
-import type { ArtItem, Download } from '@harpe/core';
+import type { ArtItem, Download, ArtistEntity, SubjectEntity } from '@harpe/core';
 import {
   str, num, fmtFromMime, fmtFromUrl, first, timedFetch, iiifImage, IIIF,
   LOSSLESS_FORMATS, MAX_ITEMS, mapPool, UA, deadline,
@@ -1559,7 +1559,7 @@ export function dumpDatasetFor(source: DumpSourceKey, env: NodeJS.ProcessEnv = p
   return env[dumpDatasetEnv(source)] || env.HARPE_DUMP_DATASET || '';
 }
 
-function fetchDumpSearch(dataset: string, q: string): Promise<ArtItem[]> {
+export function fetchDumpSearch(dataset: string, q: string): Promise<ArtItem[]> {
   const memKey = `${dataset}\n${q}`;
   // Tier 1: in-memory Map (per-instance, lives only as long as the Lambda is warm).
   let cached = dumpSearchCache.get(memKey);
@@ -1645,6 +1645,13 @@ async function fetchDumpSearchUncached(q: string, dataset: string): Promise<ArtI
         description: str(row.description),
         sourceUrl: str(row.source_url),
         provider: DUMP_SOURCE_LABELS[source as DumpSourceKey],
+        // Knowledge-graph columns (present once the ingest enrichment pass has run;
+        // absent rows just leave these undefined → graceful no-op).
+        wikidataId: /^Q\d+$/.test(str(row.wikidata_qid)) ? str(row.wikidata_qid) : undefined,
+        artistId: /^Q\d+$/.test(str(row.artist_qid)) ? str(row.artist_qid) : undefined,
+        depicts: str(row.depicts_qids) ? str(row.depicts_qids).split(' ').filter(Boolean) : undefined,
+        clusterId: typeof row.cluster_id === 'number' ? row.cluster_id : undefined,
+        movement: str(row.movement) || undefined,
       });
     }
     return items;
@@ -1663,6 +1670,39 @@ export async function fetchDumpSource(source: DumpSourceKey, q: string): Promise
     if (isBrokenCircuitError(e)) return [];
     throw e;
   }
+}
+
+// ─── Knowledge-graph entity files (static JSON on the HF CDN) ──────────────────
+// The HF datasets-server /filter WHERE API is broken (HTTP 422), so entity lookup
+// uses pre-baked static JSON files served by the HF resolve CDN — a plain HTTPS
+// GET, no query engine, no auth. One file per artist/subject QID, produced by the
+// ingest entity pass. All run through the shared dumpHttpPolicy (retry + breaker
+// + timeout); the handler layer adds the Upstash cache, mirroring the dump path.
+const HF_ENTITY_CDN = 'https://huggingface.co/datasets/NullSense/harpe-art/resolve/main/data';
+
+async function fetchEntityJson<T>(path: string): Promise<T | null> {
+  return dumpHttpPolicy.execute(async ({ signal }) => {
+    const res = await timedFetch(`${HF_ENTITY_CDN}/${path}`, signal);
+    if (res.status === 404) return null; // unknown entity → not an error
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json() as Promise<T>;
+  });
+}
+
+/** A knowledge-graph artist node by QID (null if not in the index). */
+export function fetchArtistEntity(qid: string): Promise<ArtistEntity | null> {
+  return fetchEntityJson<ArtistEntity>(`artists/${encodeURIComponent(qid)}.json`);
+}
+
+/** The work ids attributed to an artist QID ([] if none/unknown). */
+export async function fetchArtistWorkIds(qid: string): Promise<string[]> {
+  const ids = await fetchEntityJson<string[]>(`work_ids_by_artist/${encodeURIComponent(qid)}.json`);
+  return Array.isArray(ids) ? ids : [];
+}
+
+/** A knowledge-graph subject ("depicts") node by QID (null if not in the index). */
+export function fetchSubjectEntity(qid: string): Promise<SubjectEntity | null> {
+  return fetchEntityJson<SubjectEntity>(`depicts/${encodeURIComponent(qid)}.json`);
 }
 
 // ─── Library of Congress (Prints & Photographs) ──────────────────────────────
