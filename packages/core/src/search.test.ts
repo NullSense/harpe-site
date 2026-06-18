@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { normalize, tokenize, looksLikeName, within1, jaroWinkler, relevanceScore, isRelevant, workKey, fuse, rankResults } from './search';
+import { normalize, tokenize, looksLikeName, within1, jaroWinkler, relevanceScore, isRelevant, workKey, fuse, rankResults, dedupe, imageIdentity } from './search';
 
 describe('normalize', () => {
   it('folds diacritics and Nordic letters', () => {
@@ -182,5 +182,146 @@ describe('relevanceScore (ordering)', () => {
   });
   it('returns 0 for no match', () => {
     expect(relevanceScore({ title: 'A bowl of fruit', artist: 'Anon' }, 'submarine')).toBe(0);
+  });
+});
+
+// ─── cross-source de-duplication ───────────────────────────────────────────────
+
+type Item = {
+  id: string; source: string; title?: string; artist?: string;
+  thumbUrl?: string; previewUrl?: string; fullUrl?: string;
+  width?: number; height?: number;
+  date?: string; medium?: string; tags?: string[]; downloads?: unknown[];
+};
+const mk = (o: Partial<Item> & { id: string; source: string }): Item => o;
+
+describe('imageIdentity', () => {
+  it('keys a Commons original and its thumb to the same file', () => {
+    const orig = imageIdentity({ fullUrl: 'https://upload.wikimedia.org/wikipedia/commons/a/a1/Mona_Lisa.jpg' });
+    const thumb = imageIdentity({ fullUrl: 'https://upload.wikimedia.org/wikipedia/commons/thumb/a/a1/Mona_Lisa.jpg/843px-Mona_Lisa.jpg' });
+    expect(orig).toBe('commons:mona_lisa.jpg');
+    expect(thumb).toBe('commons:mona_lisa.jpg');
+  });
+  it('keys a Wikidata Special:FilePath URL to the same Commons file', () => {
+    expect(imageIdentity({ fullUrl: 'https://commons.wikimedia.org/wiki/Special:FilePath/Mona_Lisa.jpg?width=843' }))
+      .toBe('commons:mona_lisa.jpg');
+  });
+  it('keys an IIIF image by its identifier base, ignoring the size segment', () => {
+    const a = imageIdentity({ fullUrl: 'https://iiif.example.org/abc123/full/full/0/default.jpg' });
+    const b = imageIdentity({ fullUrl: 'https://iiif.example.org/abc123/full/!843,843/0/default.jpg' });
+    expect(a).toBe(b);
+    expect(a).toBe('iiif:https://iiif.example.org/abc123');
+  });
+  it('falls back to the URL without query/fragment, and empty for no image', () => {
+    expect(imageIdentity({ fullUrl: 'https://cdn.museum.org/x/y.jpg?token=1#frag' })).toBe('https://cdn.museum.org/x/y.jpg');
+    expect(imageIdentity({})).toBe('');
+  });
+});
+
+describe('dedupe', () => {
+  it('collapses the same Commons file surfaced by Commons and Wikidata', () => {
+    const out = dedupe([
+      mk({ id: 'commons-1', source: 'commons', title: 'Mona Lisa', artist: 'Leonardo', fullUrl: 'https://upload.wikimedia.org/wikipedia/commons/a/a1/Mona_Lisa.jpg' }),
+      mk({ id: 'wikidata-Q12', source: 'wikidata', title: 'Mona Lisa', artist: 'Leonardo da Vinci', fullUrl: 'https://commons.wikimedia.org/wiki/Special:FilePath/Mona_Lisa.jpg?width=843' }),
+    ]);
+    expect(out).toHaveLength(1);
+    expect(out[0].dupCount).toBe(2);
+    expect(new Set(out[0].mergedSources)).toEqual(new Set(['commons', 'wikidata']));
+  });
+
+  it('collapses the same work from different museums (different scans) and merges metadata', () => {
+    const out = dedupe([
+      mk({ id: 'met-1', source: 'met', title: 'The Starry Night', artist: 'Vincent van Gogh', fullUrl: 'https://images.metmuseum.org/sn.jpg', width: 600, height: 480, date: '1889', tags: ['landscape'] }),
+      mk({ id: 'europeana-9', source: 'europeana', title: 'The Starry Night', artist: 'Vincent van Gogh', fullUrl: 'https://europeana.eu/sn-big.jpg', width: 4000, height: 3200, medium: 'Oil on canvas', tags: ['night'] }),
+    ]);
+    expect(out).toHaveLength(1);
+    // representative = the higher-resolution image…
+    expect(out[0].fullUrl).toContain('europeana');
+    // …but metadata from BOTH is preserved
+    expect(out[0].date).toBe('1889');
+    expect(out[0].medium).toBe('Oil on canvas');
+    expect(new Set(out[0].tags)).toEqual(new Set(['landscape', 'night']));
+    expect(out[0].dupCount).toBe(2);
+  });
+
+  it('merges the same work across artist name variants (subset of tokens)', () => {
+    const out = dedupe([
+      mk({ id: 'a', source: 'met', title: 'Wheatfield with Crows', artist: 'van Gogh', fullUrl: 'https://m/a.jpg', width: 100, height: 80 }),
+      mk({ id: 'b', source: 'europeana', title: 'Wheatfield with Crows', artist: 'Vincent van Gogh', fullUrl: 'https://m/b.jpg', width: 4000, height: 3000 }),
+    ]);
+    expect(out).toHaveLength(1);
+    expect(out[0].dupCount).toBe(2);
+  });
+
+  it('does NOT merge distinct "Untitled" works by the same artist', () => {
+    const out = dedupe([
+      mk({ id: 'a', source: 'moma', title: 'Untitled', artist: 'Donald Judd', fullUrl: 'https://m/a.jpg' }),
+      mk({ id: 'b', source: 'moma', title: 'Untitled', artist: 'Donald Judd', fullUrl: 'https://m/b.jpg' }),
+    ]);
+    expect(out).toHaveLength(2);
+  });
+
+  it('does NOT merge same-title works with different artists', () => {
+    const out = dedupe([
+      mk({ id: 'a', source: 'aic', title: 'Composition', artist: 'Piet Mondrian', fullUrl: 'https://m/a.jpg' }),
+      mk({ id: 'b', source: 'aic', title: 'Composition', artist: 'Wassily Kandinsky', fullUrl: 'https://m/b.jpg' }),
+    ]);
+    expect(out).toHaveLength(2);
+  });
+
+  it('does NOT merge same-title works when artist is missing', () => {
+    const out = dedupe([
+      mk({ id: 'a', source: 'loc', title: 'River scene', artist: '', fullUrl: 'https://m/a.jpg' }),
+      mk({ id: 'b', source: 'loc', title: 'River scene', artist: '', fullUrl: 'https://m/b.jpg' }),
+    ]);
+    expect(out).toHaveLength(2);
+  });
+
+  it('merges transitively: A≡B by image, B≡C by work → one item from 3 sources', () => {
+    const out = dedupe([
+      mk({ id: 'commons-1', source: 'commons', title: 'The Kiss', artist: 'Gustav Klimt', fullUrl: 'https://upload.wikimedia.org/wikipedia/commons/c/c2/Klimt_Kiss.jpg' }),
+      mk({ id: 'wikidata-1', source: 'wikidata', title: 'The Kiss', artist: 'Gustav Klimt', fullUrl: 'https://commons.wikimedia.org/wiki/Special:FilePath/Klimt_Kiss.jpg' }),
+      mk({ id: 'europeana-1', source: 'europeana', title: 'The Kiss', artist: 'Gustav Klimt', fullUrl: 'https://europeana.eu/kiss.jpg', width: 5000, height: 5000 }),
+    ]);
+    expect(out).toHaveLength(1);
+    expect(out[0].dupCount).toBe(3);
+  });
+
+  it('unions tags and concatenates downloads, deduping tags', () => {
+    const out = dedupe([
+      mk({ id: 'a', source: 'met', title: 'Wave', artist: 'Hokusai', fullUrl: 'https://iiif.x/w/full/full/0/default.jpg', width: 100, height: 80, tags: ['ukiyo-e', 'sea'], downloads: [{ url: 'a' }] }),
+      mk({ id: 'b', source: 'aic', title: 'Wave', artist: 'Hokusai', fullUrl: 'https://iiif.x/w/full/!843,843/0/default.jpg', width: 200, height: 160, tags: ['sea', 'woodblock'], downloads: [{ url: 'b' }] }),
+    ]);
+    expect(out).toHaveLength(1);
+    expect(new Set(out[0].tags)).toEqual(new Set(['ukiyo-e', 'sea', 'woodblock']));
+    expect(out[0].downloads).toHaveLength(2);
+  });
+
+  it('is stable: a merged group keeps its earliest position', () => {
+    const out = dedupe([
+      mk({ id: 'x', source: 'aic', title: 'Solo One', artist: 'A', fullUrl: 'https://m/x.jpg' }),
+      mk({ id: 'dup-a', source: 'commons', title: 'Pair', artist: 'B', fullUrl: 'https://upload.wikimedia.org/wikipedia/commons/d/d4/Pair.jpg' }),
+      mk({ id: 'y', source: 'met', title: 'Solo Two', artist: 'C', fullUrl: 'https://m/y.jpg' }),
+      mk({ id: 'dup-b', source: 'wikidata', title: 'Pair', artist: 'B', fullUrl: 'https://commons.wikimedia.org/wiki/Special:FilePath/Pair.jpg' }),
+    ]);
+    expect(out.map((o) => o.title)).toEqual(['Solo One', 'Pair', 'Solo Two']);
+  });
+
+  it('passes through a single item or empty list unchanged', () => {
+    expect(dedupe([])).toEqual([]);
+    const one = [mk({ id: 'a', source: 'aic', title: 'X', artist: 'Y', fullUrl: 'https://m/a.jpg' })];
+    expect(dedupe(one)).toHaveLength(1);
+  });
+});
+
+describe('rankResults de-duplicates end to end', () => {
+  it('collapses cross-source duplicates and keeps a single ranked card', () => {
+    const ranked = rankResults([
+      mk({ id: 'commons-1', source: 'commons', title: 'The Night Watch', artist: 'Rembrandt', fullUrl: 'https://upload.wikimedia.org/wikipedia/commons/n/nw/Night_Watch.jpg' }),
+      mk({ id: 'wikidata-1', source: 'wikidata', title: 'The Night Watch', artist: 'Rembrandt', fullUrl: 'https://commons.wikimedia.org/wiki/Special:FilePath/Night_Watch.jpg' }),
+      mk({ id: 'europeana-1', source: 'europeana', title: 'The Night Watch', artist: 'Rembrandt van Rijn', fullUrl: 'https://europeana.eu/nw.jpg', width: 5000, height: 4000 }),
+    ], 'night watch rembrandt');
+    expect(ranked).toHaveLength(1);
+    expect(ranked[0].dupCount).toBe(3);
   });
 });

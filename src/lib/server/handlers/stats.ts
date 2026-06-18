@@ -11,6 +11,14 @@
  *   - Commons + Wikidata are counted once (100% overlap in P18 image set).
  *   - All other sources are summed directly.
  *
+ * Honest framing: this total is open-access *works & images* discoverable, not
+ * exclusively fine-art paintings — Europeana (~37M image records) and the
+ * Smithsonian (CC0 media incl. natural history) dominate it and partly
+ * re-aggregate the museum-direct sources, so it is an upper bound on reach, not
+ * a deduplicated artwork count. The UI label says "artworks & images"
+ * accordingly. (Per-result cross-source de-duplication happens at query time in
+ * @harpe/core's rankResults; this endpoint reports catalog reach.)
+ *
  * Caching: result stored in Upstash KV under key "stats:v1" with a 24 h TTL
  * (same lazy-singleton pattern as analyze.ts). Falls back gracefully when
  * Upstash is absent or any source probe fails — seed numbers are always

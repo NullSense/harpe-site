@@ -60,11 +60,11 @@ export default function StatsBar() {
 
   return (
     <p
-      aria-label={`Coverage: ${fmt(stats.artworks)} artworks across ${fmt(stats.museumsAndArchives)} museums and archives in ${fmt(stats.countries)} countries`}
+      aria-label={`Coverage: ${fmt(stats.artworks)} artworks and images across ${fmt(stats.museumsAndArchives)} museums and archives in ${fmt(stats.countries)} countries`}
       className="mt-4 flex flex-wrap items-center justify-center gap-x-2.5 gap-y-1 font-mono text-[.72rem] tracking-[0.06em] text-muted/70"
     >
       <span>
-        <span className="text-bronze-bright/80">{fmt(stats.artworks)}</span>{' '}artworks
+        <span className="text-bronze-bright/80">{fmt(stats.artworks)}</span>{' '}artworks &amp; images
       </span>
       {SEPARATOR}
       <span>

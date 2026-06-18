@@ -224,6 +224,169 @@ export interface Fusable {
   title?: string;
   artist?: string;
   isPublicDomain?: boolean;
+  /** Set by `dedupe()`: how many distinct sources held this work (drives the
+   *  cross-source consensus boost after duplicates are collapsed into one item). */
+  dupCount?: number;
+  /** Set by `dedupe()`: the distinct source keys this merged item came from. */
+  mergedSources?: string[];
+}
+
+// ─── Cross-source de-duplication ───────────────────────────────────────────────
+// Museum APIs, Wikidata, Commons and Europeana re-surface the SAME artwork: the
+// same Commons file appears under both `commons-…` and `wikidata-…` (a Wikidata
+// P18 value IS a Commons file), and a museum's own works reappear via Europeana.
+// We collapse those into one merged item so results AND coverage stats are clean.
+//
+// Two dedup signals, unioned:
+//   • image identity — same underlying file (Commons filename / IIIF id / URL).
+//     Always safe: it's literally the same pixels.
+//   • work identity  — same title+artist (diacritic-folded), but ONLY when the
+//     title is specific (not "Untitled"/blank) AND an artist is present, so we
+//     never merge unrelated "Untitled" pieces or same-title-different-artist works.
+
+/** Generic/placeholder titles that must NEVER be used to merge works. */
+const GENERIC_TITLES = new Set(['', 'untitled', 'unknown', 'no title', 'untitled work', 'sans titre']);
+
+/** Canonical key for the underlying image file, or '' if none can be derived. */
+export function imageIdentity(it: { thumbUrl?: string; previewUrl?: string; fullUrl?: string }): string {
+  const url = (it.fullUrl || it.previewUrl || it.thumbUrl || '').trim();
+  if (!url) return '';
+  const low = url.toLowerCase();
+  // Wikimedia Commons: upload.wikimedia.org/.../commons/[thumb/]a/a1/<File>[/<size>-<File>]
+  let m = low.match(/\/commons\/(?:thumb\/)?[0-9a-f]\/[0-9a-f]{2}\/([^/?#]+)/);
+  if (m) return `commons:${decodeURIComponent(m[1])}`;
+  // Commons Special:FilePath/<File>
+  m = low.match(/special:filepath\/([^/?#]+)/);
+  if (m) return `commons:${decodeURIComponent(m[1])}`;
+  // IIIF Image API: <base>/<id>/full/<size>/<rot>/<quality>.<fmt> → key on the id base.
+  m = url.match(/^(https?:\/\/.+?)\/full\/[^/]+\/\d+\/[a-z]+\.[a-z]+$/i);
+  if (m) return `iiif:${m[1].toLowerCase()}`;
+  // Fallback: the URL without query/fragment (same CDN object from two adapters).
+  return low.split('#')[0].split('?')[0];
+}
+
+/** Diacritic-folded, de-articled title (for the work-identity bucket). */
+function titleKey(it: { title?: string }): string {
+  return normalize(it.title || '').replace(/\b(the|a|an)\b/g, '').replace(/\s+/g, ' ').trim();
+}
+
+/** Bucket key for work identity, or '' when too generic / artist-less to merge. */
+function safeTitleKey(it: { title?: string; artist?: string }): string {
+  const t = titleKey(it);
+  if (!t || GENERIC_TITLES.has(t) || t.replace(/\s+/g, '').length < 3) return '';
+  if (!normalize(it.artist || '')) return ''; // need an artist to merge by work
+  return t;
+}
+
+/** True if two artist strings are the same person allowing for name variants:
+ *  one's significant tokens are a subset of the other's ("Rembrandt" ⊆
+ *  "Rembrandt van Rijn", "van Gogh" ⊆ "Vincent van Gogh"). Both must be present. */
+function artistCompatible(a: { artist?: string }, b: { artist?: string }): boolean {
+  const ta = new Set(tokenize(a.artist || ''));
+  const tb = new Set(tokenize(b.artist || ''));
+  if (!ta.size || !tb.size) return false;
+  const [small, big] = ta.size <= tb.size ? [ta, tb] : [tb, ta];
+  for (const t of small) if (!big.has(t)) return false;
+  return true;
+}
+
+// Metadata fields a merged item should backfill from its duplicates when empty.
+const MERGE_FILL_FIELDS = [
+  'date', 'medium', 'culture', 'creditLine', 'description', 'sourceUrl',
+  'accessionNumber', 'licenseUrl', 'artworkType', 'style', 'inscriptions',
+  'dimensions', 'width', 'height',
+] as const;
+const MERGE_UNION_FIELDS = ['tags', 'downloads'] as const;
+
+// Prefer the source with the richest first-party metadata as the representative
+// when image area ties (lower number = preferred).
+const SOURCE_PREF: Record<string, number> = {
+  aic: 0, met: 0, cleveland: 0, vam: 0, harvard: 0, smk: 0, nasjonalmuseet: 0,
+  si: 0, parismusees: 0, moma: 0, nga: 0, mia: 0, wellcome: 1, loc: 1, nypl: 1,
+  europeana: 2, wikiart: 2, wikidata: 3, commons: 4,
+};
+
+function areaOf(it: Record<string, unknown>): number {
+  return (Number(it.width) || 0) * (Number(it.height) || 0);
+}
+function richnessOf(it: Record<string, unknown>): number {
+  return MERGE_FILL_FIELDS.reduce((n, f) => n + (it[f] !== undefined && it[f] !== '' ? 1 : 0), 0);
+}
+
+function mergeGroup<T extends Fusable>(members: T[]): T {
+  // Representative: best image (area), then richest metadata, then source pref.
+  const sorted = [...members].sort((a, b) => {
+    const ar = areaOf(b as Record<string, unknown>) - areaOf(a as Record<string, unknown>);
+    if (ar) return ar;
+    const ri = richnessOf(b as Record<string, unknown>) - richnessOf(a as Record<string, unknown>);
+    if (ri) return ri;
+    return (SOURCE_PREF[a.source] ?? 9) - (SOURCE_PREF[b.source] ?? 9);
+  });
+  const rep = { ...sorted[0] } as T;
+  const r = rep as Record<string, unknown>; // mutable view for dynamic-key writes
+  const sources = new Set(members.map((m) => m.source));
+  for (const m of sorted.slice(1)) {
+    const md = m as Record<string, unknown>;
+    for (const f of MERGE_FILL_FIELDS) {
+      if ((r[f] === undefined || r[f] === '') && md[f] !== undefined && md[f] !== '') r[f] = md[f];
+    }
+    for (const f of MERGE_UNION_FIELDS) {
+      const add = md[f];
+      if (Array.isArray(add) && add.length) {
+        const base = Array.isArray(r[f]) ? (r[f] as unknown[]) : [];
+        r[f] = f === 'tags'
+          ? Array.from(new Set([...(base as string[]), ...(add as string[])]))
+          : [...base, ...add]; // downloads: concat (variants from multiple holders)
+      }
+    }
+  }
+  rep.dupCount = sources.size;
+  rep.mergedSources = Array.from(sources);
+  return rep;
+}
+
+/**
+ * Collapse duplicate artworks into one merged item. Groups by image identity OR
+ * safe work identity (union-find for transitivity), then merges each group onto
+ * its best representative. Stable: a group keeps the position of its earliest
+ * member. Used by `rankResults` so the site and CLI both get de-duplicated data.
+ */
+export function dedupe<T extends Fusable>(items: T[]): T[] {
+  const n = items.length;
+  if (n <= 1) return [...items];
+  const parent = items.map((_, i) => i);
+  const find = (x: number): number => { while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; } return x; };
+  const union = (a: number, b: number) => { const ra = find(a), rb = find(b); if (ra !== rb) parent[ra] = rb; };
+
+  // 1) image identity — exact same file → union immediately (a stable key).
+  const byImage = new Map<string, number>();
+  // 2) work identity — collect items per safe title, then union pairs within a
+  //    title bucket whose artists are compatible (handles name-spelling variants).
+  const titleBuckets = new Map<string, number[]>();
+  items.forEach((it, i) => {
+    const ik = imageIdentity(it as Record<string, unknown>);
+    if (ik) { const j = byImage.get(ik); if (j !== undefined) union(i, j); else byImage.set(ik, i); }
+    const tk = safeTitleKey(it);
+    if (tk) (titleBuckets.get(tk) ?? titleBuckets.set(tk, []).get(tk)!).push(i);
+  });
+  for (const idxs of titleBuckets.values()) {
+    for (let x = 0; x < idxs.length; x++) {
+      for (let y = x + 1; y < idxs.length; y++) {
+        if (artistCompatible(items[idxs[x]], items[idxs[y]])) union(idxs[x], idxs[y]);
+      }
+    }
+  }
+
+  const groups = new Map<number, number[]>();
+  items.forEach((_, i) => { const r = find(i); (groups.get(r) ?? groups.set(r, []).get(r)!).push(i); });
+
+  const out: Array<{ idx: number; it: T }> = [];
+  for (const idxs of groups.values()) {
+    if (idxs.length === 1) out.push({ idx: idxs[0], it: items[idxs[0]] });
+    else out.push({ idx: Math.min(...idxs), it: mergeGroup(idxs.map((i) => items[i])) });
+  }
+  out.sort((a, b) => a.idx - b.idx);
+  return out.map((o) => o.it);
 }
 
 export interface FuseOptions<T> {
@@ -301,7 +464,9 @@ export function fuse<T extends Fusable>(items: T[], query: string, opts: FuseOpt
   for (const it of items) {
     let s = W_REL / (K + relRank.get(it)!) + W_SRC / (K + srcRank.get(it)!);
     if (qualRank) s += W_QUAL / (K + qualRank.get(it)!);
-    const consensus = (sourcesPerWork.get(keyOf(it))?.size ?? 1) - 1;
+    // After dedupe() each work is one item carrying dupCount; fall back to the
+    // live same-key count for callers that fuse without de-duplicating first.
+    const consensus = Math.max(it.dupCount ?? 1, sourcesPerWork.get(keyOf(it))?.size ?? 1) - 1;
     if (consensus > 0) s += W_CONSENSUS * (Math.min(consensus, 3) / 3) / (K + srcRank.get(it)!) * K;
     fused.set(it, s);
   }
@@ -318,17 +483,22 @@ export function fuse<T extends Fusable>(items: T[], query: string, opts: FuseOpt
  * The full search pipeline, shared by the client ranker and the /api/art handler:
  *
  *   1. DE-DUP by id        — unique React keys + correct by-id detail lookup.
- *   2. RELEVANCE GATE      — drop items that don't match the query at all. Museum
+ *   2. DE-DUP cross-source — collapse the SAME artwork re-surfaced by several
+ *                            sources (Commons≡Wikidata same file, a museum's works
+ *                            via Europeana) into one merged item (see `dedupe`),
+ *                            so the grid and the coverage stats aren't inflated.
+ *   3. RELEVANCE GATE      — drop items that don't match the query at all. Museum
  *                            APIs return *fallback* hits when a query doesn't match
  *                            (AIC dumps "Nighthawks", MoMA a subway map for "JW
  *                            Waterhouse"); ranking alone can't remove them, a gate
  *                            can. Falls back to the ungated set if the gate would
  *                            empty the results (foreign-language / subject matches).
- *   3. RRF FUSE            — rank the survivors (see `fuse`).
+ *   4. RRF FUSE            — rank the survivors (see `fuse`).
  */
 export function rankResults<T extends Fusable>(items: T[], query: string, opts: FuseOptions<T> = {}): T[] {
   const seen = new Set<string>();
   const unique = items.filter((it) => (it.id && !seen.has(it.id) ? (seen.add(it.id), true) : false));
-  const gated = unique.filter((it) => isRelevant(it, query));
-  return fuse(gated.length > 0 ? gated : unique, query, opts);
+  const merged = dedupe(unique);
+  const gated = merged.filter((it) => isRelevant(it, query));
+  return fuse(gated.length > 0 ? gated : merged, query, opts);
 }
