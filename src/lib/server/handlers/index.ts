@@ -9,6 +9,8 @@ import type { VercelRequest, VercelResponse } from '../vercel.js';
 import analyze from './analyze.js';
 import art from './art.js';
 import artStream from './art-stream.js';
+import artist from './artist.js';
+import depicts from './depicts.js';
 import deepzoom from './deepzoom.js';
 import fetchHandler from './fetch.js';
 import grab from './grab.js';
@@ -26,6 +28,8 @@ export const handlers: Record<string, Handler> = {
   analyze,
   art,
   'art-stream': artStream,
+  artist,
+  depicts,
   deepzoom,
   fetch: fetchHandler,
   grab,
