@@ -35,6 +35,11 @@ interface SourceRecord {
   creditLine?: string;
   description?: string;
   sourceUrl?: string;
+  artworkType?: string;
+  style?: string;
+  tags?: string[];
+  inscriptions?: string;
+  accessionNumber?: string;
 }
 
 function s(v: unknown): string {
@@ -205,8 +210,13 @@ export function buildPrompt(title: string, artist: string, items: SourceRecord[]
       `[Source ${i + 1}: ${s(it.source)}]`,
       it.date && `date: ${s(it.date)}`,
       it.medium && `medium: ${s(it.medium)}`,
+      it.artworkType && `type: ${s(it.artworkType)}`,
+      it.style && `style/period: ${s(it.style)}`,
       it.culture && `origin/holder: ${s(it.culture)}`,
       it.creditLine && `credit: ${s(it.creditLine)}`,
+      it.accessionNumber && `accession no.: ${s(it.accessionNumber)}`,
+      Array.isArray(it.tags) && it.tags.length && `subjects/tags: ${it.tags.map(s).filter(Boolean).slice(0, 20).join(', ')}`,
+      it.inscriptions && `inscriptions: ${s(it.inscriptions)}`,
       it.description && `description: ${s(it.description)}`,
     ].filter(Boolean);
     return lines.join('\n');
@@ -290,6 +300,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return {
       source: s(o.source), date: s(o.date), medium: s(o.medium), culture: s(o.culture),
       creditLine: s(o.creditLine), description: s(o.description).slice(0, 1500), sourceUrl: s(o.sourceUrl),
+      artworkType: s(o.artworkType), style: s(o.style), inscriptions: s(o.inscriptions).slice(0, 500),
+      accessionNumber: s(o.accessionNumber),
+      tags: Array.isArray(o.tags) ? (o.tags as unknown[]).map(s).filter(Boolean).slice(0, 20) : undefined,
     };
   });
   const contributors = [...new Set(items.map((i) => i.source).filter(Boolean))] as string[];

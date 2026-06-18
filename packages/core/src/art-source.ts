@@ -71,6 +71,26 @@ export interface ArtItem {
   style?: string;
   /** Inscriptions, signatures, or marks on the work. */
   inscriptions?: string;
+  /** When this item is the merge of several sources (set by dedupe()), the
+   *  per-source catalogue records that were collapsed — so the AI analysis can
+   *  still draw on EVERY source's facts/descriptions even after de-duplication. */
+  variants?: SourceVariant[];
+}
+
+/** A single source's catalogue record, retained on a merged ArtItem.variants. */
+export interface SourceVariant {
+  source: string;
+  date?: string;
+  medium?: string;
+  culture?: string;
+  creditLine?: string;
+  description?: string;
+  sourceUrl?: string;
+  accessionNumber?: string;
+  artworkType?: string;
+  style?: string;
+  tags?: string[];
+  inscriptions?: string;
 }
 
 /**

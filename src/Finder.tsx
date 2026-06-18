@@ -79,6 +79,13 @@ interface ArtItem {
   inscriptions?: string;
   tags?: string[];
   licenseUrl?: string;
+  /** Per-source catalogue records merged into this item by dedupe() — used to
+   *  feed every source's facts to the AI analysis after duplicates collapse. */
+  variants?: Array<{
+    source: string; date?: string; medium?: string; culture?: string; creditLine?: string;
+    description?: string; sourceUrl?: string; artworkType?: string; style?: string;
+    tags?: string[]; inscriptions?: string; accessionNumber?: string;
+  }>;
   /** Present for zoomable/gigapixel images (DZI/Zoomify/IIIF) — drives OSD deep-zoom
    *  and our in-browser full-resolution tile-stitch download. */
   deepzoom?: DeepZoomDescriptor;
@@ -1234,7 +1241,17 @@ const Finder = forwardRef<FinderHandle>(function Finder(_props, ref) {
   }, [pageUrl]);
 
   const analyzeWork = useCallback(async (item: ArtItem) => {
-    const group = siblingsByKey.get(workKey(item)) ?? [item];
+    // Prefer the per-source records merged onto this item by dedupe() — they hold
+    // EVERY source's facts. Fall back to client-side sibling grouping (e.g. for
+    // non-deduped scan items), then to the item itself.
+    const records = item.variants?.length
+      ? item.variants
+      : (siblingsByKey.get(workKey(item)) ?? [item]).map((g) => ({
+          source: g.source, date: g.date, medium: g.medium, culture: g.culture,
+          creditLine: g.creditLine, description: g.description, sourceUrl: g.sourceUrl,
+          artworkType: g.artworkType, style: g.style, tags: g.tags, inscriptions: g.inscriptions,
+          accessionNumber: g.accessionNumber,
+        }));
     setAnalysis({ phase: 'loading', title: item.title });
     try {
       const res = await fetch('/api/analyze', {
@@ -1243,10 +1260,7 @@ const Finder = forwardRef<FinderHandle>(function Finder(_props, ref) {
         body: JSON.stringify({
           title: item.title.replace(/\s*\([^)]*\)\s*$/, ''),
           artist: item.artist,
-          items: group.map((g) => ({
-            source: g.source, date: g.date, medium: g.medium, culture: g.culture,
-            creditLine: g.creditLine, description: g.description, sourceUrl: g.sourceUrl,
-          })),
+          items: records,
         }),
       });
       const json = await res.json();

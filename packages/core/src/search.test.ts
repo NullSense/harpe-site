@@ -192,6 +192,9 @@ type Item = {
   thumbUrl?: string; previewUrl?: string; fullUrl?: string;
   width?: number; height?: number;
   date?: string; medium?: string; tags?: string[]; downloads?: unknown[];
+  // set at runtime by dedupe()
+  dupCount?: number; mergedSources?: string[];
+  variants?: Array<{ source: string; date?: string; medium?: string }>;
 };
 const mk = (o: Partial<Item> & { id: string; source: string }): Item => o;
 
@@ -305,6 +308,24 @@ describe('dedupe', () => {
       mk({ id: 'dup-b', source: 'wikidata', title: 'Pair', artist: 'B', fullUrl: 'https://commons.wikimedia.org/wiki/Special:FilePath/Pair.jpg' }),
     ]);
     expect(out.map((o) => o.title)).toEqual(['Solo One', 'Pair', 'Solo Two']);
+  });
+
+  it('retains each source\'s record in variants for the AI analysis', () => {
+    const out = dedupe([
+      mk({ id: 'met-1', source: 'met', title: 'The Starry Night', artist: 'Vincent van Gogh', fullUrl: 'https://m/a.jpg', width: 100, height: 80, date: '1889' }),
+      mk({ id: 'eu-1', source: 'europeana', title: 'The Starry Night', artist: 'Vincent van Gogh', fullUrl: 'https://m/b.jpg', width: 4000, height: 3000, medium: 'Oil on canvas' }),
+    ]);
+    expect(out).toHaveLength(1);
+    expect(out[0].variants).toHaveLength(2);
+    expect(new Set(out[0].variants!.map((v) => v.source))).toEqual(new Set(['met', 'europeana']));
+    // each variant keeps its own source's distinct fact
+    expect(out[0].variants!.find((v) => v.source === 'met')?.date).toBe('1889');
+    expect(out[0].variants!.find((v) => v.source === 'europeana')?.medium).toBe('Oil on canvas');
+  });
+
+  it('does not attach variants to a non-merged (singleton) item', () => {
+    const out = dedupe([mk({ id: 'solo', source: 'aic', title: 'Lone', artist: 'A', fullUrl: 'https://m/x.jpg' })]);
+    expect(out[0].variants).toBeUndefined();
   });
 
   it('passes through a single item or empty list unchanged', () => {
