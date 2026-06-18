@@ -21,7 +21,7 @@ import { streamArt } from './lib/useArtStream';
 import { SOURCE_LABELS, SOURCE_ORDER, type DisplaySource } from './lib/source-meta';
 import { fitsScreen } from './lib/resolutions';
 import { dist, pinchZoom } from './lib/gesture';
-import { qualityScore, stripHtml, mediumCategory, yearOf, rankResults, type ArtistEntity } from '@harpe/core';
+import { qualityScore, stripHtml, mediumCategory, yearOf, rankResults, type ArtistEntity, type SubjectEntity } from '@harpe/core';
 import {
   type DeepZoomDescriptor,
   osdTileSource,
@@ -85,6 +85,7 @@ interface ArtItem {
   wikidataId?: string;
   artistId?: string;
   depicts?: string[];
+  depictsLabels?: string[];
   clusterId?: number;
   movement?: string;
   /** Per-source records merged into this item by dedupe() (quality-ranked, rep
@@ -327,6 +328,7 @@ function normalizeArt(raw: unknown): ArtItem {
     wikidataId: typeof d.wikidataId === 'string' && /^Q\d+$/.test(d.wikidataId) ? d.wikidataId : undefined,
     artistId: typeof d.artistId === 'string' && /^Q\d+$/.test(d.artistId) ? d.artistId : undefined,
     depicts: Array.isArray(d.depicts) ? (d.depicts as unknown[]).filter((s): s is string => typeof s === 'string') : undefined,
+    depictsLabels: Array.isArray(d.depictsLabels) ? (d.depictsLabels as unknown[]).filter((s): s is string => typeof s === 'string') : undefined,
     clusterId: typeof d.clusterId === 'number' ? d.clusterId : undefined,
     movement: txt('movement'),
   };
@@ -461,7 +463,7 @@ function deriveIIIF(url: string): string | null {
 }
 
 function ArtDetail({
-  items, index, onClose, onIndex, onAnalyze, onShare, onSearch, onFindSource, onArtist, analyzeEnabled,
+  items, index, onClose, onIndex, onAnalyze, onShare, onSearch, onFindSource, onArtist, onSubject, analyzeEnabled,
 }: {
   items: ArtItem[];
   index: number;               // -1 = closed
@@ -473,6 +475,8 @@ function ArtDetail({
   onFindSource?: (url: string) => void;
   /** Open the knowledge-graph artist page (their works + bio) for a P170 QID. */
   onArtist?: (qid: string, name: string) => void;
+  /** Open the knowledge-graph subject page (works depicting it) for a P180 QID. */
+  onSubject?: (qid: string, label: string) => void;
   analyzeEnabled: boolean;
 }) {
   const open = index >= 0 && index < items.length;
@@ -782,6 +786,24 @@ function ArtDetail({
           {item.accessionNumber && <div className="flex gap-2"><dt className="w-24 shrink-0 text-muted/60">Accession #</dt><dd className="font-mono text-ink/85">{item.accessionNumber}</dd></div>}
           {item.inscriptions && <div className="flex gap-2"><dt className="w-24 shrink-0 text-muted/60">Inscriptions</dt><dd className="text-ink/85">{item.inscriptions}</dd></div>}
         </dl>
+        {item.depicts && item.depicts.length > 0 && onSubject && (
+          <div>
+            <p className="mb-1 font-mono text-[.62rem] uppercase tracking-wider text-muted/50">Depicts</p>
+            <div className="flex flex-wrap gap-1.5">
+              {item.depicts.slice(0, 12).map((qid, i) => (
+                <button
+                  key={qid}
+                  type="button"
+                  onClick={() => onSubject(qid, item.depictsLabels?.[i] || qid)}
+                  title={`Browse works depicting ${item.depictsLabels?.[i] || qid}`}
+                  className="rounded-sm border border-bronze/30 bg-bronze/10 px-1.5 py-0.5 font-mono text-[.62rem] text-bronze/80 transition hover:border-bronze/60 hover:text-bronze-bright"
+                >
+                  {item.depictsLabels?.[i] || qid}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
         {item.tags && item.tags.length > 0 && (
           <div className="flex flex-wrap gap-1.5">
             {item.tags.slice(0, 12).map((tag) => (
@@ -992,9 +1014,12 @@ const Finder = forwardRef<FinderHandle>(function Finder(_props, ref) {
   // The open detail is tracked by item ID (not index) so streaming re-ordering
   // doesn't swap which artwork is shown — the index is derived from the id.
   const [detailId, setDetailId] = useState<string | null>(null);
-  // Knowledge-graph artist page: when set, the results grid shows this artist's
-  // works under a bio banner (loaded from /api/artist). Cleared by any new search.
-  const [entity, setEntity] = useState<ArtistEntity | null>(null);
+  // Knowledge-graph entity view: when set, the results grid shows an artist's or a
+  // subject's works under a banner (loaded from /api/artist|/api/depicts). Cleared
+  // by any new search.
+  const [entity, setEntity] = useState<
+    { kind: 'artist'; data: ArtistEntity } | { kind: 'depicts'; data: SubjectEntity } | null
+  >(null);
 
   // reverse-image search (SauceNAO) — scan mode
   const [sauceEnabled, setSauceEnabled] = useState(false);
@@ -1221,11 +1246,32 @@ const Finder = forwardRef<FinderHandle>(function Finder(_props, ref) {
       const res = await fetch(`/api/artist?qid=${encodeURIComponent(qid)}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = await res.json() as { entity?: ArtistEntity; works?: unknown[] };
-      setEntity(json.entity ?? null);
+      setEntity(json.entity ? { kind: 'artist', data: json.entity } : null);
       setArtItems((json.works ?? []).map(normalizeArt));
       setMode('art');
     } catch {
       run(name || qid); // KG miss → graceful fallback to federated search
+    }
+  }, [run]);
+
+  // Knowledge-graph subject ("depicts") page: works depicting a subject + its node.
+  const loadSubject = useCallback(async (qid: string, label: string) => {
+    streamCancelRef.current?.();
+    streamCancelRef.current = null;
+    setInput(label || qid); setQuery(label || qid);
+    setDetailId(null); setWarnings([]); setArtItems([]); setEntity(null);
+    setSourceFilter(new Set()); setMediumFilter(new Set()); setPdOnly(false);
+    setLosslessOnly(false); setMinRes(0); setYearMin(''); setYearMax(''); setShown(SHOWN_STEP);
+    setMode('loading'); setError('');
+    try {
+      const res = await fetch(`/api/depicts?qid=${encodeURIComponent(qid)}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const json = await res.json() as { entity?: SubjectEntity; works?: unknown[] };
+      setEntity(json.entity ? { kind: 'depicts', data: json.entity } : null);
+      setArtItems((json.works ?? []).map(normalizeArt));
+      setMode('art');
+    } catch {
+      run(label || qid); // KG miss → graceful fallback to federated search
     }
   }, [run]);
 
@@ -1682,27 +1728,33 @@ const Finder = forwardRef<FinderHandle>(function Finder(_props, ref) {
         {/* ART results — break out of the page's narrow column to a full-width wall */}
         {mode === 'art' && (
           <div aria-live="polite" className="relative left-1/2 right-1/2 -ml-[50vw] -mr-[50vw] w-screen max-w-[100vw] overflow-x-clip px-4 sm:px-6 lg:px-10">
-            {entity && (
-              <div className="mx-auto mb-5 flex max-w-3xl items-center gap-4 rounded-lg border border-line bg-[rgba(14,10,7,.6)] p-4">
-                {entity.imageCommons && (
-                  <img
-                    src={`https://commons.wikimedia.org/wiki/Special:FilePath/${encodeURIComponent(entity.imageCommons)}?width=120`}
-                    alt={entity.labelEn}
-                    loading="lazy"
-                    className="h-20 w-20 shrink-0 rounded-full object-cover ring-1 ring-line"
-                  />
-                )}
-                <div className="min-w-0">
-                  <h2 className="font-display text-[1.3rem] leading-tight text-ink">{entity.labelEn}</h2>
-                  <p className="font-mono text-[.72rem] text-muted/70">
-                    {[entity.nationality, [entity.birthYear, entity.deathYear].filter(Boolean).join('–'), entity.movementLabels?.[0]].filter(Boolean).join(' · ')}
-                    {entity.workCount ? `${entity.nationality || entity.birthYear || entity.movementLabels?.[0] ? ' · ' : ''}${entity.workCount} works` : ''}
-                  </p>
-                  {entity.description && <p className="mt-1 line-clamp-2 text-[.85rem] text-muted">{entity.description}</p>}
-                  <a href={`https://www.wikidata.org/wiki/${entity.qid}`} target="_blank" rel="noopener" className="mt-1 inline-block font-mono text-[.7rem] text-bronze/70 transition hover:text-bronze-bright">Wikidata ↗</a>
+            {entity && (() => {
+              const e = entity.data;
+              const meta = entity.kind === 'artist'
+                ? [entity.data.nationality,
+                   [entity.data.birthYear, entity.data.deathYear].filter(Boolean).join('–'),
+                   entity.data.movementLabels?.[0]].filter(Boolean)
+                : ['subject'];
+              if (e.workCount) meta.push(`${e.workCount} works`);
+              return (
+                <div className="mx-auto mb-5 flex max-w-3xl items-center gap-4 rounded-lg border border-line bg-[rgba(14,10,7,.6)] p-4">
+                  {e.imageCommons && (
+                    <img
+                      src={`https://commons.wikimedia.org/wiki/Special:FilePath/${encodeURIComponent(e.imageCommons)}?width=120`}
+                      alt={e.labelEn}
+                      loading="lazy"
+                      className={'h-20 w-20 shrink-0 object-cover ring-1 ring-line ' + (entity.kind === 'artist' ? 'rounded-full' : 'rounded-md')}
+                    />
+                  )}
+                  <div className="min-w-0">
+                    <h2 className="font-display text-[1.3rem] leading-tight text-ink">{e.labelEn}</h2>
+                    <p className="font-mono text-[.72rem] text-muted/70">{meta.join(' · ')}</p>
+                    {e.description && <p className="mt-1 line-clamp-2 text-[.85rem] text-muted">{e.description}</p>}
+                    <a href={`https://www.wikidata.org/wiki/${e.qid}`} target="_blank" rel="noopener" className="mt-1 inline-block font-mono text-[.7rem] text-bronze/70 transition hover:text-bronze-bright">Wikidata ↗</a>
+                  </div>
                 </div>
-              </div>
-            )}
+              );
+            })()}
             {warnings.length > 0 && (
               <p className="mb-4 text-center font-mono text-[.75rem] text-amber/80">
                 Partial results — some sources failed: {warnings.join(' · ')}
@@ -1814,6 +1866,7 @@ const Finder = forwardRef<FinderHandle>(function Finder(_props, ref) {
         onShare={copyShare}
         onSearch={(qq) => { setInput(qq); setDetailId(null); run(qq); }}
         onArtist={(qid, name) => { setDetailId(null); loadArtist(qid, name); }}
+        onSubject={(qid, label) => { setDetailId(null); loadSubject(qid, label); }}
         onFindSource={sauceEnabled ? findSource : undefined}
         analyzeEnabled={analyzeEnabled}
       />

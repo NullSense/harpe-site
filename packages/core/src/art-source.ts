@@ -80,9 +80,12 @@ export interface ArtItem {
    *  navigation and cross-source "more by this artist". Resolved at ingest (the
    *  wikidata source) or from a name→QID map for other sources. */
   artistId?: string;
-  /** P180 "depicts" subject QIDs (or labels) — drives /depicts/<qid> thematic
-   *  browse. Union-merged across copies in dedupe(). */
+  /** P180 "depicts" subject QIDs — drives /depicts/<qid> thematic browse.
+   *  Union-merged across copies in dedupe(). */
   depicts?: string[];
+  /** Display labels for `depicts`, index-aligned — so subject pills read as
+   *  "cat" not "Q146" while still navigating by QID. */
+  depictsLabels?: string[];
   /** Offline pHash/CLIP near-duplicate cluster index (set at ingest). Consumed by
    *  dedupe() to fold the same work across sources that share no QID/file — never
    *  exposed in URLs or external state. */

@@ -50,7 +50,7 @@ _CKPT = os.path.join(tempfile.gettempdir(), "harpe-entities.json")
 
 # ── WDQS query templates (VALUES-driven; aggregated in Python) ────────────────
 _Q_WORKS = """\
-SELECT ?item ?creator ?depicts ?collection ?movement ?movementLabel WHERE {{
+SELECT ?item ?creator ?depicts ?depictsLabel ?collection ?movement ?movementLabel WHERE {{
   VALUES ?item {{ {values} }}
   OPTIONAL {{ ?item wdt:P170 ?creator . }}
   OPTIONAL {{ ?item wdt:P180 ?depicts . }}
@@ -165,7 +165,7 @@ def harvest_work_entities(client: httpx.Client, qids: list[str]) -> dict[str, di
     todo = [q for q in qids if q not in out]
     for batch in tqdm(list(_batches(todo, _BATCH)), desc="works", unit="batch"):
         values = " ".join(f"wd:{q}" for q in batch)
-        agg: dict[str, dict] = {q: {"creators": set(), "depicts": set(),
+        agg: dict[str, dict] = {q: {"creators": set(), "depicts": set(), "dlabels": {},
                                     "collection": None, "movement": None} for q in batch}
         try:
             for b in _wd_query(client, _Q_WORKS.format(values=values)):
@@ -175,7 +175,10 @@ def harvest_work_entities(client: httpx.Client, qids: list[str]) -> dict[str, di
                 if (c := _val(b, "creator")):
                     agg[q]["creators"].add(_qid(c))
                 if (d := _val(b, "depicts")):
-                    agg[q]["depicts"].add(_qid(d))
+                    dq = _qid(d)
+                    agg[q]["depicts"].add(dq)
+                    if (dl := _val(b, "depictsLabel")) and dl != dq:
+                        agg[q]["dlabels"][dq] = dl
                 if (col := _val(b, "collection")) and not agg[q]["collection"]:
                     agg[q]["collection"] = _qid(col)
                 if (m := _val(b, "movementLabel")) and not agg[q]["movement"]:
@@ -183,9 +186,13 @@ def harvest_work_entities(client: httpx.Client, qids: list[str]) -> dict[str, di
         except Exception as e:  # greedy: keep what we have, skip this window
             print(f"  works batch failed ({e}); skipping {len(batch)} qids")
         for q, a in agg.items():
+            dsorted = sorted(a["depicts"])
             out[q] = {
                 "artist_qid": sorted(a["creators"])[0] if a["creators"] else None,
-                "depicts_qids": " ".join(sorted(a["depicts"])) or None,
+                "depicts_qids": " ".join(dsorted) or None,
+                # labels index-aligned with depicts_qids (display-only; pills).
+                "depicts_labels": json.dumps([a["dlabels"].get(dq, dq) for dq in dsorted],
+                                             ensure_ascii=False) if dsorted else None,
                 "collection_qid": a["collection"],
                 "movement": a["movement"],
             }
@@ -338,17 +345,18 @@ def enrich(repo: str = "NullSense/harpe-art", out: str | None = None) -> None:
 
     # Step 3 — patch the works Parquet with the 4 KG columns, then re-publish
     print("Patching works Parquet…")
-    rows = [(q, e.get("artist_qid"), e.get("depicts_qids"), e.get("collection_qid"), e.get("movement"))
-            for q, e in work_ent.items()]
+    rows = [(q, e.get("artist_qid"), e.get("depicts_qids"), e.get("depicts_labels"),
+             e.get("collection_qid"), e.get("movement")) for q, e in work_ent.items()]
     con.execute("CREATE TABLE enr (wikidata_qid VARCHAR, artist_qid VARCHAR, depicts_qids VARCHAR, "
-                "collection_qid VARCHAR, movement VARCHAR)")
-    con.executemany("INSERT INTO enr VALUES (?,?,?,?,?)", rows)
-    enr_cols = ["artist_qid", "depicts_qids", "collection_qid", "movement"]
+                "depicts_labels VARCHAR, collection_qid VARCHAR, movement VARCHAR)")
+    con.executemany("INSERT INTO enr VALUES (?,?,?,?,?,?)", rows)
+    enr_cols = ["artist_qid", "depicts_qids", "depicts_labels", "collection_qid", "movement"]
     present = [c for c in enr_cols if c in cols]
     excl = f"EXCLUDE ({', '.join(present)})" if present else ""
     oq = out.replace("'", "''")
     con.execute(
-        f"COPY (SELECT w.* {excl}, e.artist_qid, e.depicts_qids, e.collection_qid, e.movement "
+        f"COPY (SELECT w.* {excl}, e.artist_qid, e.depicts_qids, e.depicts_labels, "
+        f"e.collection_qid, e.movement "
         f"FROM read_parquet('{tq}') w LEFT JOIN enr e USING (wikidata_qid)) "
         f"TO '{oq}' (FORMAT parquet, COMPRESSION zstd)"
     )

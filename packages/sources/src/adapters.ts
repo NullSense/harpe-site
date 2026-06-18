@@ -9,6 +9,7 @@
  */
 import { fetch, Agent } from 'undici';
 import { WBK, simplifyClaims } from 'wikibase-sdk';
+import { normalize } from '@harpe/core';
 import type { ArtItem, Download, ArtistEntity, SubjectEntity } from '@harpe/core';
 import {
   str, num, fmtFromMime, fmtFromUrl, first, timedFetch, iiifImage, IIIF,
@@ -1603,6 +1604,7 @@ export function fetchDumpSearch(dataset: string, q: string): Promise<ArtItem[]> 
 }
 
 async function fetchDumpSearchUncached(q: string, dataset: string): Promise<ArtItem[]> {
+  const nameMap = await loadNameToQid(); // memoised; {} on miss
   const url =
     `https://datasets-server.huggingface.co/search?dataset=${encodeURIComponent(dataset)}` +
     `&config=default&split=train&query=${encodeURIComponent(q)}&offset=0&length=100`;
@@ -1648,8 +1650,12 @@ async function fetchDumpSearchUncached(q: string, dataset: string): Promise<ArtI
         // Knowledge-graph columns (present once the ingest enrichment pass has run;
         // absent rows just leave these undefined → graceful no-op).
         wikidataId: /^Q\d+$/.test(str(row.wikidata_qid)) ? str(row.wikidata_qid) : undefined,
-        artistId: /^Q\d+$/.test(str(row.artist_qid)) ? str(row.artist_qid) : undefined,
+        // artist_qid from the enrichment pass (Wikidata rows), else resolve the
+        // free-text artist name via the name→QID map (other sources).
+        artistId: (/^Q\d+$/.test(str(row.artist_qid)) ? str(row.artist_qid) : undefined)
+          ?? resolveArtistQid(nameMap, str(row.artist)),
         depicts: str(row.depicts_qids) ? str(row.depicts_qids).split(' ').filter(Boolean) : undefined,
+        depictsLabels: parseJsonArray(str(row.depicts_labels)),
         clusterId: typeof row.cluster_id === 'number' ? row.cluster_id : undefined,
         movement: str(row.movement) || undefined,
       });
@@ -1679,6 +1685,38 @@ export async function fetchDumpSource(source: DumpSourceKey, q: string): Promise
 // ingest entity pass. All run through the shared dumpHttpPolicy (retry + breaker
 // + timeout); the handler layer adds the Upstash cache, mirroring the dump path.
 const HF_ENTITY_CDN = 'https://huggingface.co/datasets/NullSense/harpe-art/resolve/main/data';
+
+// name→QID map (alias/label, normalize()-keyed; non-Latin under a "raw:" prefix),
+// fetched once from the HF CDN and memoised for the instance's lifetime. Lets us
+// attach an artistId to NON-Wikidata dump rows (which lack the artist_qid column)
+// so their cards link to the artist page too. Decoupled from the dump breaker: a
+// miss just means no name-resolution (Wikidata rows still carry artist_qid).
+let _nameToQid: Record<string, string> | null | undefined;
+async function loadNameToQid(): Promise<Record<string, string>> {
+  if (_nameToQid !== undefined) return _nameToQid ?? {};
+  const dl = deadline(undefined);
+  try {
+    const res = await timedFetch(`${HF_ENTITY_CDN}/name_to_qid.json`, dl.signal);
+    _nameToQid = res.ok ? (await res.json() as Record<string, string>) : null;
+  } catch { _nameToQid = null; } finally { dl.clear(); }
+  return _nameToQid ?? {};
+}
+
+/** Resolve a free-text artist name to a Wikidata QID via the name→QID map. */
+function resolveArtistQid(map: Record<string, string>, name: string): string | undefined {
+  if (!name) return undefined;
+  const q = map[normalize(name)] ?? map[`raw:${name}`];
+  return q && /^Q\d+$/.test(q) ? q : undefined;
+}
+
+/** Parse a JSON-array string column (e.g. depicts_labels) → string[] | undefined. */
+function parseJsonArray(s: string): string[] | undefined {
+  if (!s) return undefined;
+  try {
+    const v = JSON.parse(s);
+    return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : undefined;
+  } catch { return undefined; }
+}
 
 async function fetchEntityJson<T>(path: string): Promise<T | null> {
   return dumpHttpPolicy.execute(async ({ signal }) => {
