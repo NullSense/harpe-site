@@ -80,6 +80,13 @@ interface ArtItem {
   inscriptions?: string;
   tags?: string[];
   licenseUrl?: string;
+  /** Knowledge-graph identity/links (Wikidata-backed). artistId/depicts drive the
+   *  /artist + /depicts pages; wikidataId + clusterId drive cross-source folding. */
+  wikidataId?: string;
+  artistId?: string;
+  depicts?: string[];
+  clusterId?: number;
+  movement?: string;
   /** Per-source records merged into this item by dedupe() (quality-ranked, rep
    *  first) — feed every source's facts to the AI analysis AND drive the sidebar
    *  "same work" copies strip, so each carries its own image + dimensions. */
@@ -312,6 +319,16 @@ function normalizeArt(raw: unknown): ArtItem {
     creditLine: txt('creditLine'),
     description: txt('description'),
     sourceUrl: typeof d.sourceUrl === 'string' && d.sourceUrl ? d.sourceUrl : undefined,
+    tags: Array.isArray(d.tags) ? (d.tags as unknown[]).filter((t): t is string => typeof t === 'string') : undefined,
+    // Knowledge-graph fields — pass them through so client-side dedupe() can fold
+    // by QID/cluster and the sidebar can link to artist/depicts pages. Without
+    // this they're silently dropped before reaching dedupe (the live streaming
+    // path normalises every raw item here).
+    wikidataId: typeof d.wikidataId === 'string' && /^Q\d+$/.test(d.wikidataId) ? d.wikidataId : undefined,
+    artistId: typeof d.artistId === 'string' && /^Q\d+$/.test(d.artistId) ? d.artistId : undefined,
+    depicts: Array.isArray(d.depicts) ? (d.depicts as unknown[]).filter((s): s is string => typeof s === 'string') : undefined,
+    clusterId: typeof d.clusterId === 'number' ? d.clusterId : undefined,
+    movement: txt('movement'),
   };
 }
 
