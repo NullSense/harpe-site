@@ -709,34 +709,46 @@ FROM with_jpeg
 
 
 # ─── Wikidata ─────────────────────────────────────────────────────────────────
-# Harvest the artwork subset via WDQS SPARQL (60 s/query timeout → page by 5000,
-# ~1 req/s). 4 classes; dedup by QID across classes. ~680k items, ~25 min.
-_WDQS = "https://query.wikidata.org/sparql"
+# Harvest the artwork subset via QLever — a SPARQL engine over the full Wikidata
+# dump WITHOUT the WDQS 60s timeout. WDQS could not page this set: deep OFFSET is
+# O(offset) → 504s past ~200k, and Blazegraph has no usable keyset for huge sets
+# (IRI `>` returns empty, STR()/no-filter ORDER BY both time out). QLever serves a
+# deep page (image + creator/material/collection labels) in ~1.4s at ANY offset —
+# the whole ~600k harvest runs in minutes with zero coverage gaps. All 4 classes
+# in one query; OFFSET pagination (cheap here) over DISTINCT items.
+_WDQS = "https://qlever.cs.uni-freiburg.de/api/wikidata"
 _WD_UA = "HarpeArtIngest/1.0 (github.com/NullSense/harpe; matas234@gmail.com)"
-_WD_CLASSES = [("Q3305213", "painting"), ("Q860861", "sculpture"),
-               ("Q11060274", "print"), ("Q93184", "drawing")]
 _WD_PD_ENTITY = "http://www.wikidata.org/entity/Q19652"
+_WD_PAGE = 5000  # DISTINCT items per page (QLever pages this in ~1.4s at any depth)
+# QLever doesn't auto-register the Wikidata prefixes or support SERVICE
+# wikibase:label, so we declare prefixes and join rdfs:label@en explicitly. Inner
+# subquery paginates DISTINCT item QIDs (ORDER BY → stable OFFSET); outer enriches
+# just that page. Classes: painting / sculpture / print / drawing.
 _WD_QUERY = """\
+PREFIX wdt: <http://www.wikidata.org/prop/direct/>
+PREFIX wd: <http://www.wikidata.org/entity/>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
 SELECT ?item ?itemLabel ?creatorLabel ?inception ?materialLabel
        ?collectionLabel ?image ?copyright WHERE {{
-  ?item wdt:P31 wd:{cls} ; wdt:P18 ?image .
-  OPTIONAL {{ ?item wdt:P170 ?creator . }}
+  {{
+    SELECT ?item WHERE {{
+      VALUES ?c {{ wd:Q3305213 wd:Q860861 wd:Q11060274 wd:Q93184 }}
+      ?item wdt:P31 ?c ; wdt:P18 [] .
+    }} ORDER BY ?item LIMIT {limit} OFFSET {offset}
+  }}
+  ?item wdt:P18 ?image .
+  OPTIONAL {{ ?item rdfs:label ?itemLabel . FILTER(LANG(?itemLabel) = "en") }}
+  OPTIONAL {{ ?item wdt:P170 ?creator . ?creator rdfs:label ?creatorLabel . FILTER(LANG(?creatorLabel) = "en") }}
   OPTIONAL {{ ?item wdt:P571 ?inception . }}
-  OPTIONAL {{ ?item wdt:P186 ?material . }}
-  OPTIONAL {{ ?item wdt:P195 ?collection . }}
+  OPTIONAL {{ ?item wdt:P186 ?material . ?material rdfs:label ?materialLabel . FILTER(LANG(?materialLabel) = "en") }}
+  OPTIONAL {{ ?item wdt:P195 ?collection . ?collection rdfs:label ?collectionLabel . FILTER(LANG(?collectionLabel) = "en") }}
   OPTIONAL {{ ?item wdt:P6216 ?copyright . }}
-  SERVICE wikibase:label {{ bd:serviceParam wikibase:language "en" . }}
-}} LIMIT {limit} OFFSET {offset}
+}}
 """
 
 
-class _WdTruncated(Exception):
-    """WDQS returned a partial/oversized body (timed out mid-stream) — the caller
-    should shrink the batch and re-fetch the SAME offset, not skip or retry as-is."""
-
-
 class _WdRetryable(Exception):
-    """A transient WDQS condition (429/503/connection) — worth a backed-off retry."""
+    """A transient endpoint condition (429/5xx/connection/partial body) — retry."""
 
 
 @tenacity.retry(
@@ -745,44 +757,37 @@ class _WdRetryable(Exception):
     wait=tenacity.wait_exponential(multiplier=3, max=60) + tenacity.wait_random(0, 2),
     reraise=True,
 )
-def _wd_fetch(client, cls, limit, offset):
-    """Fetch one WDQS page. tenacity retries transient conditions (429 + any 5xx
-    gateway error — WDQS throws 502/504 constantly at deep offsets — and connection
-    blips) with backoff; raises _WdTruncated on a partial JSON body (→ caller
-    shrinks the batch) and HarvestBlocked on a persistent refusal."""
-    q = _WD_QUERY.format(cls=cls, limit=limit, offset=offset)
+def _wd_fetch(client, limit, offset):
+    """Fetch one page (DISTINCT items [offset, offset+limit)). tenacity retries
+    transient conditions; HarvestBlocked on a hard refusal; a 400 (query error) is
+    fatal and surfaces immediately."""
+    q = _WD_QUERY.format(limit=limit, offset=offset)
     try:
         resp = client.get(_WDQS, params={"query": q},
                           headers={"Accept": "application/sparql-results+json", "User-Agent": _WD_UA},
-                          timeout=90)
+                          timeout=180)
     except (httpx.TransportError, httpx.TimeoutException, OSError) as e:
         raise _WdRetryable(str(e)) from e
     if resp.status_code == 429 or resp.status_code >= 500:
         raise _WdRetryable(f"HTTP {resp.status_code}")
+    if resp.status_code == 400:
+        raise HarvestBlocked(f"QLever rejected the query (HTTP 400): {resp.text[:200]}")
     if resp.status_code in (401, 403):
-        raise HarvestBlocked(f"Wikidata WDQS refused (HTTP {resp.status_code}).")
+        raise HarvestBlocked(f"QLever refused (HTTP {resp.status_code}).")
     resp.raise_for_status()
     try:
-        # strict=False: WDQS labels can embed raw control chars that strict JSON
-        # rejects; json.dumps re-escapes them when we write the row.
         return json.loads(resp.text, strict=False)["results"]["bindings"]
-    except json.JSONDecodeError as e:
-        raise _WdTruncated(str(e)) from e   # oversized/timed-out page → shrink
-
-
-# Adaptive batch sizing (AIMD, à la TCP congestion control): grow the page after
-# a clean fetch, halve it the moment WDQS truncates, so the harvester self-tunes to
-# whatever the endpoint can serve under its 60s timeout right now.
-_WD_BATCH_START, _WD_BATCH_MIN, _WD_BATCH_MAX, _WD_BATCH_STEP = 2000, 200, 5000, 1000
+    except (json.JSONDecodeError, KeyError) as e:
+        raise _WdRetryable(f"bad body: {e}") from e
 
 
 def harvest_wikidata(max_batches=None) -> str:
-    """Page WDQS for artworks-with-image; dedup by QID; write JSONL. Resumable.
-
-    Auto-tunes the page size: shrink-and-retry the SAME offset on truncation (so no
-    rows are lost), grow back on success. Streams to a `.partial` + per-class offset
-    state, so Ctrl-C / a crash / a hard WDQS refusal all keep progress — re-running
-    resumes where it left off.
+    """Page QLever for the artwork subset (4 classes in one query) with OFFSET
+    pagination over DISTINCT items; dedup by QID; write JSONL. Resumable: streams to
+    a `.partial` + an OFFSET in the state file, so Ctrl-C / a crash / an endpoint
+    refusal all keep progress — re-running resumes at the saved offset (`seen` dedups
+    any page overlap). Each page is ~1-2s at any depth, so the full ~600k set takes
+    minutes, not hours, with no coverage gaps.
     """
     out_path = os.path.join(tempfile.gettempdir(), "harpe-wikidata.jsonl")
     if os.path.exists(out_path):
@@ -791,7 +796,7 @@ def harvest_wikidata(max_batches=None) -> str:
     partial = out_path + ".partial"
     state_path = out_path + ".state.json"
 
-    seen, total, offsets = set(), 0, {}
+    seen, total, offset = set(), 0, 0
     if os.path.exists(partial):
         with open(partial, encoding="utf-8") as f:
             for line in f:
@@ -800,92 +805,61 @@ def harvest_wikidata(max_batches=None) -> str:
                     total += 1
                 except Exception:
                     pass
-        try:
-            offsets = json.load(open(state_path, encoding="utf-8"))
+        try:                                          # resume from saved offset (ignore stale
+            st = json.load(open(state_path, encoding="utf-8"))   # cursor-format state)
+            offset = int(st.get("offset", 0)) if isinstance(st, dict) else 0
         except Exception:
-            offsets = {}
-        print(f"Resuming Wikidata: {total:,} already harvested.")
+            offset = 0
+        print(f"Resuming Wikidata: {total:,} already harvested (offset {offset:,}).")
 
     bar = _pbar(unit="art", desc="Wikidata", initial=total, smoothing=0.1)
-    print("Wikidata: querying WDQS (page size auto-tunes; first page ~10-20s)…")
+    print("Wikidata: querying QLever (fast full-scan; ~1-2s/page)…")
+    pages = 0
     try:
         with httpx.Client(follow_redirects=True) as client, open(partial, "a", encoding="utf-8") as fh:
-            for cls, label in _WD_CLASSES:
-                offset = offsets.get(cls, 0)
-                batch = _WD_BATCH_START
-                min_fails = 0
-                while True:
-                    if _ABORT.is_set():
-                        raise KeyboardInterrupt
-                    if max_batches is not None and offset // _WD_BATCH_START >= max_batches:
-                        break
-                    bar.set_postfix_str(f"{label} ·{batch}", refresh=False)
-                    try:
-                        bindings = _wd_fetch(client, cls, batch, offset)
-                    except _WdTruncated:
-                        if batch > _WD_BATCH_MIN:                  # shrink, retry SAME offset
-                            batch = max(_WD_BATCH_MIN, batch // 2)
-                            continue
-                        min_fails += 1                            # already tiny and still failing
-                        if min_fails >= 8:
-                            raise HarvestBlocked(
-                                f"Wikidata WDQS failing even at min page size ({label}@{offset}); "
-                                "progress saved — re-run to resume.")
-                        offset += batch                           # skip this small window, move on
-                        offsets[cls] = offset
+            while True:
+                if _ABORT.is_set():
+                    raise KeyboardInterrupt
+                if max_batches is not None and pages >= max_batches:
+                    break
+                bar.set_postfix_str(f"offset {offset:,}", refresh=False)
+                bindings = _wd_fetch(client, _WD_PAGE, offset)  # tenacity retries transients
+                if not bindings:
+                    break                                       # all items exhausted
+                new = 0
+                for b in bindings:
+                    wid = "wd-" + b["item"]["value"].split("/")[-1]
+                    if wid in seen:
                         continue
-                    except _WdRetryable as e:
-                        # Transient server error (504/502/…) survived all retries at this
-                        # offset — skip the window and keep going rather than abort the whole
-                        # harvest. Resume/re-run + merge-on-push fills any skipped gaps.
-                        min_fails += 1
-                        tqdm.write(f"  wikidata: {label}@{offset} {e}; skipping window")
-                        if min_fails >= 8:
-                            raise HarvestBlocked(
-                                f"Wikidata WDQS failing repeatedly ({label}@{offset}); "
-                                "progress saved — re-run to resume.")
-                        offset += batch
-                        offsets[cls] = offset
-                        time.sleep(3)
+                    image = b.get("image", {}).get("value", "")
+                    if not image:
                         continue
-                    min_fails = 0
-                    if not bindings:
-                        break
-                    new = 0
-                    for b in bindings:
-                        wid = "wd-" + b["item"]["value"].split("/")[-1]
-                        if wid in seen:
-                            continue
-                        image = b.get("image", {}).get("value", "")
-                        if not image:
-                            continue
-                        seen.add(wid)
-                        inception = b.get("inception", {}).get("value", "")
-                        is_pd = b.get("copyright", {}).get("value", "") == _WD_PD_ENTITY
-                        fh.write(json.dumps({
-                            "source": "wikidata", "id": wid,
-                            "title": b.get("itemLabel", {}).get("value") or None,
-                            "artist": b.get("creatorLabel", {}).get("value") or None,
-                            "date": inception[:4] if inception else None,
-                            "medium": b.get("materialLabel", {}).get("value") or None,
-                            "dimensions": None, "culture": None,
-                            "credit_line": b.get("collectionLabel", {}).get("value") or None,
-                            "description": None,
-                            "image_thumb": image + "?width=400", "image_full": image,
-                            "width": None, "height": None,
-                            "source_url": "https://www.wikidata.org/wiki/" + wid[3:],
-                            "rights_type": "public domain" if is_pd else "unknown",
-                            "is_public_domain": is_pd,
-                        }) + "\n")
-                        new += 1
-                    total += new
-                    offset += batch
-                    offsets[cls] = offset
-                    fh.flush()
-                    json.dump(offsets, open(state_path, "w", encoding="utf-8"))
-                    bar.update(new)
-                    batch = min(_WD_BATCH_MAX, batch + _WD_BATCH_STEP)  # grow back on success
-                    time.sleep(0.3)
+                    seen.add(wid)
+                    inception = b.get("inception", {}).get("value", "")
+                    is_pd = b.get("copyright", {}).get("value", "") == _WD_PD_ENTITY
+                    fh.write(json.dumps({
+                        "source": "wikidata", "id": wid,
+                        "title": b.get("itemLabel", {}).get("value") or None,
+                        "artist": b.get("creatorLabel", {}).get("value") or None,
+                        "date": inception[:4] if inception else None,
+                        "medium": b.get("materialLabel", {}).get("value") or None,
+                        "dimensions": None, "culture": None,
+                        "credit_line": b.get("collectionLabel", {}).get("value") or None,
+                        "description": None,
+                        "image_thumb": image + "?width=400", "image_full": image,
+                        "width": None, "height": None,
+                        "source_url": "https://www.wikidata.org/wiki/" + wid[3:],
+                        "rights_type": "public domain" if is_pd else "unknown",
+                        "is_public_domain": is_pd,
+                    }) + "\n")
+                    new += 1
+                total += new
+                offset += _WD_PAGE
+                fh.flush()
+                json.dump({"offset": offset}, open(state_path, "w", encoding="utf-8"))
+                bar.update(new)
+                pages += 1
+                time.sleep(0.2)
     except KeyboardInterrupt:
         bar.close()
         print(f"\n⏸  Wikidata interrupted — {total:,} saved to {partial}. Re-run to resume.")
