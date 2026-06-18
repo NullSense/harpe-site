@@ -30,20 +30,18 @@ Verified row counts are from live validation runs (see git history / agent repor
 | `aic` | Art Institute of Chicago | **119,903** (57k PD) | `artic-api-data.tar.bz2` (115 MB) → per-file JSON | CC0 meta, per-work PD flag |
 | `cleveland` | Cleveland Museum of Art | **68,750** | single `data.json` (117 MB, LFS) | CC0 (meta + PD images) |
 | `smk` | National Gallery of Denmark | ~54,398 | keyless REST harvest → JSONL (~28 pages) | CC0 meta, PD mark |
-| `met` | The Metropolitan Museum of Art | ~120–145k PD ⚠ | CSV (PD filter) + per-object API image crawl | CC0 |
+| `met` | The Metropolitan Museum of Art | ~260k PD | **official HF dataset** `metmuseum/openaccess` parquet (image URLs baked in) | CC0 |
 | `si` | Smithsonian Open Access | ~86k (8 art units) | S3 art-unit files (`00..ff.txt`, ~350 MB) | CC0 |
-| `wikidata` | Wikidata (paintings/sculpture/print/drawing) | ~680k | WDQS SPARQL paging → JSONL (~25 min) | CC0 meta, per-item img |
+| `wikidata` | Wikidata (paintings/sculpture/print/drawing) | ~680k | WDQS SPARQL paging → JSONL, adaptive + resumable | CC0 meta, per-item img |
+| `loc` | Library of Congress (Prints & Photographs) | ~tens of k (capped; ~1M full) | keyless JSON API, year-window paged → JSONL; IIIF images | mostly PD / no known restrictions |
 
-**Combined deep-searchable total: ~1.4M+ works** (vs. 3 dump-backed sources before).
+**Combined deep-searchable total: ~1.6M+ works** (vs. 3 dump-backed sources before).
 
-> ⚠ **`met` caveat:** the Met collection API sits behind an **Imperva/Incapsula bot
-> wall** that throttles sustained crawls (you'll see a run of HTTP 403s after a few
-> thousand requests). The harvester now **preflights** the API and **circuit-breaks**
-> on consecutive refusals, so `--all` will *skip Met cleanly* and still build every
-> other source rather than spamming a dead endpoint. A full ~248k headless crawl is
-> not reliable; most notable Met PD works are already covered via `wikidata`. To get
-> Met specifically, run `--sources met` from a residential/browser-grade network and
-> let the `harpe-met.jsonl` cache build incrementally.
+> **`met` is now dump-backed (no crawl).** The Met *API* (collectionapi) is behind an
+> Imperva/Incapsula wall, but its *image CDN* (images.metmuseum.org) is open, and the
+> Met publishes its own Hugging Face open-access dataset with image URLs baked in. We
+> read that parquet directly — ~260k PD works, zero crawling, no key. (The old greedy
+> API crawl was removed.)
 
 ### Run — one command
 ```bash
@@ -88,10 +86,11 @@ URL) skips just that source — the rest still build and the Parquet is written.
 
 ### Site registry — DONE (flipped 2026-06-18)
 `packages/sources/src/registry.ts` now serves `moma, nga, mia, aic, cleveland, wellcome,
-smk, si, wikidata` from the dump (`fetchDumpSource`, gated on `HARPE_DUMP_DATASET`), so the
-site searches the deep index instead of sampling those live APIs. `met` and the rest stay
-live-API. To dump-back a new source later: add it to `DUMP_SOURCE_LABELS` in `adapters.ts`,
-then add a `dump('<key>', '<Label>')` line in `registry.ts`.
+smk, si, wikidata, met, loc` (11) from the dump (`fetchDumpSource`, gated on
+`HARPE_DUMP_DATASET`), so the site searches the deep index instead of sampling those live
+APIs. The remaining live-API sources are commons, wikiart, vam, nasjonalmuseet, digitalnz,
+europeana, harvard, parismusees. To dump-back a new source later: add it to
+`DUMP_SOURCE_LABELS` in `adapters.ts`, then add a `dump('<key>', '<Label>')` line in `registry.ts`.
 
 ### Site runtime resilience — `resilience.ts` (cockatiel)
 The per-request fan-out is wrapped in resilience policies so one degraded upstream can't
@@ -118,31 +117,16 @@ transport; the old `hf_transfer` / `HF_HUB_ENABLE_HF_TRANSFER` is deprecated and
 
 ---
 
-## ⏸️ Deferred — feasible, but key-gated or heavy (Tier B leftovers)
+## ⏸️ Deferred — feasible, but key-gated or low-ROI
 
-These have a real bulk/harvest path; they were left out of the first pass because
-they need an API key, are very large, or have mixed per-item rights to filter.
-
-### Europeana — `europeana`  (needs `EUROPEANA_API_KEY` for the filtered route)
-- **Bulk:** weekly FTP ZIP dump `ftp://download.europeana.eu/dataset/XML/` (EDM RDF/XML,
-  one record per file, all metadata CC0) **or** OAI-PMH `https://api.europeana.eu/oai/record/`
-  (keyless, incremental with `from`/`until`).
-- **Recipe:** `wget -m` the FTP tree → parse EDM, extract `dc:title`, `dc:creator`,
-  `edmIsShownBy` (image), `edm:isShownAt` (page), `edm:rights` (license), `edmPreview`
-  (thumb) → **filter `edm:rights` to PDM/CC0/CC-BY/CC-BY-SA** (rights are per-item).
-- **Scale:** ~50M items; image+open subset is millions → hundreds of GB of XML. Best
-  done as a curated subset (`qf=TYPE:IMAGE&reusability=open` via the Search API cursor).
-- **Caveat:** Europeana hosts only thumbnails; `edmIsShownBy` points at the provider
-  (availability not guaranteed). IIIF coverage is uneven across providers.
-
-### Library of Congress — `loc`  (keyless, but heavy)
-- **No single dump.** Harvest the JSON API by facet-sliced pagination:
-  `https://www.loc.gov/photos/?fo=json&c=1000&sp=N`, broken into `&dates=YYYY/YYYY`
-  slices to stay under the **100k-item deep-paging cap** (20 req/min limit).
-- **Images:** IIIF — `https://tile.loc.gov/image-services/iiif/{id}/full/full/0/default.jpg`.
-- **Curated bulk packages** exist at `https://data.labs.loc.gov/packages/` (e.g. Free-to-Use sets).
-- **Caveat:** ~1.5M P&P items, mixed rights (`rights_advisory`/`access_restricted` per item);
-  weeks of polite crawling for the full corpus. June-2025 catalog migration causing temp gaps.
+### Europeana — `europeana`  (HELD — built but not enabled)
+A working harvester exists (cursor Search API, `qf=TYPE:IMAGE&reusability=open`, using
+Europeana's own hosted thumbnail API so images reliably hotlink). **Held out of the
+default ingest on purpose:** (1) needs a free `EUROPEANA_API_KEY` (a full ~21M-record
+harvest is multi-day on the free quota); (2) **thumbnails only** (~200–400px, no full-res);
+(3) it re-aggregates Rijksmuseum / Wellcome / SMK etc. that we already carry in full —
+so it mostly adds *duplicate, lower-res* rows and would dilute quality more than it adds
+reach. Enable later only if breadth matters more than that trade-off.
 
 ### Nasjonalmuseet (Norway) — `nasjonalmuseet`  (needs a free KulturIT/DiMu key)
 - v1 Collection API retired Jan 2025; v2 not shipped. Harvest via **DiMu Solr**:

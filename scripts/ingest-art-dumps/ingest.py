@@ -521,213 +521,76 @@ WHERE image_thumbnail IS NOT NULL
 
 
 # ─── The Metropolitan Museum of Art ──────────────────────────────────────────
-# CSV has rich metadata but NO image URLs → filter to public-domain rows, then
-# crawl the per-object API (~80 req/s, no key) for primaryImage. Full crawl of
-# ~175-205k PD objects ≈ 35-45 min; result is cached as JSONL.
-MET_CSV_URL = "https://media.githubusercontent.com/media/metmuseum/openaccess/master/MetObjects.csv"
-MET_API_BASE = "https://collectionapi.metmuseum.org/public/collection/v1/objects"
+# The Met collection API (collectionapi.metmuseum.org) sits behind an Imperva
+# bot-wall, so we do NOT crawl it. Instead we read the Met's OWN official Hugging
+# Face dataset (metmuseum/openaccess) — ~260k public-domain works with image URLs
+# already baked in. The image CDN (images.metmuseum.org) is NOT walled, so those
+# URLs hotlink fine. Zero crawling, no key.
+MET_HF_PARQUET_API = "https://huggingface.co/api/datasets/metmuseum/openaccess/parquet/default/train"
 
 
-def _iter_met_pd_rows():
-    """Stream the Met bulk CSV; yield one dict per public-domain object (no images yet)."""
-    logger.info("Streaming Met CSV from GitHub LFS …")
-    resp = urllib.request.urlopen(MET_CSV_URL, timeout=120)
-    fh = io.TextIOWrapper(resp, encoding="utf-8-sig", newline="")  # CSV has a UTF-8 BOM
-    with fh:
-        for row in csv.DictReader(fh):
-            if row.get("Is Public Domain", "").strip() != "True":
-                continue
-            obj_id = row.get("Object ID", "").strip()
-            if not obj_id:
-                continue
-            yield {
-                "source": "met", "id": f"met-{obj_id}",
-                "title": row.get("Title", "").strip() or None,
-                "artist": row.get("Artist Display Name", "").strip() or None,
-                "date": row.get("Object Date", "").strip() or None,
-                "medium": row.get("Medium", "").strip() or None,
-                "dimensions": row.get("Dimensions", "").strip() or None,
-                "culture": row.get("Culture", "").strip() or None,
-                "credit_line": row.get("Credit Line", "").strip() or None,
-                "description": None, "image_thumb": None, "image_full": None,
-                "width": None, "height": None,
-                "source_url": row.get("Link Resource", "").strip() or None,
-                "rights_type": "CC0", "is_public_domain": True,
-                "_raw_id": int(obj_id),
-            }
-
-
-_MET_HEADERS = {
-    "User-Agent": ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                   "(KHTML, like Gecko) Chrome/126.0 Safari/537.36"),
-    "Accept": "application/json",
-}
-
-
-def _met_fetch_one(obj_id):
-    """Return (status, full, thumb) where status ∈ {'ok','noimg','blocked','error'}.
-
-    'blocked' = the host refused us (403/429/503 — typically the Incapsula bot wall);
-    distinguished from a normal 'noimg' so the circuit breaker can tell a dead
-    endpoint apart from objects that simply have no hosted public-domain image.
-    """
-    req = urllib.request.Request(f"{MET_API_BASE}/{obj_id}", headers=_MET_HEADERS)
-    try:
-        with urllib.request.urlopen(req, timeout=15) as r:
-            data = json.loads(r.read())
-    except urllib.error.HTTPError as e:
-        return ("blocked" if e.code in (403, 429, 503) else "error", None, None)
-    except Exception:
-        return ("error", None, None)
-    if not data.get("isPublicDomain"):
-        return ("noimg", None, None)
-    full = (data.get("primaryImage") or "").strip()
-    if not full:
-        return ("noimg", None, None)
-    return ("ok", full, (data.get("primaryImageSmall") or "").strip())
-
-
-def _met_preflight(rate_limit=20.0):
-    """Probe a few known objects; raise HarvestBlocked if the API is walled off.
-
-    Runs BEFORE the ~475 MB CSV download so we fail fast instead of streaming the
-    whole catalogue only to hit the WAF on every image lookup.
-    """
-    probe_ids = [436535, 459123, 437853, 11417, 45734, 36161, 207753, 438722, 435882, 334228]
-    ok = blocked = 0
-    for oid in probe_ids:
-        st, *_ = _met_fetch_one(oid)
-        ok += st == "ok"
-        blocked += st == "blocked"
-        time.sleep(1.0 / rate_limit)
-    if ok == 0 and blocked >= len(probe_ids) // 2:
-        raise HarvestBlocked(
-            f"Met collection API refused {blocked}/{len(probe_ids)} probe requests "
-            "(HTTP 403 — Imperva/Incapsula bot wall; needs a real browser/JS to pass). "
-            "A headless image crawl isn't possible from this network. Either run the Met "
-            "harvest from a residential browser session, or skip it — most of the Met's "
-            "famous public-domain works are already covered via the `wikidata` source."
-        )
-    logger.info("Met preflight OK (%d/%d probes returned images).", ok, len(probe_ids))
-
-
-_MET_STREAK_LIMIT = 80  # consecutive 403s ⇒ the WAF woke up
-
-
-def _met_fetch_with_id(obj_id):
-    st, full, thumb = _met_fetch_one(obj_id)
-    return obj_id, st, full, thumb
-
-
-def harvest_met(workers=16) -> str:
-    """CSV PD filter + concurrent image crawl → JSONL. Resumable + progress bar.
-
-    Streams each resolved row to a `.partial` file as it arrives, so Ctrl-C (or any
-    kill) keeps progress; a re-run skips already-done objects and continues. On full
-    completion the partial is renamed to the final cache.
-    """
+def harvest_met_dump() -> str:
+    """Read the Met's official HF open-access parquet shards → JSONL (public-domain
+    rows that have a primaryImage). No Met API calls — every URL comes from HF."""
     out_path = os.path.join(tempfile.gettempdir(), "harpe-met.jsonl")
-    partial = out_path + ".partial"
     if os.path.exists(out_path):
-        print(f"Reusing existing Met harvest at {out_path} (delete to re-harvest).")
+        print(f"Reusing existing Met dump at {out_path} (delete to re-harvest).")
         return out_path
 
-    try:
-        _met_preflight()  # cheap probe before the 475 MB CSV download
-    except HarvestBlocked as e:
-        # Walled right now — but if a previous run left salvaged rows, ingest those
-        # rather than contributing nothing. Re-run later from a friendlier network.
-        if os.path.exists(partial) and os.path.getsize(partial) > 0:
-            n = sum(1 for _ in open(partial, encoding="utf-8"))
-            print(f"[met] API walled ({e}); ingesting {n:,} previously-salvaged images — "
-                  "re-run `--sources met --push` later to grow it.")
-            return partial
-        raise
-    pd_rows = list(_iter_met_pd_rows())
-    by_id = {r["_raw_id"]: r for r in pd_rows}
-    logger.info("Met PD rows from CSV: %d", len(pd_rows))
+    def _shards():
+        req = urllib.request.Request(MET_HF_PARQUET_API, headers={"User-Agent": "harpe-ingest/1.0"})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return json.load(r)
 
-    # Resume: anything already written to the partial is done.
-    done = set()
-    if os.path.exists(partial):
-        with open(partial, encoding="utf-8") as f:
-            for line in f:
-                try:
-                    done.add(int(json.loads(line)["id"].split("-", 1)[1]))
-                except Exception:
-                    pass
-        print(f"Resuming Met: {len(done):,} already fetched, {len(by_id) - len(done):,} to go.")
-    todo = [rid for rid in by_id if rid not in done]
+    shard_urls = _retry("Met HF shards", _shards)
+    if not shard_urls:
+        raise HarvestBlocked("Met: HF parquet API returned no shards.")
+    print(f"Met dump: reading {len(shard_urls)} HF parquet shards …")
 
-    counts = {"ok": 0, "noimg": 0, "blocked": 0, "error": 0}
-    streak = 0
-    written = len(done)
-    from concurrent.futures import wait, FIRST_COMPLETED
-    pool = ThreadPoolExecutor(max_workers=workers)
-    pending = set()
-    it = iter(todo)
-    fh = open(partial, "a", encoding="utf-8")
-    bar = _pbar(total=len(by_id), initial=len(done), unit="obj", desc="Met images", smoothing=0.05)
+    tmp = out_path + ".tmp"
+    written = 0
+    con = duckdb.connect()
+    con.execute("INSTALL httpfs; LOAD httpfs;")
+    con.execute(f"SET temp_directory='{tempfile.gettempdir()}';")
     try:
-        for _ in range(workers * 4):
-            try:
-                pending.add(pool.submit(_met_fetch_with_id, next(it)))
-            except StopIteration:
-                break
-        while pending:
-            if _ABORT.is_set():
-                raise KeyboardInterrupt
-            ready, pending = wait(pending, return_when=FIRST_COMPLETED, timeout=1.0)
-            for fut in ready:
-                obj_id, st, full, thumb = fut.result()
-                counts[st] += 1
-                bar.update(1)
-                if st == "ok":
-                    streak = 0
-                    row = dict(by_id[obj_id])
-                    row.pop("_raw_id", None)
-                    row["image_full"], row["image_thumb"] = full, thumb
-                    fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+        with open(tmp, "w", encoding="utf-8") as fh:
+            for i, shard in enumerate(shard_urls, 1):
+                rows = con.execute(f"""
+                    SELECT objectID, title, artistDisplayName, objectDate, medium,
+                           dimensions, culture, creditLine, primaryImage, primaryImageSmall, objectURL
+                    FROM read_parquet('{shard.replace(chr(39), chr(39) * 2)}')
+                    WHERE isPublicDomain = TRUE AND primaryImage IS NOT NULL AND primaryImage <> ''
+                """).fetchall()
+                for (oid, title, artist, date, medium, dims, culture, credit, full, small, url) in rows:
+                    fh.write(json.dumps({
+                        "source": "met", "id": f"met-{oid}",
+                        "title": (title or "").strip() or "Untitled",
+                        "artist": (artist or "").strip() or None,
+                        "date": (date or "").strip() or None,
+                        "medium": (medium or "").strip() or None,
+                        "dimensions": (dims or "").strip() or None,
+                        "culture": (culture or "").strip() or None,
+                        "credit_line": (credit or "").strip() or None,
+                        "description": None,
+                        "image_thumb": (small or "").strip() or (full or "").strip(),
+                        "image_full": (full or "").strip(),
+                        "width": None, "height": None,
+                        "source_url": (url or "").strip() or None,
+                        "rights_type": "CC0", "is_public_domain": True,
+                    }, ensure_ascii=False) + "\n")
                     written += 1
-                    if counts["ok"] % 500 == 0:
-                        fh.flush()
-                elif st == "blocked":
-                    streak += 1
-                bar.set_postfix(img=written, blocked=counts["blocked"], refresh=False)
-                if streak >= _MET_STREAK_LIMIT:
-                    raise HarvestBlocked(
-                        f"Met API hit a wall: {streak} requests refused in a row after "
-                        f"{written:,} images (Incapsula throttling). Progress saved to "
-                        f"{partial} — re-run `--sources met` to resume.")
-                # keep the window full
-                try:
-                    pending.add(pool.submit(_met_fetch_with_id, next(it)))
-                except StopIteration:
-                    pass
-    except KeyboardInterrupt:
-        fh.flush(); fh.close(); pool.shutdown(wait=False, cancel_futures=True); bar.close()
-        print(f"\n⏸  Interrupted — {written:,} Met rows saved to {partial}. "
-              f"Re-run `--sources met` to resume from here.")
-        raise                                         # Ctrl-C stops the whole run
-    except Exception as e:
-        # GREEDY: the wall/error doesn't discard what we already pulled. Keep the
-        # partial for resume and ingest the salvaged images into this build.
-        fh.flush(); fh.close(); pool.shutdown(wait=False, cancel_futures=True); bar.close()
-        incomplete = str(e) or type(e).__name__
-    else:
-        fh.flush(); fh.close(); pool.shutdown(wait=True); bar.close()
-        incomplete = None
-
+                print(f"  Met shard {i}/{len(shard_urls)} → {written:,} rows")
+    except Exception:
+        con.close()
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        raise
+    con.close()
     if written == 0:
-        if os.path.exists(partial):
-            os.remove(partial)
-        raise HarvestBlocked(f"Met: 0 images resolved{f' ({incomplete})' if incomplete else ''}.")
-    if incomplete:
-        print(f"[met] INCOMPLETE ({incomplete}) — ingesting {written:,} salvaged images; "
-              f"re-run `--sources met --push` to continue.")
-        return partial
-    os.replace(partial, out_path)
-    print(f"Met harvest done: {written:,} rows → {out_path}")
+        os.remove(tmp)
+        raise HarvestBlocked("Met: 0 public-domain rows with images in the HF dataset.")
+    os.replace(tmp, out_path)
+    print(f"Met dump done: {written:,} rows → {out_path}")
     return out_path
 
 
@@ -1065,6 +928,126 @@ def wikidata_sql(jsonl_path: str) -> str:
     return f"SELECT * FROM read_json('{p}', format='newline_delimited', columns={cols})"
 
 
+# ─── Library of Congress (Prints & Photographs) ──────────────────────────────
+# Keyless JSON API; IIIF images on tile.loc.gov hotlink (CORS *). No single dump —
+# slice by year windows (deep paging caps ~10k pages/query) and page each politely
+# (~20 req/min). Default caps each window for a tractable ~tens-of-k first cut;
+# set LOC_SAMPLE_PAGES = None for the full ~1M-item corpus (~18h). Greedy: a mid-
+# harvest failure still ingests what was written (delete the cache to re-harvest).
+LOC_BASE = "https://www.loc.gov/photos/"
+LOC_UA = "harpe-ingest/1.0 (github.com/NullSense/harpe; matas234@gmail.com)"
+LOC_PAGE_SIZE = 25
+LOC_SLEEP = 3.0
+LOC_SAMPLE_PAGES = 80   # pages per window (None = full corpus)
+LOC_DATE_WINDOWS = ["1800/1899", "1900/1909", "1910/1919", "1920/1929", "1930/1939",
+                    "1940/1949", "1950/1979", "1980/1999", "2000/2025", None]
+
+
+def harvest_loc(sample_pages=LOC_SAMPLE_PAGES) -> str:
+    dest = os.path.join(tempfile.gettempdir(), "harpe-loc.jsonl")
+    if os.path.exists(dest):
+        print(f"Reusing existing LOC harvest at {dest} (delete to re-harvest).")
+        return dest
+    print("Harvesting Library of Congress Prints & Photographs …")
+    tmp = dest + ".tmp"
+    total = 0
+
+    def _fetch_page(sp, dates):
+        url = f"{LOC_BASE}?fo=json&c={LOC_PAGE_SIZE}&sp={sp}&fa=access-restricted:false"
+        if dates:
+            url += f"&dates={dates}"
+        req = urllib.request.Request(url, headers={"User-Agent": LOC_UA})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return json.load(r)
+
+    def _row(res):
+        img = res.get("image_url", [])
+        if not img:
+            return None
+        rid = res.get("id", "").rstrip("/").split("/")[-1]
+        if not rid:
+            return None
+        item = res.get("item", {})
+        creators = item.get("creators", [])
+        artist = creators[0]["title"] if creators else (res.get("contributor", [None])[0])
+        medium = (item.get("medium") or [None])[0]
+        notes = item.get("notes", [])
+        rights = (item.get("rights_information", "") or item.get("rights_advisory", "") or "")
+        is_pd = bool(res.get("unrestricted") and "no known restriction" in rights.lower())
+        return {
+            "source": "loc", "id": f"loc-{rid}",
+            "title": res.get("title") or "Untitled", "artist": artist,
+            "date": item.get("created_published") or item.get("sort_date") or res.get("date"),
+            "medium": medium, "dimensions": None,
+            "culture": (res.get("subject") or [None])[0],
+            "credit_line": item.get("call_number"),
+            "description": " ".join(notes[:3]) if notes else None,
+            "image_thumb": img[0].split("#")[0], "image_full": img[-1].split("#")[0],
+            "width": None, "height": None,
+            "source_url": res.get("url") or res.get("id", ""),
+            "rights_type": (rights[:200] if rights else ("unrestricted" if res.get("unrestricted") else "unknown")),
+            "is_public_domain": is_pd,
+        }
+
+    incomplete = None
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            for window in LOC_DATE_WINDOWS:
+                if _ABORT.is_set():
+                    raise KeyboardInterrupt
+                label = window or "undated"
+                sp, pages = 1, 0
+                while True:
+                    if _ABORT.is_set():
+                        raise KeyboardInterrupt
+                    data = _retry(f"LOC {label} sp={sp}", lambda sp=sp, w=window: _fetch_page(sp, w))
+                    results = data.get("results", [])
+                    if not results:
+                        break
+                    for res in results:
+                        row = _row(res)
+                        if row:
+                            fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+                            total += 1
+                    pages += 1
+                    if sample_pages is not None and pages >= sample_pages:
+                        break
+                    if not data.get("pagination", {}).get("next"):
+                        break
+                    sp += 1
+                    time.sleep(LOC_SLEEP)
+                fh.flush()
+                print(f"  LOC {label}: {total:,} rows so far")
+                time.sleep(LOC_SLEEP)
+    except KeyboardInterrupt:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        raise
+    except (HarvestBlocked, Exception) as e:
+        incomplete = str(e) or type(e).__name__
+    if total == 0:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        raise HarvestBlocked(f"LOC: harvested 0 rows{f' ({incomplete})' if incomplete else ''}.")
+    os.replace(tmp, dest)
+    if incomplete:
+        print(f"[loc] INCOMPLETE ({incomplete}) — ingesting {total:,} salvaged rows; "
+              f"delete {dest} to re-harvest from scratch.")
+    else:
+        print(f"LOC harvest done: {total:,} rows → {dest}")
+    return dest
+
+
+def loc_sql(jsonl_path: str) -> str:
+    p = jsonl_path.replace("'", "''")
+    cols = ("{source:'VARCHAR',id:'VARCHAR',title:'VARCHAR',artist:'VARCHAR',date:'VARCHAR',"
+            "medium:'VARCHAR',dimensions:'VARCHAR',culture:'VARCHAR',credit_line:'VARCHAR',"
+            "description:'VARCHAR',image_thumb:'VARCHAR',image_full:'VARCHAR',width:'INTEGER',"
+            "height:'INTEGER',source_url:'VARCHAR',rights_type:'VARCHAR',is_public_domain:'BOOLEAN'}")
+    return (f"SELECT * FROM read_json('{p}', format='newline_delimited', columns={cols}) "
+            "WHERE image_thumb IS NOT NULL AND image_full IS NOT NULL")
+
+
 # ─── Source registry ─────────────────────────────────────────────────────────
 # key → zero-arg callable returning that source's SELECT (running any harvest
 # step first). MoMA/NGA are the always-on base; the rest are opt-in.
@@ -1076,7 +1059,8 @@ SOURCES = {
     "aic": lambda: aic_sql(clone_aic()),
     "cleveland": lambda: CLEVELAND_SQL,
     "smk": lambda: smk_sql(harvest_smk()),
-    "met": lambda: met_sql(harvest_met()),
+    "met": lambda: met_sql(harvest_met_dump()),
+    "loc": lambda: loc_sql(harvest_loc()),
     "si": lambda: si_sql(os.path.join(download_si_art(), "*.txt")),
     "wikidata": lambda: wikidata_sql(harvest_wikidata()),
 }
