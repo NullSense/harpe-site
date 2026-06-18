@@ -41,42 +41,50 @@ import httpx
 import tenacity
 from tqdm import tqdm
 
-_WDQS = "https://query.wikidata.org/sparql"
+# QLever: a SPARQL engine over the full Wikidata dump with no 60s timeout — the
+# same endpoint the harvest uses. Far faster than WDQS for this VALUES-driven pass,
+# and it lets us use big batches. It needs explicit PREFIXes and rdfs:label /
+# schema:description joins (no WDQS `SERVICE wikibase:label`). Results aggregated in
+# Python.
+_WDQS = "https://qlever.cs.uni-freiburg.de/api/wikidata"
 _UA = "HarpeArtIngest/1.0 (github.com/NullSense/harpe; matas234@gmail.com)"
-_BATCH = 50          # QIDs per VALUES block (keeps OPTIONAL cross-products small)
+_BATCH = 1000        # QIDs per VALUES block — QLever handles big blocks fast
 _SUBJECT_CAP = 4000  # build depicts entity files only for the most-used subjects
 _CKPT = os.path.join(tempfile.gettempdir(), "harpe-entities.json")
 
-# ── WDQS query templates (VALUES-driven; aggregated in Python) ────────────────
-_Q_WORKS = """\
-SELECT ?item ?creator ?depicts ?depictsLabel ?collection ?movement ?movementLabel WHERE {{
+_PREFIX = (
+    "PREFIX wdt: <http://www.wikidata.org/prop/direct/> "
+    "PREFIX wd: <http://www.wikidata.org/entity/> "
+    "PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#> "
+    "PREFIX skos: <http://www.w3.org/2004/02/skos/core#> "
+    "PREFIX schema: <http://schema.org/> "
+)
+_Q_WORKS = _PREFIX + """SELECT ?item ?creator ?depicts ?depictsLabel ?collection ?movementLabel WHERE {{
   VALUES ?item {{ {values} }}
   OPTIONAL {{ ?item wdt:P170 ?creator . }}
-  OPTIONAL {{ ?item wdt:P180 ?depicts . }}
+  OPTIONAL {{ ?item wdt:P180 ?depicts . OPTIONAL {{ ?depicts rdfs:label ?depictsLabel . FILTER(LANG(?depictsLabel) = "en") }} }}
   OPTIONAL {{ ?item wdt:P195 ?collection . }}
-  OPTIONAL {{ ?item wdt:P135 ?movement . }}
-  SERVICE wikibase:label {{ bd:serviceParam wikibase:language "en" . }}
+  OPTIONAL {{ ?item wdt:P135 ?movement . OPTIONAL {{ ?movement rdfs:label ?movementLabel . FILTER(LANG(?movementLabel) = "en") }} }}
 }}
 """
-_Q_ARTISTS = """\
-SELECT ?a ?aLabel ?aDescription ?birth ?death ?nat ?natLabel ?ulan ?img ?alias
-       ?movement ?movementLabel WHERE {{
+_Q_ARTISTS = _PREFIX + """SELECT ?a ?aLabel ?aDescription ?birth ?death ?natLabel ?ulan ?img ?alias ?movementLabel WHERE {{
   VALUES ?a {{ {values} }}
+  OPTIONAL {{ ?a rdfs:label ?aLabel . FILTER(LANG(?aLabel) = "en") }}
+  OPTIONAL {{ ?a schema:description ?aDescription . FILTER(LANG(?aDescription) = "en") }}
   OPTIONAL {{ ?a wdt:P569 ?birth . }}
   OPTIONAL {{ ?a wdt:P570 ?death . }}
-  OPTIONAL {{ ?a wdt:P27 ?nat . }}
+  OPTIONAL {{ ?a wdt:P27 ?nat . OPTIONAL {{ ?nat rdfs:label ?natLabel . FILTER(LANG(?natLabel) = "en") }} }}
   OPTIONAL {{ ?a wdt:P245 ?ulan . }}
   OPTIONAL {{ ?a wdt:P18 ?img . }}
   OPTIONAL {{ ?a skos:altLabel ?alias . FILTER(LANG(?alias) = "en") }}
-  OPTIONAL {{ ?a wdt:P135 ?movement . }}
-  SERVICE wikibase:label {{ bd:serviceParam wikibase:language "en" . }}
+  OPTIONAL {{ ?a wdt:P135 ?movement . OPTIONAL {{ ?movement rdfs:label ?movementLabel . FILTER(LANG(?movementLabel) = "en") }} }}
 }}
 """
-_Q_SUBJECTS = """\
-SELECT ?s ?sLabel ?sDescription ?img WHERE {{
+_Q_SUBJECTS = _PREFIX + """SELECT ?s ?sLabel ?sDescription ?img WHERE {{
   VALUES ?s {{ {values} }}
+  OPTIONAL {{ ?s rdfs:label ?sLabel . FILTER(LANG(?sLabel) = "en") }}
+  OPTIONAL {{ ?s schema:description ?sDescription . FILTER(LANG(?sDescription) = "en") }}
   OPTIONAL {{ ?s wdt:P18 ?img . }}
-  SERVICE wikibase:label {{ bd:serviceParam wikibase:language "en" . }}
 }}
 """
 
@@ -96,17 +104,19 @@ def _wd_query(client: httpx.Client, query: str) -> list[dict]:
         resp = client.get(
             _WDQS, params={"query": query},
             headers={"Accept": "application/sparql-results+json", "User-Agent": _UA},
-            timeout=90,
+            timeout=180,
         )
     except (httpx.TransportError, httpx.TimeoutException, OSError) as e:
         raise _Retryable(str(e)) from e
     if resp.status_code == 429 or resp.status_code >= 500:
         raise _Retryable(f"HTTP {resp.status_code}")
+    if resp.status_code == 400:                       # query error — not transient
+        raise RuntimeError(f"QLever rejected the query (400): {resp.text[:200]}")
     resp.raise_for_status()
     try:
         return json.loads(resp.text, strict=False)["results"]["bindings"]
-    except json.JSONDecodeError as e:
-        raise _Retryable(f"truncated body: {e}") from e
+    except (json.JSONDecodeError, KeyError) as e:
+        raise _Retryable(f"bad body: {e}") from e
 
 
 def _qid(uri: str) -> str:
