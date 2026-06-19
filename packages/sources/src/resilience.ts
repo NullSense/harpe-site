@@ -98,7 +98,15 @@ export function _resetBreakers(): void {
 // Order = wrap(breaker, retry, timeout): breaker is outermost, so it counts whole
 // (post-retry) operations — retry absorbs transient blips, the breaker only trips
 // on a sustained outage, and when open it short-circuits WITHOUT spending retries.
-const DUMP_TIMEOUT_MS = 14_000;
+//
+// BUDGET MATH (this guards the 60s function limit): the per-ATTEMPT timeout × retry
+// attempts is the worst-case time ONE dump call can take. With page-0 firing all
+// dump sources in a single concurrency wave (see DUMP_CONCURRENCY), the whole dump
+// gather is bounded by ~one source's worst case, NOT the sum. 8s × 2 ≈ 16s + small
+// backoff — comfortably under 60s even when HF /filter is slow, so a slow upstream
+// degrades to partial/empty results instead of a 504 Runtime Timeout. (Was 14s × 3
+// ≈ 44s/source over 3 waves ≈ 130s → the 504s observed in production.)
+const DUMP_TIMEOUT_MS = 8_000;
 
 export function makeDumpHttpPolicy() {
   return wrap(
@@ -106,7 +114,7 @@ export function makeDumpHttpPolicy() {
       halfOpenAfter: new ExponentialBackoff({ initialDelay: 5_000, maxDelay: 30_000 }),
       breaker: new ConsecutiveBreaker(5),
     }),
-    retry(handleAll, { maxAttempts: 3, backoff: new ExponentialBackoff({ initialDelay: 200, maxDelay: 2_000 }) }),
+    retry(handleAll, { maxAttempts: 2, backoff: new ExponentialBackoff({ initialDelay: 200, maxDelay: 1_000 }) }),
     timeout(DUMP_TIMEOUT_MS, TimeoutStrategy.Cooperative),
   );
 }

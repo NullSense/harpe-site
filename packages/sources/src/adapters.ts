@@ -1648,6 +1648,11 @@ export function fetchDumpSearch(dataset: string, q: string): Promise<ArtItem[]> 
 // 100 = HF /filter's max rows-per-request (free, no billing). Going beyond needs
 // offset pagination (the infinite-scroll "load more" feature). Tunable via env.
 const DUMP_PER_SOURCE = Math.min(100, Number(process.env.HARPE_DUMP_PER_SOURCE) || 100);
+// Fire every dump source's /filter in ONE concurrency wave (there are ~13). They all
+// hit the same HF endpoint with different WHEREs, so the gather's wall-clock is one
+// call's worst case (~16s under the dump policy), not 3 sequential waves (~48s) that
+// pushed the function past its 60s limit → 504. HF datasets-server handles this fan-out.
+const DUMP_CONCURRENCY = 16;
 
 // Single in-flight probe for the notability column (nb_sitelinks, added by the
 // ingest enrichment pass) so we can ORDER BY fame. A shared Promise collapses all
@@ -1771,7 +1776,7 @@ async function fetchDumpSearchUncached(q: string, dataset: string): Promise<ArtI
   // A source that fails returns []; only if ALL fail do we throw (so a transient
   // outage isn't cached as "no results" for the 5-minute TTL).
   let anyOk = false;
-  const perSource = await mapPool(sources, 6, async (s): Promise<Array<Record<string, unknown>>> => {
+  const perSource = await mapPool(sources, DUMP_CONCURRENCY, async (s): Promise<Array<Record<string, unknown>>> => {
     try {
       const { rows } = await dumpFilterRows(dataset, s, q);
       anyOk = true;
@@ -1862,7 +1867,7 @@ async function fetchDumpPageUncached(
   let anyOk = false;
   const perSource = await mapPool(
     sources,
-    6,
+    DUMP_CONCURRENCY,
     async (s): Promise<{ rows: Array<Record<string, unknown>>; total: number }> => {
       try {
         const result = await dumpFilterRows(dataset, s, q, offset);
