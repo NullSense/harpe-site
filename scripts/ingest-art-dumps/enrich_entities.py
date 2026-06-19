@@ -65,6 +65,9 @@ _SHARDS = 256
 # Built artists+subjects are checkpointed here BEFORE the push, so a failed/slow HF
 # commit never forces a re-harvest of the ~16 min artist pass — re-run resumes here.
 _ENT_CKPT = os.path.join(tempfile.gettempdir(), "harpe-entities-built.json")
+# R3 same-as remap (member QID → canonical QID) checkpointed so a re-run skips the
+# ~12-min P460 pass. Cleared by `rm` of _CKPT (same as the work harvest).
+_SAMEAS_CKPT = os.path.join(tempfile.gettempdir(), "harpe-sameas-clusters.json")
 
 
 def _bucket(qid: str) -> int:
@@ -94,6 +97,70 @@ def _work_title_key(title: str) -> str:
     s = s.replace("_", " ")
     return " ".join(s.split())
 
+
+# ── R3: collapse Wikidata's OWN duplicate items (impressions/editions) ─────────
+# Many QIDs by one artist describe the SAME work (a woodblock print's 100+ surviving
+# impressions, an edition + its concept). They share titles → the work_index drops
+# the key as ambiguous → the famous work (e.g. The Great Wave) never resolves. We
+# collapse P460 ("said to be the same as") components to one canonical QID so all
+# impressions' titles key to it. P461 ("different from") vetoes a wrong same-as
+# (PHAROS found ~27% of cross-authority same-as links disagree — so we verify).
+def _cluster_sameas(same_pairs: list[tuple[str, str]],
+                    diff_pairs: list[tuple[str, str]],
+                    nb_of: dict[str, int]) -> dict[str, str]:
+    """Pure union-find over P460 pairs → {member_qid: canonical_qid} for non-canonical
+    members. Symmetrises edges (Wikidata often asserts only one direction). A P461
+    edge between two members removes THAT direct same-as edge (splits the pair, not
+    the whole component). Canonical = highest nb_sitelinks, tie-break lowest numeric
+    QID. Canonical members are omitted from the result (they map to themselves)."""
+    diff = {frozenset(p) for p in diff_pairs if p[0] != p[1]}
+    parent: dict[str, str] = {}
+    def find(x: str) -> str:
+        parent.setdefault(x, x)
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+    def union(a: str, b: str) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+    for a, b in same_pairs:
+        if a != b:
+            union(a, b)  # symmetric by construction (union is order-independent)
+    comps: dict[str, list[str]] = defaultdict(list)
+    for q in parent:
+        comps[find(q)].append(q)
+    out: dict[str, str] = {}
+    for members in comps.values():
+        if len(members) < 2:
+            continue
+        ms = set(members)
+        # P461 veto (conservative): if ANY "different from" pair sits inside this
+        # component, the same-as links are internally inconsistent (PHAROS: ~27% do
+        # disagree) — leave the whole component uncollapsed rather than risk a wrong
+        # merge. Never merges Monet's distinct "Water Lilies" (they have no P460).
+        if any(d <= ms for d in diff):
+            continue
+        canon = max(members, key=lambda q: (nb_of.get(q, 0), -int(q[1:])))
+        for q in members:
+            if q != canon:
+                out[q] = canon
+    return out
+
+
+def _compute_canonical_id(wikidata_qid: str | None, artist_qid: str | None,
+                          title: str | None, wi_flat: dict[str, str]) -> str | None:
+    """R2 waterfall: a dump row's canonical Wikidata identity, or None (safe default,
+    never a false merge). (1) the row's own wikidata_qid (already same-as-collapsed in
+    work_ent); (2) else resolve via the alias work_index keyed (normTitle, artist_qid);
+    (3) else None. Pure + unit-tested; called from the canonical_id patch in enrich()."""
+    if wikidata_qid and re.fullmatch(r"Q\d+", wikidata_qid):
+        return wikidata_qid
+    if artist_qid and re.fullmatch(r"Q\d+", artist_qid) and title:
+        return wi_flat.get(f"{_work_title_key(title)}~{artist_qid}")
+    return None
+
 _PREFIX = (
     "PREFIX wdt: <http://www.wikidata.org/prop/direct/> "
     "PREFIX wd: <http://www.wikidata.org/entity/> "
@@ -115,6 +182,13 @@ _Q_WORKS = _PREFIX + """SELECT ?item ?creator ?depicts ?depictsLabel ?collection
   OPTIONAL {{ ?item rdfs:label ?label . FILTER(LANG(?label) = "en") }}
   OPTIONAL {{ ?item skos:altLabel ?alias . FILTER(LANG(?alias) = "en") }}
   OPTIONAL {{ ?item wdt:P1476 ?p1476 . }}
+}}
+"""
+# P460 "said to be the same as" / P461 "different from" — for R3 impression collapse.
+_Q_SAMEAS = _PREFIX + """SELECT ?item ?same ?diff WHERE {{
+  VALUES ?item {{ {values} }}
+  OPTIONAL {{ ?item wdt:P460 ?same . }}
+  OPTIONAL {{ ?item wdt:P461 ?diff . }}
 }}
 """
 _Q_ARTISTS = _PREFIX + """SELECT ?a ?aLabel ?aDescription ?birth ?death ?natLabel ?ulan ?img ?alias ?movementLabel WHERE {{
@@ -270,6 +344,39 @@ def harvest_work_entities(client: httpx.Client, qids: list[str]) -> dict[str, di
     return out
 
 
+# ── R3: same-as cluster harvest (P460/P461) ───────────────────────────────────
+def build_sameas_clusters(client: httpx.Client, work_ent: dict[str, dict]) -> dict[str, str]:
+    """Query P460/P461 for every harvested work QID and collapse same-as components
+    to one canonical QID. Returns {member_qid: canonical_qid} for non-canonical
+    members only. Pure clustering is in _cluster_sameas (unit-tested); this just does
+    the SPARQL + nb lookup. A failed batch is skipped (no remap for it) — safe."""
+    qids = list(work_ent)
+    same_pairs: list[tuple[str, str]] = []
+    diff_pairs: list[tuple[str, str]] = []
+    for batch in tqdm(list(_batches(qids, _BATCH)), desc="same-as", unit="batch"):
+        values = " ".join(f"wd:{q}" for q in batch)
+        try:
+            rows = _wd_query(client, _Q_SAMEAS.format(values=values))
+        except Exception as e:
+            tqdm.write(f"  same-as batch failed ({str(e)[:160]}); skipping {len(batch)}")
+            continue
+        for b in rows:
+            q = _qid(_val(b, "item") or "")
+            if (s := _val(b, "same")):
+                sq = _qid(s)
+                if re.fullmatch(r"Q\d+", sq):
+                    same_pairs.append((q, sq))
+            if (d := _val(b, "diff")):
+                dq = _qid(d)
+                if re.fullmatch(r"Q\d+", dq):
+                    diff_pairs.append((q, dq))
+    nb_of = {q: (e.get("nb_sitelinks") or 0) for q, e in work_ent.items()}
+    remap = _cluster_sameas(same_pairs, diff_pairs, nb_of)
+    print(f"  same-as: {len(same_pairs):,} P460 pairs, {len(diff_pairs):,} P461 → "
+          f"{len(remap):,} impressions remapped to canonical QIDs")
+    return remap
+
+
 # ── Step 4a: artist metadata ──────────────────────────────────────────────────
 def harvest_artists(client: httpx.Client, qids: list[str], work_counts: dict[str, int]) -> dict[str, dict]:
     out: dict[str, dict] = {}
@@ -394,30 +501,56 @@ def enrich(repo: str = "NullSense/harpe-art", out: str | None = None) -> None:
             "to qlever.dev). Nothing to patch; aborting before touching the published dataset."
         )
 
-    # roll up: artist work-ids, artist work-counts, subject frequencies
+    # ── R3 — same-as collapse: map each impression/edition QID → its canonical QID,
+    # so the Great-Wave-class works (many QIDs by one artist sharing a title) fold to
+    # ONE identity instead of being dropped as ambiguous in the work_index. Resumable.
+    if os.path.exists(_SAMEAS_CKPT):
+        try:
+            sameas_map = json.load(open(_SAMEAS_CKPT))
+            print(f"  same-as: resuming from checkpoint ({len(sameas_map):,} remaps)")
+        except Exception:
+            sameas_map = build_sameas_clusters(client, work_ent)
+            json.dump(sameas_map, open(_SAMEAS_CKPT, "w"))
+    else:
+        sameas_map = build_sameas_clusters(client, work_ent)
+        json.dump(sameas_map, open(_SAMEAS_CKPT, "w"))
+    # canonical_id per work = the same-as canonical (self if not remapped). Stored as a
+    # Parquet column so the runtime folds impressions WITHOUT any title matching.
+    def canon(q: str) -> str:
+        return sameas_map.get(q, q)
+
+    # roll up: artist work-ids, work-counts, subject freqs — keyed on the CANONICAL id
+    # so impressions don't inflate an artist's work count or list 100× "Great Wave".
     work_ids_by_artist: dict[str, list[str]] = defaultdict(list)
+    _seen_artist_work: set[tuple[str, str]] = set()
     artist_counts: dict[str, int] = defaultdict(int)
     subject_counts: dict[str, int] = defaultdict(int)
     for q, e in work_ent.items():
+        cq = canon(q)
         if e.get("artist_qid"):
-            work_ids_by_artist[e["artist_qid"]].append(f"wd-{q}")
-            artist_counts[e["artist_qid"]] += 1
+            key = (e["artist_qid"], cq)
+            if key not in _seen_artist_work:           # dedupe collapsed impressions
+                _seen_artist_work.add(key)
+                work_ids_by_artist[e["artist_qid"]].append(f"wd-{cq}")
+                artist_counts[e["artist_qid"]] += 1
         for d in (e.get("depicts_qids") or "").split():
             subject_counts[d] += 1
 
     print("Patching works Parquet…")
     rows = [(q, e.get("artist_qid"), e.get("depicts_qids"), e.get("depicts_labels"),
-             e.get("collection_qid"), e.get("movement"), e.get("nb_sitelinks")) for q, e in work_ent.items()]
+             e.get("collection_qid"), e.get("movement"), e.get("nb_sitelinks"), canon(q))
+            for q, e in work_ent.items()]
     con.execute("CREATE TABLE enr (wikidata_qid VARCHAR, artist_qid VARCHAR, depicts_qids VARCHAR, "
-                "depicts_labels VARCHAR, collection_qid VARCHAR, movement VARCHAR, nb_sitelinks INTEGER)")
-    con.executemany("INSERT INTO enr VALUES (?,?,?,?,?,?,?)", rows)
-    enr_cols = ["artist_qid", "depicts_qids", "depicts_labels", "collection_qid", "movement", "nb_sitelinks"]
+                "depicts_labels VARCHAR, collection_qid VARCHAR, movement VARCHAR, nb_sitelinks INTEGER, "
+                "canonical_id VARCHAR)")
+    con.executemany("INSERT INTO enr VALUES (?,?,?,?,?,?,?,?)", rows)
+    enr_cols = ["artist_qid", "depicts_qids", "depicts_labels", "collection_qid", "movement", "nb_sitelinks", "canonical_id"]
     present = [c for c in enr_cols if c in cols]
     excl = f"EXCLUDE ({', '.join(present)})" if present else ""
     oq = out.replace("'", "''")
     con.execute(
         f"COPY (SELECT w.* {excl}, e.artist_qid, e.depicts_qids, e.depicts_labels, "
-        f"e.collection_qid, e.movement, e.nb_sitelinks "
+        f"e.collection_qid, e.movement, e.nb_sitelinks, e.canonical_id "
         f"FROM read_parquet('{tq}') w LEFT JOIN enr e USING (wikidata_qid)) "
         f"TO '{oq}' (FORMAT parquet, COMPRESSION zstd)"
     )
@@ -486,8 +619,11 @@ def enrich(repo: str = "NullSense/harpe-art", out: str | None = None) -> None:
     # Wave off Kanagawa", a Commons JP upload) resolves its artist → QID (name_to_qid),
     # then looks up its normalised title here → the work QID, which dedupe folds with
     # every other copy. Keyed BY artist (sharded on _bucket(artist_qid), entry key
-    # "<normtitle>\x01<artist_qid>"), so an aggressive title norm can't cross-merge
-    # different artists. Same (title, artist) → two different works = ambiguous → dropped.
+    # "<normtitle>~<artist_qid>"), so an aggressive title norm can't cross-merge
+    # different artists. The VALUE is the CANONICAL QID (R3 same-as collapse), so the
+    # many impressions of one print whose titles collide now all resolve to ONE QID
+    # instead of being dropped as ambiguous — that's what was burying the Great Wave.
+    # Ambiguous (dropped) only when two DISTINCT canonical works share a (title,artist).
     work_index_buckets: dict[int, dict] = defaultdict(dict)
     wi_seen: dict[str, str] = {}
     wi_ambiguous: set[str] = set()
@@ -495,6 +631,7 @@ def enrich(repo: str = "NullSense/harpe-art", out: str | None = None) -> None:
         aq = e.get("artist_qid")
         if not aq:
             continue
+        target = canon(q)  # same-as canonical (self if not an impression)
         for tv in (e.get("titles") or []):
             k = _work_title_key(tv)
             if len(k) < 4 or k in _GENERIC_TITLES:
@@ -504,9 +641,9 @@ def enrich(repo: str = "NullSense/harpe-art", out: str | None = None) -> None:
                 continue
             prev = wi_seen.get(fk)
             if prev is None:
-                wi_seen[fk] = q
-            elif prev != q:
-                wi_ambiguous.add(fk)  # one (title, artist) → two works: drop both
+                wi_seen[fk] = target
+            elif prev != target:
+                wi_ambiguous.add(fk)  # two DISTINCT canonical works: drop both
     for fk, q in wi_seen.items():
         if fk in wi_ambiguous:
             continue

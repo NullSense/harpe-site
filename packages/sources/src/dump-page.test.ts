@@ -162,6 +162,21 @@ describe('fetchDumpPage — item mapping', () => {
     expect(item?.source).toBe('nga');
   });
 
+  it('reads wikidataId from canonical_id (R2/R3), overriding raw wikidata_qid', async () => {
+    // canonical_id is the same-as-collapsed identity; it must win so impressions fold.
+    const r = { ...row('met-9', 'met'), wikidata_qid: 'Q110562012', canonical_id: 'Q1782705' };
+    timedFetchMock.mockResolvedValue(hfReply([r], 1));
+    const item = (await fetchDumpPage('ds', 'great wave', 0)).items.find((i) => i.id === 'met-9');
+    expect(item?.wikidataId).toBe('Q1782705'); // canonical wins over the per-impression QID
+  });
+
+  it('falls back to wikidata_qid when canonical_id is absent (pre-R2 parquet)', async () => {
+    const r = { ...row('wd-1', 'wikidata'), wikidata_qid: 'Q5' };
+    timedFetchMock.mockResolvedValue(hfReply([r], 1));
+    const item = (await fetchDumpPage('ds', 'rembrandt', 0)).items.find((i) => i.id === 'wd-1');
+    expect(item?.wikidataId).toBe('Q5');
+  });
+
   it('skips rows without image URLs', async () => {
     // A row with no image fields should not produce an item.
     const noImg = { id: 'nga-999', source: 'nga', title: 'No Image' };

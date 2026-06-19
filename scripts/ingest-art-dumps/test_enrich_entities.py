@@ -68,6 +68,55 @@ def test_generic_titles_are_excluded_from_work_index():
         assert E._work_title_key(t) in E._GENERIC_TITLES
 
 
+# ── R3 same-as clustering ─────────────────────────────────────────────────────
+
+def test_cluster_sameas_collapses_a_chain_to_highest_nb():
+    # Q10—Q20—Q30 chained by P460; canonical = highest nb_sitelinks (Q20).
+    remap = E._cluster_sameas(
+        same_pairs=[("Q10", "Q20"), ("Q20", "Q30")],
+        diff_pairs=[],
+        nb_of={"Q10": 5, "Q20": 30, "Q30": 5},
+    )
+    assert remap == {"Q10": "Q20", "Q30": "Q20"}  # transitive; Q20 elected
+
+
+def test_cluster_sameas_tie_breaks_on_lowest_qid():
+    remap = E._cluster_sameas([("Q100", "Q5")], [], {"Q100": 0, "Q5": 0})
+    assert remap == {"Q100": "Q5"}  # equal nb → lowest numeric QID is canonical
+
+
+def test_cluster_sameas_p461_veto_leaves_component_uncollapsed():
+    # Q1—Q2—Q3 same-as, but Q1 "different from" Q3 → inconsistent → don't collapse.
+    remap = E._cluster_sameas(
+        same_pairs=[("Q1", "Q2"), ("Q2", "Q3")],
+        diff_pairs=[("Q1", "Q3")],
+        nb_of={"Q1": 1, "Q2": 1, "Q3": 1},
+    )
+    assert remap == {}  # whole component vetoed (no wrong merge)
+
+
+def test_cluster_sameas_ignores_singletons():
+    assert E._cluster_sameas([], [], {"Q1": 9}) == {}
+
+
+# ── R2 canonical_id waterfall ─────────────────────────────────────────────────
+
+def test_compute_canonical_id_passthrough_wikidata():
+    assert E._compute_canonical_id("Q1782705", None, "anything", {}) == "Q1782705"
+
+
+def test_compute_canonical_id_resolves_non_wikidata_via_index():
+    wi = {"the great wave off kanagawa~Q5599": "Q1782705"}
+    assert E._compute_canonical_id(None, "Q5599", "The Great Wave off Kanagawa", wi) == "Q1782705"
+
+
+def test_compute_canonical_id_unresolved_is_none():
+    wi = {"the great wave off kanagawa~Q5599": "Q1782705"}
+    assert E._compute_canonical_id(None, "Q5599", "Some Unknown Title", wi) is None  # no index hit
+    assert E._compute_canonical_id(None, None, "The Great Wave off Kanagawa", wi) is None  # no artist
+    assert E._compute_canonical_id(None, "Q5599", None, wi) is None  # no title
+
+
 def test_build_name_to_qid_label_and_aliases_first_wins():
     artists = {
         "Q5582": {"labelEn": "Vincent van Gogh", "aliases": ["van Gogh", "Vincent Willem van Gogh"]},

@@ -1766,7 +1766,11 @@ function rowToItem(
     description: str(row.description),
     sourceUrl: str(row.source_url),
     provider: DUMP_SOURCE_LABELS[source as DumpSourceKey],
-    wikidataId: /^Q\d+$/.test(str(row.wikidata_qid)) ? str(row.wikidata_qid) : undefined,
+    // Prefer canonical_id (R2/R3: the same-as-collapsed Wikidata identity computed at
+    // ingest, so impressions of one work fold on a single QID) and fall back to the
+    // raw wikidata_qid (works published before the canonical_id column existed).
+    wikidataId: (/^Q\d+$/.test(str(row.canonical_id)) ? str(row.canonical_id) : undefined)
+      ?? (/^Q\d+$/.test(str(row.wikidata_qid)) ? str(row.wikidata_qid) : undefined),
     artistId: (/^Q\d+$/.test(str(row.artist_qid)) ? str(row.artist_qid) : undefined)
       ?? resolveArtistQid(nameMap, str(row.artist)),
     depicts: str(row.depicts_qids) ? str(row.depicts_qids).split(' ').filter(Boolean) : undefined,
