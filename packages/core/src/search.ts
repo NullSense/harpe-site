@@ -12,6 +12,8 @@
  * ranker. The server (src/lib/server/handlers/art.ts) imports it directly.
  */
 
+import { isQid } from './art-source.js';
+
 // ─── Normalisation ─────────────────────────────────────────────────────────────
 
 /** Lowercase, strip diacritics, fold Nordic/ligature letters, drop punctuation.
@@ -345,7 +347,7 @@ export interface Fusable {
 /** Language-independent work identity: the explicit Wikidata QID if present, else
  *  the QID embedded in a `wikidata-Q…` id. '' when none — never merges on empty. */
 export function wikidataKey(it: { id?: string; wikidataId?: string }): string {
-  if (it.wikidataId && /^Q\d+$/.test(it.wikidataId)) return it.wikidataId;
+  if (isQid(it.wikidataId)) return it.wikidataId;
   const m = /^wikidata-(Q\d+)$/.exec(it.id || '');
   return m ? m[1] : '';
 }

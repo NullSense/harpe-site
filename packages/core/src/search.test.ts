@@ -2,6 +2,22 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { normalize, tokenize, looksLikeName, within1, jaroWinkler, relevanceScore, isRelevant, workKey, fuse, rankResults, dedupe, imageIdentity } from './search';
 import { qualityScore, type RankableItem } from './ranking';
+import { isQid } from './art-source';
+
+describe('isQid (single source of truth for the Wikidata QID shape)', () => {
+  it('accepts a bare Q-number and rejects everything else', () => {
+    expect(isQid('Q42')).toBe(true);
+    expect(isQid('Q1782705')).toBe(true);
+    expect(isQid('q42')).toBe(false);        // lowercase is not a valid QID
+    expect(isQid('Q')).toBe(false);
+    expect(isQid('Q12a')).toBe(false);
+    expect(isQid('wikidata-Q42')).toBe(false);
+    expect(isQid('')).toBe(false);
+    expect(isQid(undefined)).toBe(false);
+    expect(isQid(null)).toBe(false);
+    expect(isQid(42)).toBe(false);
+  });
+});
 
 describe('normalize', () => {
   it('folds diacritics and Nordic letters', () => {

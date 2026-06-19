@@ -25,6 +25,14 @@ export type SourceKey = (typeof SOURCE_KEYS)[number];
 
 const SOURCE_KEY_SET = new Set<SourceKey>(SOURCE_KEYS);
 
+// A Wikidata QID is "Q" followed by digits. The single source of truth for this
+// shape — every knowledge-graph code path (ingest, adapters, ranking, the entity
+// handlers' input guards) validates QIDs through here so the rule can't drift.
+const QID_RE = /^Q\d+$/;
+export function isQid(v: unknown): v is string {
+  return typeof v === 'string' && QID_RE.test(v);
+}
+
 // A single downloadable file variant for a work. Sources often expose more than
 // one (e.g. a high-res JPEG and a lossless TIFF original) so callers can show
 // format/quality and let the user choose.

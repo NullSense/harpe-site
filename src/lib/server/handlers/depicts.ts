@@ -9,6 +9,7 @@
 import type { VercelRequest, VercelResponse } from '../vercel.js';
 import { GuardError, rateLimit, clientIp } from '../guard.js';
 import { fetchSubjectEntity, fetchDumpSearch } from '@harpe/sources';
+import { isQid } from '@harpe/core';
 import type { ArtItem } from '@harpe/core';
 import { getEntityRedis, ENTITY_TTL_S } from './kg-cache.js';
 
@@ -21,7 +22,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   res.setHeader('Access-Control-Allow-Methods', 'GET');
 
   const qid = typeof req.query.qid === 'string' ? req.query.qid.trim() : '';
-  if (!/^Q\d+$/.test(qid)) {
+  if (!isQid(qid)) {
     res.setHeader('Cache-Control', 'no-store');
     return res.status(400).json({ error: 'Missing or invalid ?qid= (expected Q…)' });
   }

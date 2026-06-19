@@ -9,7 +9,7 @@
  */
 import { fetch, Agent } from 'undici';
 import { WBK, simplifyClaims } from 'wikibase-sdk';
-import { normalize } from '@harpe/core';
+import { normalize, isQid } from '@harpe/core';
 import type { ArtItem, Download, ArtistEntity, SubjectEntity } from '@harpe/core';
 import {
   str, num, fmtFromMime, fmtFromUrl, first, timedFetch, iiifImage, IIIF,
@@ -546,7 +546,7 @@ const _wbkCommons = WBK({ instance: 'https://commons.wikimedia.org' }); // Commo
 // pageid → { wd: artwork QID (P6243), creator: artist QID (P170) } | null (resolved miss).
 type SdcFacts = { wd: string | null; creator: string | null };
 const _sdcCache = new Map<string, SdcFacts | null>();
-const _validQid = (q: unknown): string | null => (typeof q === 'string' && /^Q\d+$/.test(q) ? q : null);
+const _validQid = (q: unknown): string | null => (isQid(q) ? q : null);
 function _applySdc(it: ArtItem, f: SdcFacts): void {
   if (f.wd && !it.wikidataId) it.wikidataId = f.wd;
   if (f.creator && !it.artistId) it.artistId = f.creator; // gives bare Commons files an artist link
@@ -1834,9 +1834,9 @@ function rowToItem(
     // Prefer canonical_id (R2/R3: the same-as-collapsed Wikidata identity computed at
     // ingest, so impressions of one work fold on a single QID) and fall back to the
     // raw wikidata_qid (works published before the canonical_id column existed).
-    wikidataId: (/^Q\d+$/.test(str(row.canonical_id)) ? str(row.canonical_id) : undefined)
-      ?? (/^Q\d+$/.test(str(row.wikidata_qid)) ? str(row.wikidata_qid) : undefined),
-    artistId: (/^Q\d+$/.test(str(row.artist_qid)) ? str(row.artist_qid) : undefined)
+    wikidataId: (isQid(str(row.canonical_id)) ? str(row.canonical_id) : undefined)
+      ?? (isQid(str(row.wikidata_qid)) ? str(row.wikidata_qid) : undefined),
+    artistId: (isQid(str(row.artist_qid)) ? str(row.artist_qid) : undefined)
       ?? resolveArtistQid(nameMap, str(row.artist)),
     depicts: str(row.depicts_qids) ? str(row.depicts_qids).split(' ').filter(Boolean) : undefined,
     depictsLabels: parseJsonArray(str(row.depicts_labels)),
@@ -2041,7 +2041,7 @@ export function buildNameIndex(raw: Record<string, string>): Record<string, stri
   const idx: Record<string, string> = {};
   const suffixHits = new Map<string, Set<string>>();
   for (const [name, qid] of Object.entries(raw)) {
-    if (!/^Q\d+$/.test(qid)) continue;
+    if (!isQid(qid)) continue;
     const norm = normalize(name);
     if (norm) {
       if (!(norm in idx)) idx[norm] = qid; // full name, first-wins
@@ -2078,7 +2078,7 @@ async function loadNameToQid(): Promise<Record<string, string>> {
 export function resolveArtistQid(index: Record<string, string>, name: string): string | undefined {
   if (!name) return undefined;
   const q = index[normalize(name)] ?? index[`raw:${name.toLowerCase()}`];
-  return q && /^Q\d+$/.test(q) ? q : undefined;
+  return isQid(q) ? q : undefined;
 }
 
 // subject (depicts) label → QID, so a plain search can surface a subject's KG page.
@@ -2230,7 +2230,7 @@ export async function enrichWorkIds(items: ArtItem[]): Promise<void> {
     const stripped = toks.join(' ');
     for (const k of stripped === base ? [base] : [base, stripped]) {
       const q = map[`${k}~${aid}`];
-      if (typeof q === 'string' && /^Q\d+$/.test(q)) { it.wikidataId = q; break; }
+      if (isQid(q)) { it.wikidataId = q; break; }
     }
   }
 }
