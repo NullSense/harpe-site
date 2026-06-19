@@ -1748,29 +1748,65 @@ function parseJsonArray(s: string): string[] | undefined {
   } catch { return undefined; }
 }
 
-async function fetchEntityJson<T>(path: string): Promise<T | null> {
-  return dumpHttpPolicy.execute(async ({ signal }) => {
-    const res = await timedFetch(`${HF_ENTITY_CDN}/${path}`, signal);
-    if (res.status === 404) return null; // unknown entity → not an error
+// Entity files are SHARDED into bucket bundles ({QID: entity} per file) because HF
+// caps any directory at 10,000 files (~90k artists → one-file-per-QID overflows).
+// bucket = int(QID-digits) % ENTITY_SHARDS — this MUST match the ingest producer
+// (enrich_entities.py `_bucket`); both are pinned by parity tests. Changing the
+// shard count requires re-running the ingest AND bumping it here in lock-step.
+export const ENTITY_SHARDS = 256;
+export function entityBucket(qid: string): number {
+  const n = parseInt(qid.slice(1), 10);
+  return Number.isFinite(n) ? ((n % ENTITY_SHARDS) + ENTITY_SHARDS) % ENTITY_SHARDS : 0;
+}
+
+// Memoise fetched bucket bundles (a ~100 KB shard holds ~hundreds of entities) so
+// looking up several QIDs in one shard costs one download. Small LRU cap keeps a
+// serverless instance's memory bounded; the per-QID Redis cache sits above this.
+const _bucketCache = new Map<string, Promise<Record<string, unknown> | null>>();
+const _BUCKET_CACHE_MAX = 48;
+
+/** Test-only: drop the in-memory bucket memo so each case fetches fresh. */
+export function _resetEntityBucketCache(): void { _bucketCache.clear(); }
+
+function fetchEntityBucket(dir: string, qid: string): Promise<Record<string, unknown> | null> {
+  const key = `${dir}/${entityBucket(qid)}`;
+  const hit = _bucketCache.get(key);
+  if (hit) { _bucketCache.delete(key); _bucketCache.set(key, hit); return hit; } // LRU touch
+  const p = dumpHttpPolicy.execute(async ({ signal }) => {
+    const res = await timedFetch(`${HF_ENTITY_CDN}/${key}.json`, signal);
+    if (res.status === 404) return null; // shard absent → no entity
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return res.json() as Promise<T>;
+    return res.json() as Promise<Record<string, unknown>>;
   });
+  p.catch(() => _bucketCache.delete(key)); // never memoise a failed fetch
+  _bucketCache.set(key, p);
+  if (_bucketCache.size > _BUCKET_CACHE_MAX) {
+    const oldest = _bucketCache.keys().next().value;
+    if (oldest !== undefined) _bucketCache.delete(oldest);
+  }
+  return p;
+}
+
+async function fetchShardedEntity<T>(dir: string, qid: string): Promise<T | null> {
+  const map = await fetchEntityBucket(dir, qid);
+  const v = map?.[qid];
+  return v == null ? null : (v as T);
 }
 
 /** A knowledge-graph artist node by QID (null if not in the index). */
 export function fetchArtistEntity(qid: string): Promise<ArtistEntity | null> {
-  return fetchEntityJson<ArtistEntity>(`artists/${encodeURIComponent(qid)}.json`);
+  return fetchShardedEntity<ArtistEntity>('artists', qid);
 }
 
 /** The work ids attributed to an artist QID ([] if none/unknown). */
 export async function fetchArtistWorkIds(qid: string): Promise<string[]> {
-  const ids = await fetchEntityJson<string[]>(`work_ids_by_artist/${encodeURIComponent(qid)}.json`);
+  const ids = await fetchShardedEntity<string[]>('work_ids_by_artist', qid);
   return Array.isArray(ids) ? ids : [];
 }
 
 /** A knowledge-graph subject ("depicts") node by QID (null if not in the index). */
 export function fetchSubjectEntity(qid: string): Promise<SubjectEntity | null> {
-  return fetchEntityJson<SubjectEntity>(`depicts/${encodeURIComponent(qid)}.json`);
+  return fetchShardedEntity<SubjectEntity>('depicts', qid);
 }
 
 // ─── Library of Congress (Prints & Photographs) ──────────────────────────────

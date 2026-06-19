@@ -51,6 +51,20 @@ _UA = "HarpeArtIngest/1.0 (github.com/NullSense/harpe; matas234@gmail.com)"
 _BATCH = 1000        # QIDs per VALUES block — QLever handles big blocks fast
 _SUBJECT_CAP = 4000  # build depicts entity files only for the most-used subjects
 _CKPT = os.path.join(tempfile.gettempdir(), "harpe-entities.json")
+# Entity files are SHARDED into bucket bundles ({QID: entity} per file) because HF
+# caps any directory at 10,000 files — one-file-per-QID (~90k artists) blows past it.
+# bucket = int(QID-digits) % _SHARDS. The runtime (adapters.ts `entityBucket`) MUST
+# use the identical scheme; both are covered by parity tests. 256 → ~350 artists per
+# ~100 KB bundle, 256 files/dir (well under the cap), ~769 files total (was ~184k).
+_SHARDS = 256
+# Built artists+subjects are checkpointed here BEFORE the push, so a failed/slow HF
+# commit never forces a re-harvest of the ~16 min artist pass — re-run resumes here.
+_ENT_CKPT = os.path.join(tempfile.gettempdir(), "harpe-entities-built.json")
+
+
+def _bucket(qid: str) -> int:
+    """Shard key for an entity QID — MUST match adapters.ts `entityBucket`."""
+    return int(qid[1:]) % _SHARDS
 
 _PREFIX = (
     "PREFIX wdt: <http://www.wikidata.org/prop/direct/> "
@@ -334,48 +348,78 @@ def enrich(repo: str = "NullSense/harpe-art", out: str | None = None) -> None:
 
     # ── Phase B — artist + subject entity pages (the /artist + /depicts detail
     # pages and non-Wikidata name resolution). Slower; published as a separate
-    # commit so it never blocks the card enrichment above.
-    artist_qids = sorted(artist_counts)
-    print(f"{len(artist_qids):,} distinct artists")
-    artists = harvest_artists(client, artist_qids, artist_counts)
+    # commit so it never blocks the card enrichment above. Checkpointed BEFORE the
+    # push so a commit failure (e.g. an HF limit) never re-runs the ~16 min harvest.
+    if os.path.exists(_ENT_CKPT):
+        d = json.load(open(_ENT_CKPT))
+        artists, subjects = d["artists"], d["subjects"]
+        client.close()
+        print(f"resuming entity push from checkpoint: {len(artists):,} artists, {len(subjects):,} subjects")
+    else:
+        artist_qids = sorted(artist_counts)
+        print(f"{len(artist_qids):,} distinct artists")
+        artists = harvest_artists(client, artist_qids, artist_counts)
 
-    top_subjects = sorted(subject_counts, key=lambda s: -subject_counts[s])[:_SUBJECT_CAP]
-    print(f"{len(top_subjects):,} subjects (capped at {_SUBJECT_CAP:,})")
-    subjects = harvest_subjects(client, top_subjects, subject_counts)
-    client.close()
+        top_subjects = sorted(subject_counts, key=lambda s: -subject_counts[s])[:_SUBJECT_CAP]
+        print(f"{len(top_subjects):,} subjects (capped at {_SUBJECT_CAP:,})")
+        subjects = harvest_subjects(client, top_subjects, subject_counts)
+        client.close()
+        json.dump({"artists": artists, "subjects": subjects}, open(_ENT_CKPT, "w"))
 
-    # name_to_qid.json → published to the HF CDN as part of the entity layer (a
-    # future runtime singleton can resolve non-Wikidata artist names to QIDs from
-    # it; Wikidata works already carry artist_qid directly). Never written to source.
+    # name_to_qid.json → published to the HF CDN as part of the entity layer (the
+    # runtime resolves non-Wikidata artist names to QIDs from it; Wikidata works
+    # already carry artist_qid directly). Rebuilt from `artists` — never sourced.
     name_to_qid = build_name_to_qid(artists)
     print(f"{len(name_to_qid):,} name→QID entries")
 
-    # Static entity files → one HF commit (batched CommitOperationAdd)
-    print("Building + pushing static entity files…")
+    # Entity files are SHARDED into bucket bundles ({QID: entity} per file): one file
+    # per QID hits HF's 10,000-files-per-directory cap (~90k artists). bucket(QID) =
+    # int(digits) % _SHARDS — the runtime (adapters.ts) reads the same scheme.
+    artist_buckets: dict[int, dict] = defaultdict(dict)
+    workid_buckets: dict[int, dict] = defaultdict(dict)
+    subject_buckets: dict[int, dict] = defaultdict(dict)
+    for q, e in artists.items():
+        b = _bucket(q)
+        artist_buckets[b][q] = _clean(e)
+        workid_buckets[b][q] = work_ids_by_artist.get(q, [])
+    for q, e in subjects.items():
+        subject_buckets[_bucket(q)][q] = _clean(e)
+
+    # Clear any prior entity layout first — the failed per-file run left orphan
+    # files that would (a) re-trip the 10k/dir cap and (b) shadow the new bundles.
+    print("Clearing previous entity layout…")
+    for sub in ("artists", "work_ids_by_artist", "depicts"):
+        try:
+            api.delete_folder(path_in_repo=f"data/{sub}", repo_id=repo, repo_type="dataset",
+                              commit_message=f"reset data/{sub} for sharded layout")
+        except Exception as e:  # noqa: BLE001 — absent folder is fine, keep going
+            print(f"  (nothing to clear in data/{sub}: {e})")
+
+    print("Building + pushing sharded entity files…")
     ops = [CommitOperationAdd(
         path_in_repo="data/name_to_qid.json",
         path_or_fileobj=json.dumps(name_to_qid, ensure_ascii=False, separators=(",", ":")).encode(),
     )]
-    for q, e in artists.items():
-        ops.append(CommitOperationAdd(
-            path_in_repo=f"data/artists/{q}.json",
-            path_or_fileobj=json.dumps(_clean(e), ensure_ascii=False).encode()))
-        ops.append(CommitOperationAdd(
-            path_in_repo=f"data/work_ids_by_artist/{q}.json",
-            path_or_fileobj=json.dumps(work_ids_by_artist.get(q, [])).encode()))
-    for q, e in subjects.items():
-        ops.append(CommitOperationAdd(
-            path_in_repo=f"data/depicts/{q}.json",
-            path_or_fileobj=json.dumps(_clean(e), ensure_ascii=False).encode()))
+    _J = dict(ensure_ascii=False, separators=(",", ":"))
+    for b, m in artist_buckets.items():
+        ops.append(CommitOperationAdd(path_in_repo=f"data/artists/{b}.json",
+                   path_or_fileobj=json.dumps(m, **_J).encode()))
+    for b, m in workid_buckets.items():
+        ops.append(CommitOperationAdd(path_in_repo=f"data/work_ids_by_artist/{b}.json",
+                   path_or_fileobj=json.dumps(m, separators=(",", ":")).encode()))
+    for b, m in subject_buckets.items():
+        ops.append(CommitOperationAdd(path_in_repo=f"data/depicts/{b}.json",
+                   path_or_fileobj=json.dumps(m, **_J).encode()))
 
-    # HF caps operations per commit; chunk to be safe.
+    # ~769 files total → a couple of chunked commits (HF caps operations per commit).
     CHUNK = 256
     for i in tqdm(range(0, len(ops), CHUNK), desc="commit", unit="chunk"):
         api.create_commit(repo_id=repo, repo_type="dataset", operations=ops[i:i + CHUNK],
                           commit_message=f"entity files {i // CHUNK + 1}")
 
     print(f"\nDone. {len(artists):,} artists, {len(subjects):,} subjects, "
-          f"{sum(len(v) for v in work_ids_by_artist.values()):,} artist↔work links.")
+          f"{sum(len(v) for v in work_ids_by_artist.values()):,} artist↔work links "
+          f"across {len(artist_buckets)} shards.")
     print("Patched works + entity files are live on the HF CDN — redeploy Vercel to serve them.")
 
 
