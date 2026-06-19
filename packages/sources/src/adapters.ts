@@ -1783,6 +1783,13 @@ function rowToItem(
 
 async function fetchDumpSearchUncached(q: string, dataset: string): Promise<{ items: ArtItem[]; complete: boolean }> {
   const nameMap = await loadNameToQid(); // memoised; {} on miss
+  // INVARIANT — keep the per-source fan-out (do NOT "simplify" to one /search): a
+  // single BM25 /search over all rows is monopolised by the text-rich Wikidata rows
+  // (measured 97% of slots even at offset 400), starving every museum source to 0.
+  // The per-source `source=X` /filter predicate is the ONLY thing that guarantees
+  // institutional diversity. R2's canonical_id is additive — rows keep distinct
+  // source values — so this fan-out remains required. All sources fire in ONE wave
+  // (DUMP_CONCURRENCY), so wall-clock is one call's worst case, not the sum.
   const sources = Object.keys(DUMP_SOURCE_LABELS) as DumpSourceKey[];
   // Query every dump source independently in one wave. A source that fails returns
   // []; we track failures so the caller only cross-instance-caches a COMPLETE result
