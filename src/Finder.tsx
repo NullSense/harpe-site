@@ -1283,9 +1283,9 @@ const Finder = forwardRef<FinderHandle>(function Finder(_props, ref) {
     }
   }, []);
 
-  const handleSubmit = (e: React.FormEvent) => { e.preventDefault(); run(input); };
-  // Run a search from a picked suggestion / discovery chip (reflect it in the box).
-  const runQuery = useCallback((q: string) => { setInput(q); run(q); }, [run]);
+  // navOrSearch (defined below, after loadSubject) is referenced at call-time, so a
+  // plain handler is safe here despite the later declaration.
+  const handleSubmit = (e: React.FormEvent) => { e.preventDefault(); void navOrSearch(input); };
 
   // Knowledge-graph artist page: load an artist's works + bio into the existing
   // results grid (under a bio banner). Falls back to a normal federated search
@@ -1294,7 +1294,7 @@ const Finder = forwardRef<FinderHandle>(function Finder(_props, ref) {
     streamCancelRef.current?.();
     streamCancelRef.current = null;
     setInput(name || qid); setQuery(name || qid);
-    setDetailId(null); setWarnings([]); setArtItems([]); setEntity(null);
+    setDetailId(null); setWarnings([]); setArtItems([]); setEntity(null); setAnalysis(null);
     setSourceFilter(new Set()); setMediumFilter(new Set()); setPdOnly(false);
     setLosslessOnly(false); setMinRes(0); setYearMin(''); setYearMax(''); setShown(SHOWN_STEP);
     // Artist pages are a fixed work set (not dump-paginated) → disable load-more
@@ -1319,7 +1319,7 @@ const Finder = forwardRef<FinderHandle>(function Finder(_props, ref) {
     streamCancelRef.current?.();
     streamCancelRef.current = null;
     setInput(label || qid); setQuery(label || qid);
-    setDetailId(null); setWarnings([]); setArtItems([]); setEntity(null);
+    setDetailId(null); setWarnings([]); setArtItems([]); setEntity(null); setAnalysis(null);
     setSourceFilter(new Set()); setMediumFilter(new Set()); setPdOnly(false);
     setLosslessOnly(false); setMinRes(0); setYearMin(''); setYearMax(''); setShown(SHOWN_STEP);
     // Subject pages are a fixed work set (not dump-paginated) → disable load-more.
@@ -1337,6 +1337,30 @@ const Finder = forwardRef<FinderHandle>(function Finder(_props, ref) {
       run(label || qid); // KG miss → graceful fallback to federated search
     }
   }, [run]);
+
+  // Entity-aware search: if the query resolves to a KG SUBJECT ("Joan of Arc"),
+  // surface its enriched page (works depicting it + the subject card) instead of a
+  // literal text search. Artists deliberately keep the federated text search (its
+  // famous-works-first ranking is tuned). A resolver miss/error → normal search.
+  const navOrSearch = useCallback(async (q: string) => {
+    const t = q.trim();
+    if (!t) return;
+    setInput(t);
+    try {
+      const r = await fetch(`/api/resolve?q=${encodeURIComponent(t)}`);
+      if (r.ok) {
+        const { entity } = await r.json() as { entity?: { kind: string; qid: string } };
+        if (entity?.kind === 'subject' && /^Q\d+$/.test(entity.qid)) {
+          loadSubject(entity.qid, t);
+          return;
+        }
+      }
+    } catch { /* resolver unavailable → fall through to a normal search */ }
+    run(t);
+  }, [loadSubject, run]);
+
+  // Run a search from a picked suggestion / discovery chip (entity-aware too).
+  const runQuery = navOrSearch;
 
   // Return to the pristine home / discovery state. Used by the search box's clear
   // (✕) button and by clicking the page logo — otherwise a user lands on results
@@ -2023,7 +2047,7 @@ const Finder = forwardRef<FinderHandle>(function Finder(_props, ref) {
         onIndex={openDetailAt}
         onAnalyze={analyzeWork}
         onShare={copyShare}
-        onSearch={(qq) => { setInput(qq); setDetailId(null); run(qq); }}
+        onSearch={(qq) => { setDetailId(null); void navOrSearch(qq); }}
         onArtist={(qid, name) => { setDetailId(null); loadArtist(qid, name); }}
         onSubject={(qid, label) => { setDetailId(null); loadSubject(qid, label); }}
         onFindSource={sauceEnabled ? findSource : undefined}

@@ -601,6 +601,13 @@ def enrich(repo: str = "NullSense/harpe-art", out: str | None = None) -> None:
     name_to_qid = build_name_to_qid(artists)
     print(f"{len(name_to_qid):,} name→QID entries")
 
+    # subject_to_qid.json → lets a plain search ("Joan of Arc") resolve to a SUBJECT
+    # QID so the runtime can surface its knowledge-graph page (works depicting it +
+    # the subject card) instead of a dumb text search. Mirror of name_to_qid for the
+    # harvested subjects; raw label → QID (runtime owns normalization).
+    subject_to_qid = {e["labelEn"]: q for q, e in subjects.items() if e.get("labelEn")}
+    print(f"{len(subject_to_qid):,} subject→QID entries")
+
     # Entity files are SHARDED into bucket bundles ({QID: entity} per file): one file
     # per QID hits HF's 10,000-files-per-directory cap (~90k artists). bucket(QID) =
     # int(digits) % _SHARDS — the runtime (adapters.ts) reads the same scheme.
@@ -665,6 +672,9 @@ def enrich(repo: str = "NullSense/harpe-art", out: str | None = None) -> None:
     ops = [CommitOperationAdd(
         path_in_repo="data/name_to_qid.json",
         path_or_fileobj=json.dumps(name_to_qid, ensure_ascii=False, separators=(",", ":")).encode(),
+    ), CommitOperationAdd(
+        path_in_repo="data/subject_to_qid.json",
+        path_or_fileobj=json.dumps(subject_to_qid, ensure_ascii=False, separators=(",", ":")).encode(),
     )]
     _J = dict(ensure_ascii=False, separators=(",", ":"))
     for b, m in artist_buckets.items():

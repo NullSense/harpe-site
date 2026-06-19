@@ -2009,6 +2009,35 @@ export function resolveArtistQid(index: Record<string, string>, name: string): s
   return q && /^Q\d+$/.test(q) ? q : undefined;
 }
 
+// subject (depicts) label → QID, so a plain search can surface a subject's KG page.
+// Same build/match machinery as the artist index (buildNameIndex + resolveArtistQid).
+let _subjectIndex: Record<string, string> | null | undefined;
+/** Test-only: drop the memoised subject→QID index. */
+export function _resetSubjectIndex(): void { _subjectIndex = undefined; }
+
+async function loadSubjectToQid(): Promise<Record<string, string>> {
+  if (_subjectIndex !== undefined) return _subjectIndex ?? {};
+  const dl = deadline(undefined);
+  try {
+    const res = await timedFetch(`${HF_ENTITY_CDN}/subject_to_qid.json`, dl.signal);
+    const raw = res.ok ? (await res.json() as Record<string, string>) : null;
+    _subjectIndex = raw ? buildNameIndex(raw) : null;
+  } catch { _subjectIndex = null; } finally { dl.clear(); }
+  return _subjectIndex ?? {};
+}
+
+/** Resolve a free-text query to a KG entity so search can surface its enriched page.
+ *  SUBJECT-only for now: a subject text search ("Joan of Arc") is far better served
+ *  by the works-depicting-it page than a literal text match, whereas artist queries
+ *  keep the tuned federated text-search ranking (famous-works-first). null = no
+ *  confident entity match → caller does a normal search. Absent index → null. */
+export async function resolveQueryEntity(q: string): Promise<{ kind: 'subject'; qid: string } | null> {
+  const t = (q || '').trim();
+  if (t.length < 3) return null;
+  const qid = resolveArtistQid(await loadSubjectToQid(), t);
+  return qid ? { kind: 'subject', qid } : null;
+}
+
 /** Strip Wikidata QuickStatements qualifier dumps that leak into some dump `date`
  *  values, e.g. "between 1503 and 1505date QS:P571,+1503-00-00T00:00:00Z/8,P1319,…"
  *  → "between 1503 and 1505". Returns undefined when nothing readable remains. */

@@ -17,6 +17,7 @@ import fetchHandler from './fetch.js';
 import grab from './grab.js';
 import iiif from './iiif.js';
 import preview from './preview.js';
+import resolve from './resolve.js';
 import sauce from './sauce.js';
 import scan from './scan.js';
 import stats from './stats.js';
@@ -37,6 +38,7 @@ export const handlers: Record<string, Handler> = {
   grab,
   iiif,
   preview,
+  resolve,
   sauce,
   scan,
   stats,

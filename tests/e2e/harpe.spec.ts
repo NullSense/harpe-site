@@ -12,6 +12,18 @@ test('search renders the grid and a card opens the detail viewer', async ({ page
   await expect(dialog.getByText('Plain Image Demo')).toBeVisible();
 });
 
+test('searching a KG subject surfaces its entity page, not a text search', async ({ page }) => {
+  // Regression: a query that resolves to a KG subject ("Joan of Arc") must open the
+  // subject page (works depicting it + the subject card) via /api/resolve→loadSubject,
+  // not run a literal federated text search.
+  await page.goto('/');
+  await page.getByPlaceholder(/search for art/i).fill('Joan of Arc');
+  await page.getByRole('button', { name: 'Search', exact: true }).click();
+  // The subject banner label (from /api/depicts) proves the entity page opened.
+  await expect(page.getByText('child').first()).toBeVisible();
+  await expect(page.locator('img[alt*="Plain Image Demo"]').first()).toBeVisible();
+});
+
 test('a ?artist= deep link reopens the entity page (not a text search)', async ({ page }) => {
   // Regression: artist/subject navigation must be a stable, shareable deep link —
   // reloading ?artist=Q… must reopen the KG artist page (loadArtist → /api/artist),

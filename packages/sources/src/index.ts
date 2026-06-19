@@ -19,5 +19,5 @@ export {
   fetchWellcome, fetchSmk, fetchNasjonalmuseet, fetchDigitalNZ, fetchWikidata,
   fetchLoc, fetchEuropeana, fetchHarvard, fetchSmithsonian, fetchParisMusees,
   fetchDumpSource, fetchDumpSearch, fetchDumpPage, fetchNypl, dumpDatasetEnv, dumpDatasetFor, h2Agent,
-  fetchArtistEntity, fetchArtistWorkIds, fetchSubjectEntity,
+  fetchArtistEntity, fetchArtistWorkIds, fetchSubjectEntity, resolveQueryEntity,
 } from './adapters.js';

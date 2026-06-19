@@ -15,6 +15,7 @@ import {
   fetchArtistEntity, fetchArtistWorkIds, fetchSubjectEntity,
   entityBucket, ENTITY_SHARDS, _resetEntityBucketCache,
   workTitleKey, enrichWorkIds, enrichArtistIds, _resetNameIndex,
+  resolveQueryEntity, _resetSubjectIndex,
 } from './adapters.js';
 
 const ok = (body: unknown) => ({ ok: true, status: 200, json: async () => body });
@@ -84,6 +85,26 @@ describe('bucket memo', () => {
     expect((await fetchArtistEntity('Q41406'))?.labelEn).toBe('Monet');
     expect((await fetchArtistEntity('Q41662'))?.labelEn).toBe('Renoir');
     expect(timedFetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('resolveQueryEntity (search → KG subject page)', () => {
+  it('resolves a subject name to its QID (full name + surname suffix)', async () => {
+    _resetSubjectIndex();
+    timedFetchMock.mockResolvedValue(ok({ 'Joan of Arc': 'Q7226', 'Mount Vesuvius': 'Q149888' }));
+    expect(await resolveQueryEntity('Joan of Arc')).toEqual({ kind: 'subject', qid: 'Q7226' });
+    expect(await resolveQueryEntity('mount vesuvius')).toEqual({ kind: 'subject', qid: 'Q149888' });
+  });
+  it('returns null for an unknown query and for too-short input', async () => {
+    _resetSubjectIndex();
+    timedFetchMock.mockResolvedValue(ok({ 'Joan of Arc': 'Q7226' }));
+    expect(await resolveQueryEntity('Nobody McNobody')).toBeNull();
+    expect(await resolveQueryEntity('ab')).toBeNull(); // < 3 chars → no lookup
+  });
+  it('is a graceful no-op when the subject index is absent (404)', async () => {
+    _resetSubjectIndex();
+    timedFetchMock.mockResolvedValue({ ok: false, status: 404, json: async () => ({}) });
+    expect(await resolveQueryEntity('Joan of Arc')).toBeNull();
   });
 });
 

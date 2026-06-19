@@ -105,6 +105,12 @@ const server = http.createServer(async (req, res) => {
         ] }],
     });
     if (u.pathname === '/api/scan') return json(res, { images: [], deepzoom: null, sauceEnabled: false });
+    // KG entity detection for the search box: "joan…" resolves to a subject so the
+    // search surfaces its /api/depicts page (exercised by the search→subject e2e).
+    if (u.pathname === '/api/resolve') {
+      const q = (u.searchParams.get('q') || '').toLowerCase();
+      return json(res, { entity: q.includes('joan') ? { kind: 'subject', qid: 'Q7569' } : null });
+    }
     // KG entity pages — exercised by the "?artist=" deep-link e2e test.
     if (u.pathname === '/api/artist') return json(res, {
       entity: { qid: 'Q5582', labelEn: 'Vincent van Gogh', description: 'Dutch painter', workCount: 1 },
