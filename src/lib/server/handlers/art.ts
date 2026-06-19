@@ -24,7 +24,7 @@
  */
 
 import type { VercelRequest, VercelResponse } from '../vercel.js';
-import { GuardError, rateLimit, clientIp } from '../guard.js';
+import { enforceRateLimit } from '../guard.js';
 import { rankResults, qualityScore, type ArtItem } from '@harpe/core';
 import { SOURCES, activeSources, gatherSources, mapPool } from '@harpe/sources';
 
@@ -52,16 +52,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   // Rate limit
-  const ip = clientIp(req.headers as Record<string, string | string[] | undefined>);
-  try {
-    await rateLimit(ip);
-  } catch (e) {
-    if (e instanceof GuardError) {
-      res.setHeader('Cache-Control', 'no-store');
-      return res.status(e.status).json({ error: e.message });
-    }
-    throw e;
-  }
+  if (!(await enforceRateLimit(req, res))) return;
 
   // Fetch all sources concurrently; one failing only adds a warning
   const sources = await gatherSources(q);

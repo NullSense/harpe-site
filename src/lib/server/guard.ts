@@ -21,6 +21,7 @@
 
 import dns from 'node:dns/promises';
 import { Agent } from 'undici';
+import type { VercelRequest, VercelResponse } from './vercel.js';
 
 // Vercel's @vercel/node request bridge calls the deprecated url.parse() to build
 // req.query, emitting a DEP0169 warning on every invocation. It's benign (the
@@ -318,4 +319,39 @@ export function clientIp(headers: Record<string, string | string[] | undefined>)
     if (parts.length) return parts[parts.length - 1];
   }
   return 'unknown';
+}
+
+/**
+ * If `e` is a GuardError, write it as a no-store 4xx JSON response and return true;
+ * otherwise return false (caller should re-throw). The one place the guard→response
+ * shape lives, shared by enforceRateLimit and the guardUrl() call sites.
+ */
+export function sendGuardError(res: VercelResponse, e: unknown): boolean {
+  if (e instanceof GuardError) {
+    res.setHeader('Cache-Control', 'no-store');
+    res.status(e.status).json({ error: e.message });
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Per-IP rate-limit gate shared by every JSON handler. Returns the client IP to
+ * proceed; on a GuardError it writes the 4xx (no-store) response itself and returns
+ * null so the caller bails. clientIp never returns empty, so the IP is always truthy
+ * on success — use either form:
+ *   if (!(await enforceRateLimit(req, res))) return;          // IP not needed
+ *   const ip = await enforceRateLimit(req, res); if (!ip) return;  // IP needed
+ * Non-GuardError failures propagate. (preview.ts deliberately degrades to 200 and
+ * keeps its own inline guard, so it does NOT use this.)
+ */
+export async function enforceRateLimit(req: VercelRequest, res: VercelResponse): Promise<string | null> {
+  const ip = clientIp(req.headers as Record<string, string | string[] | undefined>);
+  try {
+    await rateLimit(ip);
+    return ip;
+  } catch (e) {
+    if (sendGuardError(res, e)) return null;
+    throw e;
+  }
 }

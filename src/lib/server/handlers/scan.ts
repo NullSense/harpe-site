@@ -17,7 +17,7 @@
 import type { VercelRequest, VercelResponse } from '../vercel.js';
 import { fetch } from 'undici';
 import { parse as parseHtml } from 'node-html-parser';
-import { GuardError, guardUrl, pinnedAgent, rateLimit, clientIp } from '../guard.js';
+import { guardUrl, pinnedAgent, GuardError, enforceRateLimit } from '../guard.js';
 import { detectFromHtml, type DeepZoomDescriptor } from '../deepzoom-detect.js';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -320,16 +320,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   // Rate limit
-  const ip = clientIp(req.headers as Record<string, string | string[] | undefined>);
-  try {
-    await rateLimit(ip);
-  } catch (e) {
-    if (e instanceof GuardError) {
-      res.setHeader('Cache-Control', 'no-store');
-      return res.status(e.status).json({ error: e.message });
-    }
-    throw e;
-  }
+  if (!(await enforceRateLimit(req, res))) return;
 
   // Validate URL before anything else
   try {

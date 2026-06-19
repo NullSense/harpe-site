@@ -26,7 +26,7 @@
 import type { VercelRequest, VercelResponse } from '../vercel.js';
 import { fetch } from 'undici';
 import type { Response as UndiciResponse } from 'undici';
-import { GuardError, guardUrl, pinnedAgent, rateLimit, clientIp } from '../guard.js';
+import { guardUrl, pinnedAgent, GuardError, enforceRateLimit } from '../guard.js';
 import sharp from 'sharp';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -268,16 +268,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   // Rate limit (Upstash Redis when configured, in-memory fallback otherwise)
-  const ip = clientIp(req.headers as Record<string, string | string[] | undefined>);
-  try {
-    await rateLimit(ip);
-  } catch (e) {
-    if (e instanceof GuardError) {
-      res.setHeader('Cache-Control', 'no-store');
-      return res.status(e.status).json({ error: e.message });
-    }
-    throw e;
-  }
+  if (!(await enforceRateLimit(req, res))) return;
 
   // Validate image URL
   try {

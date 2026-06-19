@@ -28,7 +28,7 @@
  */
 
 import type { VercelRequest, VercelResponse } from '../vercel.js';
-import { GuardError, rateLimit, clientIp } from '../guard.js';
+import { enforceRateLimit } from '../guard.js';
 import { fetch } from 'undici';
 
 // ─── Seed / fallback numbers ────────────────────────────────────────────────
@@ -350,16 +350,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(405).json({ error: 'GET only' });
   }
 
-  const ip = clientIp(req.headers as Record<string, string | string[] | undefined>);
-  try {
-    await rateLimit(ip);
-  } catch (e) {
-    if (e instanceof GuardError) {
-      res.setHeader('Cache-Control', 'no-store');
-      return res.status(e.status).json({ error: e.message });
-    }
-    throw e;
-  }
+  if (!(await enforceRateLimit(req, res))) return;
 
   // ── Cache lookup ──
   const redis = await getRedis();

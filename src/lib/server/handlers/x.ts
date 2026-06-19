@@ -11,7 +11,7 @@
  * 404/422 for protected/deleted/media-less posts.
  */
 import type { VercelRequest, VercelResponse } from '../vercel.js';
-import { GuardError, rateLimit, clientIp } from '../guard.js';
+import { enforceRateLimit } from '../guard.js';
 import { fetchWithTimeout } from '../fetchWithTimeout.js';
 
 const UA =
@@ -43,9 +43,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const id = s(req.query.id).trim();
   if (!/^\d{5,25}$/.test(id)) { res.setHeader('Cache-Control', 'no-store'); return res.status(400).json({ error: 'Provide a numeric tweet id' }); }
 
-  const ip = clientIp(req.headers as Record<string, string | string[] | undefined>);
-  try { await rateLimit(ip); }
-  catch (e) { if (e instanceof GuardError) { res.setHeader('Cache-Control', 'no-store'); return res.status(e.status).json({ error: e.message }); } throw e; }
+  if (!(await enforceRateLimit(req, res))) return;
 
   try {
     const url = `https://cdn.syndication.twimg.com/tweet-result?id=${id}&token=${tweetToken(id)}&lang=en`;

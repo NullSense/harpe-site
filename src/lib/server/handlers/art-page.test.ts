@@ -23,16 +23,27 @@ vi.mock('@harpe/core', () => ({
 }));
 
 // Mock the guard — same pattern as art-stream.test.ts and preview.test.ts.
-vi.mock('../guard.js', () => ({
-  GuardError: class GuardError extends Error {
+vi.mock('../guard.js', () => {
+  // enforceRateLimit/sendGuardError are composed from the mocked rateLimit/clientIp
+  // so existing cases (rateLimit.mockImplementation(throw GuardError)) still drive them.
+  class GuardError extends Error {
     constructor(public readonly status: number, message: string) {
       super(message);
       this.name = 'GuardError';
     }
-  },
-  rateLimit: vi.fn(),
-  clientIp: vi.fn(() => '1.2.3.4'),
-}));
+  }
+  const rateLimit = vi.fn();
+  const clientIp = vi.fn(() => '1.2.3.4');
+  const sendGuardError = (res: { setHeader(k: string, v: string): void; status(c: number): { json(b: unknown): unknown } }, e: unknown) => {
+    if (e instanceof GuardError) { res.setHeader('Cache-Control', 'no-store'); res.status(e.status).json({ error: e.message }); return true; }
+    return false;
+  };
+  const enforceRateLimit = vi.fn(async (_req: { headers: Record<string, unknown> }, res: { setHeader(k: string, v: string): void; status(c: number): { json(b: unknown): unknown } }) => {
+    const ip = clientIp();
+    try { await rateLimit(ip); return ip; } catch (e) { if (sendGuardError(res, e)) return null; throw e; }
+  });
+  return { GuardError, rateLimit, clientIp, sendGuardError, enforceRateLimit };
+});
 
 import handler from './art-page.js';
 import { fetchDumpPage } from '@harpe/sources';

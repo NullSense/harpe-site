@@ -13,7 +13,7 @@
  */
 
 import type { VercelRequest, VercelResponse } from '../vercel.js';
-import { GuardError, guardUrl, pinnedAgent, rateLimit, clientIp } from '../guard.js';
+import { guardUrl, pinnedAgent, enforceRateLimit, sendGuardError } from '../guard.js';
 import { fetchWithTimeout } from '../fetchWithTimeout.js';
 
 const UA =
@@ -33,13 +33,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(400).json({ error: 'Provide a IIIF ?url=…/info.json' });
   }
 
-  const ip = clientIp(req.headers as Record<string, string | string[] | undefined>);
+  if (!(await enforceRateLimit(req, res))) return;
   let guarded: { url: string; ip: string; family: 4 | 6 };
   try {
-    await rateLimit(ip);
     guarded = await guardUrl(raw); // reject private/non-http targets; pin the IP
   } catch (e) {
-    if (e instanceof GuardError) { res.setHeader('Cache-Control', 'no-store'); return res.status(e.status).json({ error: e.message }); }
+    if (sendGuardError(res, e)) return;
     throw e;
   }
 

@@ -6,7 +6,7 @@
  * infra — static CDN file + the existing dump /search, cached 24h in Upstash.
  */
 import type { VercelRequest, VercelResponse } from '../vercel.js';
-import { GuardError, rateLimit, clientIp } from '../guard.js';
+import { enforceRateLimit } from '../guard.js';
 import { fetchArtistEntity, fetchArtistWorkIds, fetchDumpSearch } from '@harpe/sources';
 import { isQid } from '@harpe/core';
 import type { ArtItem } from '@harpe/core';
@@ -26,16 +26,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(400).json({ error: 'Missing or invalid ?qid= (expected Q…)' });
   }
 
-  const ip = clientIp(req.headers as Record<string, string | string[] | undefined>);
-  try {
-    await rateLimit(ip);
-  } catch (e) {
-    if (e instanceof GuardError) {
-      res.setHeader('Cache-Control', 'no-store');
-      return res.status(e.status).json({ error: e.message });
-    }
-    throw e;
-  }
+  if (!(await enforceRateLimit(req, res))) return;
 
   const redis = await getEntityRedis();
   const cacheKey = `entity:artist:${qid}`;

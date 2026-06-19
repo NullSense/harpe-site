@@ -13,7 +13,7 @@
  */
 
 import type { VercelRequest, VercelResponse } from '../vercel.js';
-import { GuardError, guardUrl, rateLimit, clientIp } from '../guard.js';
+import { guardUrl, enforceRateLimit, sendGuardError } from '../guard.js';
 import { fetchWithTimeout } from '../fetchWithTimeout.js';
 
 const TIMEOUT_MS = 12_000;
@@ -55,15 +55,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(400).json({ error: 'Missing ?url= parameter' });
   }
 
-  const ip = clientIp(req.headers as Record<string, string | string[] | undefined>);
+  if (!(await enforceRateLimit(req, res))) return;
   try {
-    await rateLimit(ip);
     await guardUrl(imageUrl); // reject private/non-http targets before sending it on
   } catch (e) {
-    if (e instanceof GuardError) {
-      res.setHeader('Cache-Control', 'no-store');
-      return res.status(e.status).json({ error: e.message });
-    }
+    if (sendGuardError(res, e)) return;
     throw e;
   }
 

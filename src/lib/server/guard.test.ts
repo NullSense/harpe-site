@@ -4,7 +4,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // network, no new deps. Everything else is the real guard code.
 vi.mock('node:dns/promises', () => ({ default: { lookup: vi.fn() } }));
 import dns from 'node:dns/promises';
-import { guardUrl, GuardError, clientIp, checkRateLimit } from './guard.js';
+import { guardUrl, GuardError, clientIp, checkRateLimit, sendGuardError, enforceRateLimit } from './guard.js';
 
 const lookup = dns.lookup as unknown as ReturnType<typeof vi.fn>;
 const resolvesTo = (address: string, family: 4 | 6 = 4) => lookup.mockResolvedValue([{ address, family }]);
@@ -80,5 +80,53 @@ describe('checkRateLimit (in-memory fallback)', () => {
     const ip = `t-${Math.random()}`; // unique bucket per run
     expect(() => { for (let i = 0; i < 30; i++) checkRateLimit(ip); }).not.toThrow();
     expect(() => checkRateLimit(ip)).toThrow(/rate limit/i);
+  });
+});
+
+// ── shared handler guards (DRY helpers used by every JSON handler) ──────────────
+
+function fakeRes() {
+  const r = { headers: {} as Record<string, string>, statusCode: 0, body: undefined as unknown };
+  return Object.assign(r, {
+    setHeader(k: string, v: string) { r.headers[k] = v; },
+    status(c: number) { r.statusCode = c; return r; },
+    json(b: unknown) { r.body = b; return r; },
+  });
+}
+const reqWithIp = (ip: string) => ({ headers: { 'x-real-ip': ip } }) as never;
+
+describe('sendGuardError', () => {
+  it('writes a no-store 4xx for a GuardError and returns true', () => {
+    const res = fakeRes();
+    expect(sendGuardError(res as never, new GuardError(429, 'nope'))).toBe(true);
+    expect(res.statusCode).toBe(429);
+    expect(res.headers['Cache-Control']).toBe('no-store');
+    expect(res.body).toEqual({ error: 'nope' });
+  });
+
+  it('returns false and writes nothing for a non-GuardError', () => {
+    const res = fakeRes();
+    expect(sendGuardError(res as never, new Error('boom'))).toBe(false);
+    expect(res.statusCode).toBe(0);
+    expect(res.body).toBeUndefined();
+  });
+});
+
+describe('enforceRateLimit', () => {
+  it('returns the client IP and writes nothing while under the limit', async () => {
+    const res = fakeRes();
+    const ip = await enforceRateLimit(reqWithIp('203.0.113.7'), res as never);
+    expect(ip).toBe('203.0.113.7');
+    expect(res.statusCode).toBe(0);
+  });
+
+  it('writes 429 and returns null once the per-IP limit is exhausted', async () => {
+    const ip = `enf-${Math.random()}`;
+    let res = fakeRes();
+    let blocked: string | null = '';
+    for (let i = 0; i < 40; i++) { res = fakeRes(); blocked = await enforceRateLimit(reqWithIp(ip), res as never); if (blocked === null) break; }
+    expect(blocked).toBeNull();
+    expect(res.statusCode).toBe(429);
+    expect(res.headers['Cache-Control']).toBe('no-store');
   });
 });

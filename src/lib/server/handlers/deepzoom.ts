@@ -17,7 +17,7 @@
 
 import type { VercelRequest, VercelResponse } from '../vercel.js';
 import { fetch } from 'undici';
-import { GuardError, guardUrl, pinnedAgent, rateLimit, clientIp } from '../guard.js';
+import { GuardError, guardUrl, pinnedAgent, enforceRateLimit, sendGuardError } from '../guard.js';
 import { descriptorKind, parseDescriptor, findDescriptorUrls, isGoogleArtsAndCulture } from '../deepzoom-detect.js';
 
 const UA =
@@ -79,12 +79,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const raw = typeof req.query.url === 'string' ? req.query.url.trim() : '';
   if (!raw) { res.setHeader('Cache-Control', 'no-store'); return res.status(400).json({ error: 'Missing ?url=' }); }
 
-  const ip = clientIp(req.headers as Record<string, string | string[] | undefined>);
+  if (!(await enforceRateLimit(req, res))) return;
   try {
-    await rateLimit(ip);
     await guardUrl(raw);
   } catch (e) {
-    if (e instanceof GuardError) { res.setHeader('Cache-Control', 'no-store'); return res.status(e.status).json({ error: e.message }); }
+    if (sendGuardError(res, e)) return;
     throw e;
   }
 

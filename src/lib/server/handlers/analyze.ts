@@ -18,7 +18,7 @@
 import type { VercelRequest, VercelResponse } from '../vercel.js';
 import { fetch } from 'undici';
 import { createHash } from 'node:crypto';
-import { GuardError, rateLimit, clientIp } from '../guard.js';
+import { enforceRateLimit } from '../guard.js';
 
 const TIMEOUT_MS = 25_000;
 const CACHE_TTL_S = 60 * 60 * 24 * 30; // 30 days
@@ -272,13 +272,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(501).json({ error: 'Analysis is not enabled (set GEMINI_API_KEY, GROQ_API_KEY, OPENROUTER_API_KEY, or ANTHROPIC_API_KEY).' });
   }
 
-  const ip = clientIp(req.headers as Record<string, string | string[] | undefined>);
-  try {
-    await rateLimit(ip);
-  } catch (e) {
-    if (e instanceof GuardError) { res.setHeader('Cache-Control', 'no-store'); return res.status(e.status).json({ error: e.message }); }
-    throw e;
-  }
+  if (!(await enforceRateLimit(req, res))) return;
 
   let body: { title?: unknown; artist?: unknown; items?: unknown };
   try {

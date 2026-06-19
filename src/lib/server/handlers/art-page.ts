@@ -13,7 +13,7 @@
  */
 
 import type { VercelRequest, VercelResponse } from '../vercel.js';
-import { GuardError, rateLimit, clientIp } from '../guard.js';
+import { enforceRateLimit } from '../guard.js';
 import { rankResults, qualityScore, type ArtItem } from '@harpe/core';
 import { fetchDumpPage } from '@harpe/sources';
 
@@ -37,16 +37,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const pageRaw = typeof req.query.page === 'string' ? Number(req.query.page) : 1;
   const page = !Number.isInteger(pageRaw) || pageRaw < 1 ? 1 : Math.min(pageRaw, 50);
 
-  const ip = clientIp(req.headers as Record<string, string | string[] | undefined>);
-  try {
-    await rateLimit(ip);
-  } catch (e) {
-    if (e instanceof GuardError) {
-      res.setHeader('Cache-Control', 'no-store');
-      return res.status(e.status).json({ error: e.message });
-    }
-    throw e;
-  }
+  if (!(await enforceRateLimit(req, res))) return;
 
   const dataset = process.env.HARPE_DUMP_DATASET || ''; // shared dump dataset (matches artist.ts)
   if (!dataset) {

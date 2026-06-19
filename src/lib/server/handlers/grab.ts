@@ -16,7 +16,7 @@
  * normalise it. cobalt is AGPL-3.0 — we only CALL it over HTTP (no code linkage).
  */
 import type { VercelRequest, VercelResponse } from '../vercel.js';
-import { GuardError, rateLimit, clientIp } from '../guard.js';
+import { enforceRateLimit } from '../guard.js';
 import { fetchWithTimeout } from '../fetchWithTimeout.js';
 
 const TIMEOUT_MS = 25_000;
@@ -38,9 +38,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const url = s(req.query.url).trim();
   if (!/^https?:\/\//i.test(url)) { res.setHeader('Cache-Control', 'no-store'); return res.status(400).json({ error: 'Provide an http(s) URL' }); }
 
-  const ip = clientIp(req.headers as Record<string, string | string[] | undefined>);
-  try { await rateLimit(ip); }
-  catch (e) { if (e instanceof GuardError) { res.setHeader('Cache-Control', 'no-store'); return res.status(e.status).json({ error: e.message }); } throw e; }
+  if (!(await enforceRateLimit(req, res))) return;
 
   try {
     const headers: Record<string, string> = { Accept: 'application/json', 'Content-Type': 'application/json' };

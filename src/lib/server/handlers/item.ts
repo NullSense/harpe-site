@@ -8,7 +8,7 @@
  * Immutable per id, so it edge-caches hard.
  */
 import type { VercelRequest, VercelResponse } from '../vercel.js';
-import { GuardError, rateLimit, clientIp } from '../guard.js';
+import { enforceRateLimit } from '../guard.js';
 import { fetchItemById } from '@harpe/sources';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -27,16 +27,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(400).json({ error: 'Missing or invalid ?id=' });
   }
 
-  const ip = clientIp(req.headers as Record<string, string | string[] | undefined>);
-  try {
-    await rateLimit(ip);
-  } catch (e) {
-    if (e instanceof GuardError) {
-      res.setHeader('Cache-Control', 'no-store');
-      return res.status(e.status).json({ error: e.message });
-    }
-    throw e;
-  }
+  if (!(await enforceRateLimit(req, res))) return;
 
   const item = await fetchItemById(id).catch(() => null);
   if (!item) {
