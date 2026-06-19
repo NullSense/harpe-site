@@ -374,9 +374,19 @@ def enrich(repo: str = "NullSense/harpe-art", out: str | None = None) -> None:
     # pages and non-Wikidata name resolution). Slower; published as a separate
     # commit so it never blocks the card enrichment above. Checkpointed BEFORE the
     # push so a commit failure (e.g. an HF limit) never re-runs the ~16 min harvest.
+    # Only resume from a checkpoint that actually HAS artists — an earlier run whose
+    # harvest failed (QLever blip → all batches skipped) would have written an empty
+    # {} and then every later run "resumes" 0 artists and pushes 0 shards forever.
+    ckpt = None
     if os.path.exists(_ENT_CKPT):
-        d = json.load(open(_ENT_CKPT))
-        artists, subjects = d["artists"], d["subjects"]
+        try:
+            d = json.load(open(_ENT_CKPT))
+            if d.get("artists"):
+                ckpt = d
+        except Exception:
+            ckpt = None
+    if ckpt is not None:
+        artists, subjects = ckpt["artists"], ckpt["subjects"]
         client.close()
         print(f"resuming entity push from checkpoint: {len(artists):,} artists, {len(subjects):,} subjects")
     else:
@@ -388,7 +398,10 @@ def enrich(repo: str = "NullSense/harpe-art", out: str | None = None) -> None:
         print(f"{len(top_subjects):,} subjects (capped at {_SUBJECT_CAP:,})")
         subjects = harvest_subjects(client, top_subjects, subject_counts)
         client.close()
-        json.dump({"artists": artists, "subjects": subjects}, open(_ENT_CKPT, "w"))
+        if artists:  # never checkpoint an empty harvest (it would poison resumes)
+            json.dump({"artists": artists, "subjects": subjects}, open(_ENT_CKPT, "w"))
+        else:
+            print("  WARNING: artist harvest returned 0 — not checkpointing (will retry next run)")
 
     # name_to_qid.json → published to the HF CDN as part of the entity layer (the
     # runtime resolves non-Wikidata artist names to QIDs from it; Wikidata works
