@@ -196,7 +196,12 @@ SELECT
   -- openaccess=1 is a correct public-domain signal — not merely "freely usable
   -- under a Creative Commons license". We keep TRUE here intentionally; a birth-year
   -- heuristic would be less accurate than NGA's own legal determination.
-  TRUE AS is_public_domain
+  TRUE AS is_public_domain,
+  -- NGA opendata ships the artwork's own Wikidata QID (objects.wikidataid — a bare
+  -- Q-number, ~99% populated). Capturing it lets these works join the R2/R3 same-as
+  -- collapse and get a canonical_id with ZERO title-guessing. regexp_extract returns
+  -- '' for the rare junk/empty value, which downstream treats as "no QID".
+  regexp_extract(CAST(o.wikidataid AS VARCHAR), 'Q[0-9]+') AS wikidata_qid
 FROM read_csv_auto('{NGA_OBJECTS}', ignore_errors=true) o
 JOIN read_csv_auto('{NGA_IMAGES}', ignore_errors=true) pi
   ON pi.depictstmsobjectid = o.objectid
@@ -533,13 +538,38 @@ WHERE image_thumbnail IS NOT NULL
 MET_HF_PARQUET_API = "https://huggingface.co/api/datasets/metmuseum/openaccess/parquet/default/train"
 
 
+_MET_QID_RE = re.compile(r"Q\d+")
+
+
+def _met_qid(url: object) -> str | None:
+    """Extract a bare Wikidata QID from a Met *Wikidata_URL field, else None.
+
+    Met stores e.g. 'https://www.wikidata.org/wiki/Q116373732'; we want 'Q116373732'.
+    """
+    if not url:
+        return None
+    m = _MET_QID_RE.search(str(url))
+    return m.group(0) if m else None
+
+
 def harvest_met_dump() -> str:
     """Read the Met's official HF open-access parquet shards → JSONL (public-domain
     rows that have a primaryImage). No Met API calls — every URL comes from HF."""
     out_path = os.path.join(tempfile.gettempdir(), "harpe-met.jsonl")
     if os.path.exists(out_path):
-        print(f"Reusing existing Met dump at {out_path} (delete to re-harvest).")
-        return out_path
+        # Schema guard: a cached jsonl from before the wikidata_qid/artist_qid capture
+        # would silently drop the new QID columns on a re-run. Re-harvest if the first
+        # record lacks them so `--enrich-only` runs pick up the first-party Met QIDs.
+        try:
+            with open(out_path, encoding="utf-8") as fh:
+                first = fh.readline()
+            if first and "wikidata_qid" in first:
+                print(f"Reusing existing Met dump at {out_path} (delete to re-harvest).")
+                return out_path
+            print(f"Met dump at {out_path} predates QID capture — re-harvesting.")
+            os.remove(out_path)
+        except OSError:
+            pass
 
     def _shards():
         req = urllib.request.Request(MET_HF_PARQUET_API, headers={"User-Agent": "harpe-ingest/1.0"})
@@ -561,11 +591,12 @@ def harvest_met_dump() -> str:
             for i, shard in enumerate(shard_urls, 1):
                 rows = con.execute(f"""
                     SELECT objectID, title, artistDisplayName, objectDate, medium,
-                           dimensions, culture, creditLine, primaryImage, primaryImageSmall, objectURL
+                           dimensions, culture, creditLine, primaryImage, primaryImageSmall, objectURL,
+                           objectWikidata_URL, artistWikidata_URL
                     FROM read_parquet('{shard.replace(chr(39), chr(39) * 2)}')
                     WHERE isPublicDomain = TRUE AND primaryImage IS NOT NULL AND primaryImage <> ''
                 """).fetchall()
-                for (oid, title, artist, date, medium, dims, culture, credit, full, small, url) in rows:
+                for (oid, title, artist, date, medium, dims, culture, credit, full, small, url, obj_wd, artist_wd) in rows:
                     fh.write(json.dumps({
                         "source": "met", "id": f"met-{oid}",
                         "title": (title or "").strip() or "Untitled",
@@ -580,6 +611,12 @@ def harvest_met_dump() -> str:
                         "image_full": (full or "").strip(),
                         "width": None, "height": None,
                         "source_url": (url or "").strip() or None,
+                        # Met's HF dump carries the artwork's and the artist's Wikidata
+                        # URLs first-party. Capture the QIDs (object → wikidata_qid joins
+                        # R2/R3 same-as collapse; artist → artist_qid links the artist
+                        # page) with zero title/name guessing. _met_qid → None when absent.
+                        "wikidata_qid": _met_qid(obj_wd),
+                        "artist_qid": _met_qid(artist_wd),
                         "rights_type": "CC0", "is_public_domain": True,
                     }, ensure_ascii=False) + "\n")
                     written += 1
