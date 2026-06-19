@@ -11,7 +11,7 @@ import { enforceRateLimit } from '../guard.js';
 import { fetchSubjectEntity, fetchDumpSearch } from '@harpe/sources';
 import { isQid } from '@harpe/core';
 import type { ArtItem } from '@harpe/core';
-import { getEntityRedis, ENTITY_TTL_S } from './kg-cache.js';
+import { withEntityCache } from './kg-cache.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'GET') {
@@ -29,34 +29,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   if (!(await enforceRateLimit(req, res))) return;
 
-  const redis = await getEntityRedis();
-  const cacheKey = `entity:depicts:${qid}`;
-  if (redis) {
-    const hit = await redis.get(cacheKey).catch(() => null);
-    if (hit) {
-      res.setHeader('Cache-Control', 'public, s-maxage=86400, stale-while-revalidate=86400');
-      return res.status(200).json(typeof hit === 'string' ? JSON.parse(hit) : hit);
+  return withEntityCache(res, `entity:depicts:${qid}`, 'subject not found', async () => {
+    const entity = await fetchSubjectEntity(qid);
+    if (!entity) return null;
+
+    const dataset = process.env.HARPE_DUMP_DATASET || '';
+    let works: ArtItem[] = [];
+    if (dataset) {
+      try {
+        const all = await fetchDumpSearch(dataset, qid);
+        // Exact-match guard on the deserialized depicts array (no substring collision).
+        works = all.filter((it) => it.depicts?.includes(qid)).slice(0, 100);
+      } catch { /* dump unavailable → entity still renders, just no work grid */ }
     }
-  }
-
-  const entity = await fetchSubjectEntity(qid);
-  if (!entity) {
-    res.setHeader('Cache-Control', 'no-store');
-    return res.status(404).json({ error: 'subject not found' });
-  }
-
-  const dataset = process.env.HARPE_DUMP_DATASET || '';
-  let works: ArtItem[] = [];
-  if (dataset) {
-    try {
-      const all = await fetchDumpSearch(dataset, qid);
-      // Exact-match guard on the deserialized depicts array (no substring collision).
-      works = all.filter((it) => it.depicts?.includes(qid)).slice(0, 100);
-    } catch { /* dump unavailable → entity still renders, just no work grid */ }
-  }
-
-  const payload = { entity, works };
-  if (redis) await redis.set(cacheKey, JSON.stringify(payload), { ex: ENTITY_TTL_S }).catch(() => {});
-  res.setHeader('Cache-Control', 'public, s-maxage=86400, stale-while-revalidate=86400');
-  return res.status(200).json(payload);
+    return { entity, works };
+  });
 }

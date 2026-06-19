@@ -10,7 +10,7 @@ import { enforceRateLimit } from '../guard.js';
 import { fetchArtistEntity, fetchArtistWorkIds, fetchDumpSearch } from '@harpe/sources';
 import { isQid } from '@harpe/core';
 import type { ArtItem } from '@harpe/core';
-import { getEntityRedis, ENTITY_TTL_S } from './kg-cache.js';
+import { withEntityCache } from './kg-cache.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'GET') {
@@ -28,35 +28,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   if (!(await enforceRateLimit(req, res))) return;
 
-  const redis = await getEntityRedis();
-  const cacheKey = `entity:artist:${qid}`;
-  if (redis) {
-    const hit = await redis.get(cacheKey).catch(() => null);
-    if (hit) {
-      res.setHeader('Cache-Control', 'public, s-maxage=86400, stale-while-revalidate=86400');
-      return res.status(200).json(typeof hit === 'string' ? JSON.parse(hit) : hit);
+  return withEntityCache(res, `entity:artist:${qid}`, 'artist not found', async () => {
+    const [entity, workIds] = await Promise.all([fetchArtistEntity(qid), fetchArtistWorkIds(qid)]);
+    if (!entity) return null;
+
+    // Works: one dump /search on the artist label, kept to the known work-id set.
+    const dataset = process.env.HARPE_DUMP_DATASET || '';
+    let works: ArtItem[] = [];
+    if (dataset && workIds.length > 0) {
+      const idSet = new Set(workIds);
+      try {
+        const all = await fetchDumpSearch(dataset, entity.labelEn);
+        works = all.filter((it) => idSet.has(it.id)).slice(0, 100);
+      } catch { /* dump unavailable → entity still renders, just no work grid */ }
     }
-  }
-
-  const [entity, workIds] = await Promise.all([fetchArtistEntity(qid), fetchArtistWorkIds(qid)]);
-  if (!entity) {
-    res.setHeader('Cache-Control', 'no-store');
-    return res.status(404).json({ error: 'artist not found' });
-  }
-
-  // Works: one dump /search on the artist label, kept to the known work-id set.
-  const dataset = process.env.HARPE_DUMP_DATASET || '';
-  let works: ArtItem[] = [];
-  if (dataset && workIds.length > 0) {
-    const idSet = new Set(workIds);
-    try {
-      const all = await fetchDumpSearch(dataset, entity.labelEn);
-      works = all.filter((it) => idSet.has(it.id)).slice(0, 100);
-    } catch { /* dump unavailable → entity still renders, just no work grid */ }
-  }
-
-  const payload = { entity, works };
-  if (redis) await redis.set(cacheKey, JSON.stringify(payload), { ex: ENTITY_TTL_S }).catch(() => {});
-  res.setHeader('Cache-Control', 'public, s-maxage=86400, stale-while-revalidate=86400');
-  return res.status(200).json(payload);
+    return { entity, works };
+  });
 }
