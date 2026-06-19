@@ -543,49 +543,81 @@ export async function fetchItemById(id: string, signal?: AbortSignal): Promise<A
 // wbgetentities URLs (incl. the >50-id batching) and simplifies the claims, so we
 // don't hand-parse Wikibase's snak format; an in-instance cache spares repeats.
 const _wbkCommons = WBK({ instance: 'https://commons.wikimedia.org' }); // Commons MediaInfo Wikibase
-// pageid → { wd: artwork QID (P6243), creator: artist QID (P170) } | null (resolved miss).
-type SdcFacts = { wd: string | null; creator: string | null };
+// pageid → { wd: artwork QID (P6243), creator: artist QID (P170), depicts: P180 QIDs }
+// | null (resolved miss).
+type SdcFacts = { wd: string | null; creator: string | null; depicts: string[] };
 const _sdcCache = new Map<string, SdcFacts | null>();
 const _validQid = (q: unknown): string | null => (isQid(q) ? q : null);
+// Bound the depicts-label resolution so a Commons page with many SDC depicts can't
+// balloon into a long burst of shard fetches on the hot search path.
+const COMMONS_SDC_DEPICTS_CAP = 40;
 function _applySdc(it: ArtItem, f: SdcFacts): void {
   if (f.wd && !it.wikidataId) it.wikidataId = f.wd;
   if (f.creator && !it.artistId) it.artistId = f.creator; // gives bare Commons files an artist link
+  // (depicts are applied in a second pass — they need async label resolution)
 }
 
 export async function enrichCommonsWikidataIds(items: ArtItem[], signal: AbortSignal): Promise<void> {
   const need = new Map<string, ArtItem>(); // uncached pageid → item
+  const depictsByItem = new Map<ArtItem, string[]>(); // item → SDC depicts QIDs (labels resolved below)
   for (const it of items) {
     const m = /^commons-(\d+)$/.exec(it.id);
     if (!m) continue;
     const cached = _sdcCache.get(m[1]);
-    if (cached !== undefined) { if (cached) _applySdc(it, cached); continue; }
+    if (cached !== undefined) {
+      if (cached) { _applySdc(it, cached); if (cached.depicts.length) depictsByItem.set(it, cached.depicts); }
+      continue;
+    }
     need.set(m[1], it);
   }
-  if (need.size === 0) return;
-  // MediaInfo entity id is "M" + the file's pageid.
-  const mids = [...need.keys()].map((p) => `M${p}`) as `M${number}`[];
-  try {
-    for (const url of _wbkCommons.getManyEntities({ ids: mids, props: ['claims'] })) {
-      const res = await timedFetch(url, signal);
-      if (!res.ok) return; // give up quietly — items keep flowing without a QID
-      const json = await res.json() as { entities?: Record<string, { statements?: unknown; claims?: unknown }> };
-      for (const [mid, ent] of Object.entries(json.entities ?? {})) {
-        const pid = mid.slice(1); // strip the leading "M"
-        // MediaInfo exposes statements under `statements` (older API: `claims`).
-        const claims = (ent.statements ?? ent.claims) as Parameters<typeof simplifyClaims>[0];
-        const c = claims ? simplifyClaims(claims) : {};
-        // P6243 "digital representation of" → the artwork QID; P170 → the creator QID.
-        // Both ride the SAME fetch — no extra request to give the file an artist link.
-        const facts: SdcFacts = {
-          wd: _validQid((c.P6243 as unknown[] | undefined)?.[0]),
-          creator: _validQid((c.P170 as unknown[] | undefined)?.[0]),
-        };
-        _sdcCache.set(pid, facts.wd || facts.creator ? facts : null);
-        const it = need.get(pid);
-        if (it) _applySdc(it, facts);
+  if (need.size > 0) {
+    // MediaInfo entity id is "M" + the file's pageid.
+    const mids = [...need.keys()].map((p) => `M${p}`) as `M${number}`[];
+    try {
+      for (const url of _wbkCommons.getManyEntities({ ids: mids, props: ['claims'] })) {
+        const res = await timedFetch(url, signal);
+        if (!res.ok) break; // give up quietly — items keep flowing without a QID
+        const json = await res.json() as { entities?: Record<string, { statements?: unknown; claims?: unknown }> };
+        for (const [mid, ent] of Object.entries(json.entities ?? {})) {
+          const pid = mid.slice(1); // strip the leading "M"
+          // MediaInfo exposes statements under `statements` (older API: `claims`).
+          const claims = (ent.statements ?? ent.claims) as Parameters<typeof simplifyClaims>[0];
+          const c = claims ? simplifyClaims(claims) : {};
+          // P6243 "digital representation of" → the artwork QID; P170 → the creator QID;
+          // P180 "depicts" → subject QIDs. All ride the SAME claims fetch — no extra
+          // request to give a bare Commons file an artist link and subject pills.
+          const facts: SdcFacts = {
+            wd: _validQid((c.P6243 as unknown[] | undefined)?.[0]),
+            creator: _validQid((c.P170 as unknown[] | undefined)?.[0]),
+            depicts: ((c.P180 as unknown[] | undefined) ?? []).map(_validQid).filter((q): q is string => !!q),
+          };
+          _sdcCache.set(pid, facts.wd || facts.creator || facts.depicts.length ? facts : null);
+          const it = need.get(pid);
+          if (it) { _applySdc(it, facts); if (facts.depicts.length) depictsByItem.set(it, facts.depicts); }
+        }
       }
+    } catch { /* best-effort: leave items unenriched */ }
+  }
+
+  // Resolve SDC depicts labels from OUR subject shards (HF CDN, bucket-memoised) — no
+  // Wikidata call. We keep ONLY subjects present in our KG: those are exactly the ones
+  // whose pill links to a working /api/depicts page (an unknown QID's pill would dead-
+  // end). Best-effort + bounded; dump rows that already have depicts are left intact.
+  if (depictsByItem.size > 0) {
+    const uniq = [...new Set([...depictsByItem.values()].flat())].slice(0, COMMONS_SDC_DEPICTS_CAP);
+    const labelOf = new Map<string, string>();
+    try {
+      await mapPool(uniq, 8, async (qid) => {
+        const ent = await fetchSubjectEntity(qid).catch(() => null);
+        if (ent?.labelEn) labelOf.set(qid, ent.labelEn);
+      });
+    } catch { /* shards unavailable → items just keep no depicts pills */ }
+    for (const [it, qids] of depictsByItem) {
+      if (it.depicts?.length) continue; // don't override a dump row's own depicts
+      const keep = qids.filter((q) => labelOf.has(q));
+      if (keep.length) { it.depicts = keep; it.depictsLabels = keep.map((q) => labelOf.get(q)!); }
     }
-  } catch { /* best-effort: leave items unenriched */ }
+  }
 }
 
 // ─── Universal artist-entity linking ──────────────────────────────────────────

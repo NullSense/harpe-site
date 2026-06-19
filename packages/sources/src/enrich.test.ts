@@ -12,7 +12,7 @@ vi.mock('./helpers.js', async (orig) => ({
   timedFetch: timedFetchMock,
 }));
 
-import { enrichCommonsWikidataIds } from './adapters.js';
+import { enrichCommonsWikidataIds, _resetEntityBucketCache } from './adapters.js';
 
 function item(id: string, source = 'commons'): ArtItem {
   return {
@@ -26,17 +26,17 @@ const reply = (entities: unknown) => ({ ok: true, json: async () => ({ entities 
 
 // A realistic P6243 "digital representation of" statement (wikibase-entityid snak),
 // the shape `simplifyClaims` expects.
-const p6243 = (qid: string) => ({
-  P6243: [{
-    mainsnak: {
-      snaktype: 'value', property: 'P6243', datatype: 'wikibase-item',
-      datavalue: { type: 'wikibase-entityid', value: { 'entity-type': 'item', 'numeric-id': Number(qid.slice(1)), id: qid } },
-    },
-    type: 'statement', rank: 'normal',
-  }],
+const snak = (property: string, qid: string) => ({
+  mainsnak: {
+    snaktype: 'value', property, datatype: 'wikibase-item',
+    datavalue: { type: 'wikibase-entityid', value: { 'entity-type': 'item', 'numeric-id': Number(qid.slice(1)), id: qid } },
+  },
+  type: 'statement', rank: 'normal',
 });
+const p6243 = (qid: string) => ({ P6243: [snak('P6243', qid)] });
+const p180 = (...qids: string[]) => ({ P180: qids.map((q) => snak('P180', q)) });
 
-beforeEach(() => timedFetchMock.mockReset());
+beforeEach(() => { timedFetchMock.mockReset(); _resetEntityBucketCache(); });
 
 describe('enrichCommonsWikidataIds', () => {
   it('sets wikidataId from P6243 (digital representation of)', async () => {
@@ -77,5 +77,32 @@ describe('enrichCommonsWikidataIds', () => {
   it('never calls the API for non-Commons items', async () => {
     await enrichCommonsWikidataIds([item('wikiart-5', 'wikiart'), item('aic-9', 'aic')], sig());
     expect(timedFetchMock).not.toHaveBeenCalled();
+  });
+
+  it('adds depicts pills from SDC P180, labels resolved from our subject shards (known subjects only)', async () => {
+    // The SAME claims fetch carries P180; labels come from our depicts shards (no
+    // Wikidata call). Only subjects in our KG survive — their pill links to a real
+    // /api/depicts page; an unknown QID (Q999) is dropped rather than dead-ending.
+    timedFetchMock.mockImplementation((url: unknown) => {
+      const u = String(url);
+      if (u.includes('/data/depicts/')) {
+        return Promise.resolve({ ok: true, json: async () => ({ Q146: { qid: 'Q146', labelEn: 'cat', workCount: 3 } }) });
+      }
+      return Promise.resolve(reply({ M555: { statements: p180('Q146', 'Q999') } }));
+    });
+    const items = [item('commons-555')];
+    await enrichCommonsWikidataIds(items, sig());
+    expect(items[0].depicts).toEqual(['Q146']);        // Q999 not in our KG → dropped
+    expect(items[0].depictsLabels).toEqual(['cat']);
+  });
+
+  it('does not override depicts that a dump row already carries', async () => {
+    timedFetchMock.mockImplementation((url: unknown) =>
+      String(url).includes('/data/depicts/')
+        ? Promise.resolve({ ok: true, json: async () => ({ Q146: { qid: 'Q146', labelEn: 'cat', workCount: 1 } }) })
+        : Promise.resolve(reply({ M556: { statements: p180('Q146') } })));
+    const items = [{ ...item('commons-556'), depicts: ['Q42'], depictsLabels: ['answer'] }];
+    await enrichCommonsWikidataIds(items, sig());
+    expect(items[0].depicts).toEqual(['Q42']); // untouched
   });
 });
