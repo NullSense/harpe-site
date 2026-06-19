@@ -268,7 +268,7 @@ type Item = {
   date?: string; medium?: string; tags?: string[]; downloads?: unknown[];
   wikidataId?: string; artistId?: string; depicts?: string[]; clusterId?: number; movement?: string;
   // set at runtime by dedupe()
-  dupCount?: number; mergedSources?: string[];
+  dupCount?: number; mergedSources?: string[]; mergedIds?: string[];
   variants?: Array<{ source: string; date?: string; medium?: string }>;
 };
 const mk = (o: Partial<Item> & { id: string; source: string }): Item => o;
@@ -305,6 +305,25 @@ describe('dedupe', () => {
     expect(out).toHaveLength(1);
     expect(out[0].dupCount).toBe(2);
     expect(new Set(out[0].mergedSources)).toEqual(new Set(['commons', 'wikidata']));
+  });
+
+  it('records every folded id on the survivor (deep-link ?v= must survive a rep change)', () => {
+    // The shared link points at the wikidata id, but a larger Commons scan wins
+    // the representative slot → survivor.id is the Commons one. The wikidata id
+    // must still be matchable via mergedIds so the deep link reopens the card.
+    const out = dedupe([
+      mk({ id: 'wd-Q119007077', source: 'wikidata', title: 'School of Athens', artist: 'Mengs', fullUrl: 'https://commons.wikimedia.org/wiki/Special:FilePath/sa.jpg', wikidataId: 'Q119007077' }),
+      mk({ id: 'commons-22169893', source: 'commons', title: 'School of Athens', artist: 'Anton Raphael Mengs', fullUrl: 'https://upload.wikimedia.org/wikipedia/commons/5/5b/sa.jpg', wikidataId: 'Q119007077', width: 4000, height: 3000 }),
+    ]);
+    expect(out).toHaveLength(1);
+    expect(out[0].id).toBe('commons-22169893'); // larger image won the rep slot
+    expect(new Set(out[0].mergedIds)).toEqual(new Set(['wd-Q119007077', 'commons-22169893']));
+  });
+
+  it('leaves mergedIds undefined for a singleton (no merge happened)', () => {
+    const out = dedupe([mk({ id: 'solo-1', source: 'met', title: 'Unique Work', artist: 'Nobody', fullUrl: 'https://m/u.jpg' })]);
+    expect(out).toHaveLength(1);
+    expect(out[0].mergedIds).toBeUndefined();
   });
 
   it('collapses the same work from different museums (different scans) and merges metadata', () => {

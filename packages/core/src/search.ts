@@ -289,6 +289,11 @@ export interface Fusable {
   dupCount?: number;
   /** Set by `dedupe()`: the distinct source keys this merged item came from. */
   mergedSources?: string[];
+  /** Set by `dedupe()`: the ids of every record folded into this survivor
+   *  (including its own). Lets a deep link (`?v=<id>`) still resolve to this card
+   *  even when dedupe later picks a different representative — the survivor id can
+   *  change as more duplicate sources stream in, but the folded id stays matchable. */
+  mergedIds?: string[];
   /** Wikidata QID of the artwork (from the wikidata source or Commons Structured
    *  Data) — a language-independent identity that folds the same work across
    *  Commons + Wikidata regardless of title language. */
@@ -431,6 +436,8 @@ function mergeGroup<T extends Fusable>(members: T[]): T {
   }
   rep.dupCount = sources.size;
   rep.mergedSources = Array.from(sources);
+  // Every folded id stays matchable so deep links survive a representative change.
+  rep.mergedIds = members.map((m) => m.id).filter(Boolean);
   // Retain each source's catalogue record (best-quality first, matching `sorted`)
   // so the AI analysis sees every source's facts AND the UI can list the copies
   // ranked by quality with the representative first.

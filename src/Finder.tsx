@@ -98,6 +98,10 @@ interface ArtItem {
     description?: string; sourceUrl?: string; artworkType?: string; style?: string;
     tags?: string[]; inscriptions?: string; accessionNumber?: string;
   }>;
+  /** Ids of every record dedupe() folded into this survivor (its own included) —
+   *  lets a deep link (?v=<id>) resolve to this card even when dedupe picks a
+   *  different representative as more duplicate sources stream in. */
+  mergedIds?: string[];
   /** Present for zoomable/gigapixel images (DZI/Zoomify/IIIF) — drives OSD deep-zoom
    *  and our in-browser full-resolution tile-stitch download. */
   deepzoom?: DeepZoomDescriptor;
@@ -1438,7 +1442,12 @@ const Finder = forwardRef<FinderHandle>(function Finder(_props, ref) {
 
   // The active list for the shared detail viewer: scanned-page images or museum art.
   const detailItems = mode === 'scan' ? scanAsArt : visibleArt;
-  const detailIndex = detailId ? detailItems.findIndex((it) => it.id === detailId) : -1;
+  // Match the survivor card directly OR any id dedupe() folded into it — a shared
+  // ?v=<id> link must still open even when dedupe later elects a different
+  // representative (more duplicate sources stream in → the survivor id changes).
+  const detailIndex = detailId
+    ? detailItems.findIndex((it) => it.id === detailId || it.mergedIds?.includes(detailId))
+    : -1;
   const openDetailAt = useCallback((i: number) => setDetailId(detailItems[i]?.id ?? null), [detailItems]);
 
   // Open a detected gigapixel image in our deep-zoom viewer (from a scanned page).
@@ -1507,7 +1516,7 @@ const Finder = forwardRef<FinderHandle>(function Finder(_props, ref) {
       if (viewId) {
         params.set('v', viewId);
         if (rich) {
-          const it = detailItems.find((i) => i.id === viewId);
+          const it = detailItems.find((i) => i.id === viewId || i.mergedIds?.includes(viewId));
           if (it) {
             params.set('t', it.title);
             // Bigger source = sharper card; middleware caps it to a ~1200px JPEG.

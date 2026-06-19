@@ -96,6 +96,10 @@ export interface ArtItem {
    *  per-source catalogue records that were collapsed — so the AI analysis can
    *  still draw on EVERY source's facts/descriptions even after de-duplication. */
   variants?: SourceVariant[];
+  /** Ids of every record dedupe() folded into this survivor (its own included).
+   *  Keeps a deep link (`?v=<id>`) resolvable even after the chosen representative
+   *  changes — the surviving card may carry a different id than the shared one. */
+  mergedIds?: string[];
 }
 
 /** A knowledge-graph artist node (Wikidata-backed), served as a static JSON file
