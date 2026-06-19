@@ -3,7 +3,7 @@
   "framework": "vite",
   "functions": {
     "api/[...path].ts": {
-      "maxDuration": 30
+      "maxDuration": 60
     }
   },
   "headers": [
