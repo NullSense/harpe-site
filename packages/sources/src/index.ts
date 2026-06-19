@@ -18,6 +18,6 @@ export {
   fetchAic, fetchMet, fetchCleveland, fetchCommons, fetchWikiArt, fetchVam,
   fetchWellcome, fetchSmk, fetchNasjonalmuseet, fetchDigitalNZ, fetchWikidata,
   fetchLoc, fetchEuropeana, fetchHarvard, fetchSmithsonian, fetchParisMusees,
-  fetchDumpSource, fetchDumpSearch, fetchNypl, dumpDatasetEnv, dumpDatasetFor, h2Agent,
+  fetchDumpSource, fetchDumpSearch, fetchDumpPage, fetchNypl, dumpDatasetEnv, dumpDatasetFor, h2Agent,
   fetchArtistEntity, fetchArtistWorkIds, fetchSubjectEntity,
 } from './adapters.js';

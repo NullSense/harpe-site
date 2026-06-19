@@ -7,7 +7,7 @@ import dispatch, { opFromRequest } from '../../../../api/[...path].js';
 // broken dispatch is caught before it 404s a whole endpoint in prod.
 
 const EXPECTED = [
-  'analyze', 'art', 'art-stream', 'artist', 'depicts', 'deepzoom', 'fetch',
+  'analyze', 'art', 'art-page', 'art-stream', 'artist', 'depicts', 'deepzoom', 'fetch',
   'grab', 'iiif', 'preview', 'sauce', 'scan', 'stats', 'tile', 'x',
 ];
 

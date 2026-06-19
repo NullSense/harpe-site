@@ -8,6 +8,7 @@
 import type { VercelRequest, VercelResponse } from '../vercel.js';
 import analyze from './analyze.js';
 import art from './art.js';
+import artPage from './art-page.js';
 import artStream from './art-stream.js';
 import artist from './artist.js';
 import depicts from './depicts.js';
@@ -27,6 +28,7 @@ export type Handler = (req: VercelRequest, res: VercelResponse) => unknown | Pro
 export const handlers: Record<string, Handler> = {
   analyze,
   art,
+  'art-page': artPage,
   'art-stream': artStream,
   artist,
   depicts,

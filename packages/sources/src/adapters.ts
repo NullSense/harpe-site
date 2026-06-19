@@ -1752,6 +1752,20 @@ export async function fetchDumpSource(source: DumpSourceKey, q: string): Promise
   }
 }
 
+/** A deeper page of dump results for infinite scroll. `page` is 0-based; each page
+ *  is DUMP_PER_SOURCE rows/source (offset = page × DUMP_PER_SOURCE), pooled across
+ *  all dump sources. `hasMore` = at least one source still has rows beyond this
+ *  page; `total` = summed match counts (HF num_rows_total) across sources.
+ *  CONTRACT STUB — implemented by the pagination work (do not change the signature). */
+export async function fetchDumpPage(
+  dataset: string,
+  q: string,
+  page: number,
+): Promise<{ items: ArtItem[]; hasMore: boolean; total: number }> {
+  void dataset; void q; void page;
+  return { items: [], hasMore: false, total: 0 };
+}
+
 // ─── Knowledge-graph entity files (static JSON on the HF CDN) ──────────────────
 // The HF datasets-server /filter WHERE API is broken (HTTP 422), so entity lookup
 // uses pre-baked static JSON files served by the HF resolve CDN — a plain HTTPS
