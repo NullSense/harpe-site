@@ -8,9 +8,8 @@
  * summed HF match counts) so the client can drive infinite scroll and show a count.
  *
  * Response: { items: ArtItem[], page: number, hasMore: boolean, total: number }
- *
- * CONTRACT STUB — body implemented by the pagination work. The request/response
- * shape here is the fixed contract the client codes against; do not change it.
+ * This response shape is the fixed contract the client (lib/artPage.ts) codes
+ * against — keep it stable.
  */
 
 import type { VercelRequest, VercelResponse } from '../vercel.js';
