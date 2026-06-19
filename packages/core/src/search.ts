@@ -263,6 +263,9 @@ function stripRawTitleNoise(title: string): string {
   return title
     .replace(TITLE_QUALIFIER_PARENS, ' ')
     .replace(TITLE_PROGRAMME_SUFFIX, ' ')
+    // Commons "Title, YEAR, medium, dimensions, location" metadata tail — once a
+    // ", 1826"-style year appears, the rest is catalogue data, not the work title.
+    .replace(/,\s*\d{3,4}\b.*$/s, ' ')
     // keyword accession codes: "inv. 1234", "no. 5", "acc. 1990.1"
     .replace(/[\s,;]+(?:inv\.?|no\.?|nr\.?|acc\.?|cat\.?)\s*[A-Za-z0-9.\-/]+\s*$/g, ' ')
     // bare uppercase museum codes at the end: 1–3 ALL-CAPS tokens then a number
@@ -277,8 +280,9 @@ function stripRawTitleNoise(title: string): string {
 function stripArtistPrefix(title: string, artist?: string): string {
   const at = new Set(tokenize(artist || ''));
   if (!at.size) return title;
-  // separator forms: " - ", " – ", " — ", ": ", " | " between artist and title.
-  const m = /^(.*?)\s*[-–—:|]\s+(.+)$/.exec(title.trim());
+  // separator forms: " - ", " – ", " — ", ": ", " | ", ", " between artist and title
+  // (Commons uses both "Creator - Title" and "Creator, Title, year, …").
+  const m = /^(.*?)\s*[-–—:|,]\s+(.+)$/.exec(title.trim());
   if (!m) return title;
   const pt = tokenize(m[1]);
   // Drop the leading segment only when it IS the artist (every prefix token is an

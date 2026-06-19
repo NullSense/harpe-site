@@ -414,6 +414,18 @@ describe('dedupe', () => {
     expect(out[0].dupCount).toBe(2);
   });
 
+  it('folds a Commons "Artist, Title, year, medium" record onto the bare work', () => {
+    // The exact John Martin case: "John Martin - Belshazzar's Feast - Google Art
+    // Project" (one Commons upload) vs "John Martin, Belshazzar's Feast, 1826, oil
+    // on canvas" (another) — comma separator + trailing date/medium catalogue tail.
+    const out = dedupe([
+      mk({ id: 'commons-a', source: 'commons', title: "John Martin - Belshazzar's Feast - Google Art Project", artist: 'John Martin', fullUrl: 'https://upload.wikimedia.org/wikipedia/commons/1/1a/jm_gap.jpg', width: 4000, height: 2800 }),
+      mk({ id: 'commons-b', source: 'commons', title: "John Martin, Belshazzar's Feast, 1826, oil on canvas, 90 x 130 cm", artist: 'John Martin', fullUrl: 'https://upload.wikimedia.org/wikipedia/commons/2/2b/jm_1826.jpg', width: 3000, height: 2100 }),
+    ]);
+    expect(out).toHaveLength(1);
+    expect(out[0].dupCount).toBe(1); // same source (commons) → 1 distinct source, but folded to one card
+  });
+
   it('does NOT strip a leading word that merely looks like a name (no false merge)', () => {
     // "Vincent's Bedroom" must not be treated as "Vincent" + "- s Bedroom"; and two
     // unrelated works sharing a first word stay separate.

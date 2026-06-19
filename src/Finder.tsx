@@ -523,9 +523,13 @@ function ArtDetail({
   // OpenSeadragon for tiled (IIIF/DZI/Zoomify) AND plain images; <img> fallback.
   const osdRef = useRef<HTMLDivElement>(null);
   const [osdFailed, setOsdFailed] = useState(false);
+  // false until OSD's image/tiles have actually opened — drives the preview-
+  // placeholder fade so the viewer shows the cached thumbnail instantly.
+  const [osdReady, setOsdReady] = useState(false);
   const useOsd = open && !active?.video && (tiled || !!plainSrc) && !osdFailed;
   const dzKey = dz ? `${dz.protocol}:${dz.base}` : '';
   useEffect(() => { setOsdFailed(false); }, [index]);
+  useEffect(() => { setOsdReady(false); }, [index, pickIdx]); // re-show placeholder on nav/copy switch
   useEffect(() => {
     if (!useOsd) return;
     let viewer: { destroy: () => void; addHandler: (e: string, f: () => void) => void; world: { getItemAt: (i: number) => { getContentSize: () => { x: number; y: number } } | undefined } } | undefined;
@@ -574,6 +578,7 @@ function ArtDetail({
           animationTime: 0.4,
         });
         viewer!.addHandler('open', () => {
+          setOsdReady(true); // full image/tiles are up → fade the preview placeholder
           const t = viewer!.world.getItemAt(0);
           if (t) { const s = t.getContentSize(); setNat({ w: Math.round(s.x), h: Math.round(s.y) }); }
         });
@@ -725,7 +730,24 @@ function ArtDetail({
         ) : useOsd ? (
           // h-full w-full (not just inset-0): OSD forces position:relative on its
           // host, which would void inset-0 and collapse the container to 0×0.
-          <div ref={osdRef} className="absolute inset-0 h-full w-full" />
+          // Progressive load: the grid's preview is already in cache, so we paint it
+          // INSTANTLY behind the OSD canvas (object-contain, matching OSD's framing)
+          // and fade it out once OSD's full-res/tiled image has actually opened — no
+          // more staring at a blank stage while a gigapixel original downloads.
+          <>
+            {shownPreview && (
+              <img
+                src={displaySrc(shownPreview)}
+                alt=""
+                aria-hidden
+                className={
+                  'pointer-events-none absolute inset-0 h-full w-full select-none object-contain transition-opacity duration-300 ' +
+                  (osdReady ? 'opacity-0' : 'opacity-100')
+                }
+              />
+            )}
+            <div ref={osdRef} className="absolute inset-0 h-full w-full" />
+          </>
         ) : (
           <img
             ref={imgRef}
