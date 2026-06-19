@@ -728,3 +728,95 @@ No new state management library. No new CSS framework. Pattern identical to `src
 - depicts post-filter precision: the \bQxxx\b regex guard prevents substring collisions within the space-separated depicts_qids string. However HF /search BM25 on a bare QID token may return works that mention the QID in other fields (e.g. source_url contains the QID). The post-filter on it.depicts?.some(d => qidRe.test(d)) catches this because depicts is derived only from depicts_qids at deserialization. Confirmed safe by the field-level filter.
 - Phase 3 thumbnail download feasibility: 1.4M thumbnails at 400px average ~10KB = ~14GB download. At 10 Mbps that is ~3 hours. If HF or museum CDNs throttle the download, the checkpoint file allows resuming. The --cluster flag makes this opt-in and not a blocker for Phases 1 or 2.
 - ArtGraph JW threshold false positives (Phase 4 only): the 0.88 threshold was validated on museum API strings. ArtGraph names come from a different scraping pipeline with different normalization. Until a sample of 50+ matched pairs is manually reviewed and the false-positive rate measured, Phase 4 should not ship. This is explicitly documented as a Phase 4 validation gate.
+
+---
+
+# Addendum (2026-06-19) — Non-patchy redesign: index-time reconciliation + resilience
+
+Written after a run of production incidents (504 timeouts, "all dump sources
+failed", an artist page showing "161 works" with an empty grid, and individual
+works like `commons-16665041` never getting KG tags). Each was hot-fixed; this
+addendum captures the **research-backed general approach** so we stop patching
+symptom-by-symptom. Backed by a literature pass (Exa, 2026-06-19): Science Museum
+Group **Heritage Connector**, Yale **project-lux/data-pipeline**, **PHAROS/Zeri**
+artwork reconciliation, **OpenRefine↔Wikidata** reconciliation, and federated-
+search resilience writing (Splunk, scalingsearch.ai, SWIRL, AWS serverless router).
+
+## What the literature says (and where we diverge)
+
+1. **Index-time merging beats search-time merging for a KNOWN corpus.** Every
+   reference pipeline (project-lux: Harvest→Map→Reconcile→Merge→Reidentify;
+   Heritage Connector: build KG → Record-Linkage to Wikidata) reconciles + dedupes
+   **offline into one unified graph**, then serves from it. We currently do the
+   opposite for the dump: 13 per-request HF `/filter` calls + **runtime** title
+   matching (`stripArtistPrefix`, programme-suffix, comma, year-tail …). That
+   runtime title-rule pile is the "patchy" symptom — it can never be complete and
+   it taxes every query. The dump is static between ingests; it should be ONE
+   pre-reconciled index.
+
+2. **Reconcile on AUTHORITY IDs first, titles last.** PHAROS/Zeri reconcile via
+   `owl:sameAs`/`dct:replacedBy` link-sets across ULAN, LoC, VIAF, GND, Wikidata —
+   expanded transitively and consistency-checked (they found ~27% of cross-authority
+   sameAs links *disagree*, so blind transitivity is unsafe — verify). OpenRefine
+   matches on a unique identifier first, fuzzy name only as fallback. We reconcile
+   almost entirely on normalized title+artist, the weakest signal and the reason for
+   the accumulating patches. **Our dump rows don't even carry ULAN/LoC columns
+   today** (`source/id/title/artist/.../wikidata_qid/artist_qid/depicts_qids/...`) —
+   capturing authority IDs at harvest is the single highest-leverage data change.
+
+3. **Federated resilience = partial results + timeout isolation + cache the static
+   tier.** "The slowest API drives the wait"; cap fan-out; dedupe + RRF; cache only
+   public docs. We already do partial results + per-source breaker; the 2026-06-19
+   fixes added bounded dump latency (one wave, 8s×2) and complete-only 6h caching.
+
+## Target architecture (what "done" looks like)
+
+```
+INGEST (offline, per re-ingest — the only place matching lives)
+  harvest each source  ──▶  capture authority IDs (ULAN, LoC, accession, any
+                            source-provided Wikidata link) ALONGSIDE title/artist
+        │
+        ▼
+  RECONCILE each work → canonical Wikidata QID, in priority order:
+     1. source-provided Wikidata link / Commons SDC P6243   (exact)
+     2. authority-ID match (ULAN+title, accession)           (exact-ish)
+     3. alias→QID index (title-variant + artist_qid)         (current work_index)
+     4. leave unresolved (no false merge)                    (safe default)
+        │
+        ▼
+  CLUSTER + assign canonical_id (QID, else a stable cluster id); store as a COLUMN.
+  Dedup becomes a GROUP BY canonical_id at ingest, not a runtime union-find.
+        │
+        ▼
+  PUBLISH the pre-unified, pre-enriched index (+ entity layer, already built).
+
+RUNTIME (thin)
+  query the unified index (fewer, broader calls — not 13 title-rule passes)
+  ⊕ live APIs (Commons/V&A/WikiArt) — the ONLY true runtime variability
+  → dedup live results against the canonical index by QID/authority-id (cheap)
+  → rank (RRF, unchanged). No runtime title-rule pile.
+```
+
+Net effect: the runtime stops guessing identity from titles; identity is a column
+decided once, offline, on the strongest available signal. New coverage gaps
+(another `commons-16665041`) are fixed by improving the *ingest reconciler* (one
+place, testable on the full corpus), not by adding another runtime `.replace()`.
+
+## Phased migration (incremental, each shippable; ✅ = done 2026-06-19)
+
+- **Phase R0 — Reliability & caching (✅ shipped).** Bounded dump policy (no 504),
+  all-sources-in-one-wave, complete-only 6h KV cache, live KG smoke test.
+- **Phase R1 — Capture authority IDs at harvest.** Add `ulan_id`, `accession`,
+  `source_wikidata` columns where the source API provides them (Met, AIC, V&A,
+  Wikidata all do). Additive ingest change; no runtime change. *Needs a re-ingest.*
+- **Phase R2 — Reconcile dump works to `canonical_id` at INGEST.** Move work-QID
+  resolution offline (signals 1→4); store `canonical_id`; runtime dedup keys on it;
+  the runtime title-rule helpers shrink to the live-API surface only. *Re-ingest.*
+- **Phase R3 — Collapse Wikidata's own duplicates** (Great-Wave/impression case)
+  via `P460`/`P461` "same as", consistency-checked à la PHAROS, so multi-impression
+  prints get ONE canonical_id instead of being dropped as ambiguous.
+- **Phase R4 — Thin the runtime fan-out.** Re-measure one broader index query vs 13
+  per-source `/filter` now that the index is pre-unified. Keep partial + breaker.
+
+R1+R2 retire the runtime title-patch pile — the core "we keep patching" concern.
+They are the next re-ingest's payload; R0 already shipped.
