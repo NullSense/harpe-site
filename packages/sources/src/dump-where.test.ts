@@ -20,6 +20,17 @@ describe('dumpWhere', () => {
     expect(w).toContain(`"title" ILIKE '%great red dragon%'`);
     expect(w).toContain(`"depicts_labels" ILIKE '%great red dragon%'`);
   });
+  it('matches depicts_qids for a bare QID query (subject pages — /api/depicts)', () => {
+    // Regression: /api/depicts?qid=Q7226 ("Joan of Arc") must hit the depicts_QIDS
+    // column. Before this, only depicts_labels was searched (human labels, never a
+    // QID) → every subject page returned 0 works despite a positive workCount.
+    const w = dumpWhere('wikidata', 'Q7226')!;
+    expect(w).toContain(`"depicts_qids" ILIKE '%q7226%'`);
+  });
+  it('does NOT add a depicts_qids clause for a normal text query', () => {
+    const w = dumpWhere('met', 'Joan of Arc')!;
+    expect(w).not.toContain('"depicts_qids"'); // only for bare QIDs
+  });
   it('returns null for an all-wildcard query (no match-all scan)', () => {
     expect(dumpWhere('met', '%%')).toBeNull();
     expect(dumpWhere('met', '% _')).toBeNull();

@@ -496,7 +496,14 @@ export async function fetchCommons(q: string, signal?: AbortSignal): Promise<Art
 // wbgetentities URLs (incl. the >50-id batching) and simplifies the claims, so we
 // don't hand-parse Wikibase's snak format; an in-instance cache spares repeats.
 const _wbkCommons = WBK({ instance: 'https://commons.wikimedia.org' }); // Commons MediaInfo Wikibase
-const _sdcCache = new Map<string, string | null>(); // pageid → QID | null (resolved miss)
+// pageid → { wd: artwork QID (P6243), creator: artist QID (P170) } | null (resolved miss).
+type SdcFacts = { wd: string | null; creator: string | null };
+const _sdcCache = new Map<string, SdcFacts | null>();
+const _validQid = (q: unknown): string | null => (typeof q === 'string' && /^Q\d+$/.test(q) ? q : null);
+function _applySdc(it: ArtItem, f: SdcFacts): void {
+  if (f.wd && !it.wikidataId) it.wikidataId = f.wd;
+  if (f.creator && !it.artistId) it.artistId = f.creator; // gives bare Commons files an artist link
+}
 
 export async function enrichCommonsWikidataIds(items: ArtItem[], signal: AbortSignal): Promise<void> {
   const need = new Map<string, ArtItem>(); // uncached pageid → item
@@ -504,7 +511,7 @@ export async function enrichCommonsWikidataIds(items: ArtItem[], signal: AbortSi
     const m = /^commons-(\d+)$/.exec(it.id);
     if (!m) continue;
     const cached = _sdcCache.get(m[1]);
-    if (cached !== undefined) { if (cached) it.wikidataId = cached; continue; }
+    if (cached !== undefined) { if (cached) _applySdc(it, cached); continue; }
     need.set(m[1], it);
   }
   if (need.size === 0) return;
@@ -519,11 +526,16 @@ export async function enrichCommonsWikidataIds(items: ArtItem[], signal: AbortSi
         const pid = mid.slice(1); // strip the leading "M"
         // MediaInfo exposes statements under `statements` (older API: `claims`).
         const claims = (ent.statements ?? ent.claims) as Parameters<typeof simplifyClaims>[0];
-        // P6243 "digital representation of" → the depicted artwork's QID.
-        const qid = claims ? (simplifyClaims(claims).P6243?.[0] as string | undefined) : undefined;
-        const valid = typeof qid === 'string' && /^Q\d+$/.test(qid) ? qid : null;
-        _sdcCache.set(pid, valid);
-        if (valid) { const it = need.get(pid); if (it) it.wikidataId = valid; }
+        const c = claims ? simplifyClaims(claims) : {};
+        // P6243 "digital representation of" → the artwork QID; P170 → the creator QID.
+        // Both ride the SAME fetch — no extra request to give the file an artist link.
+        const facts: SdcFacts = {
+          wd: _validQid((c.P6243 as unknown[] | undefined)?.[0]),
+          creator: _validQid((c.P170 as unknown[] | undefined)?.[0]),
+        };
+        _sdcCache.set(pid, facts.wd || facts.creator ? facts : null);
+        const it = need.get(pid);
+        if (it) _applySdc(it, facts);
       }
     }
   } catch { /* best-effort: leave items unenriched */ }
@@ -1702,7 +1714,13 @@ export function dumpWhere(source: string, q: string): string | null {
   const effective = toks.length ? toks : (fq.length >= 2 ? [fq] : null);
   if (!effective) return null;
   const artist = effective.map((t) => `"artist" ILIKE '%${_sqlEsc(t)}%'`).join(' AND ');
-  return `"source"='${_sqlEsc(source)}' AND ((${artist}) OR "title" ILIKE '%${_sqlEsc(fq)}%' OR "depicts_labels" ILIKE '%${_sqlEsc(fq)}%')`;
+  // A bare QID query (e.g. /api/depicts?qid=Q7226 "Joan of Arc") must match the
+  // depicts_QIDS column — depicts_labels holds human labels, never QIDs, so without
+  // this every subject page returned 0 works despite a positive workCount. The
+  // handler exact-matches it.depicts.includes(qid) afterward, so a substring ILIKE
+  // false-positive (Q7226 ⊂ Q72260) is filtered out — this is a coarse prefilter.
+  const depictsQid = /^Q\d+$/i.test(fq) ? ` OR "depicts_qids" ILIKE '%${_sqlEsc(fq)}%'` : '';
+  return `"source"='${_sqlEsc(source)}' AND ((${artist}) OR "title" ILIKE '%${_sqlEsc(fq)}%' OR "depicts_labels" ILIKE '%${_sqlEsc(fq)}%'${depictsQid})`;
 }
 
 async function dumpFilterRows(
