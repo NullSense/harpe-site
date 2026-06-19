@@ -13,7 +13,7 @@ import { normalize } from '@harpe/core';
 import type { ArtItem, Download, ArtistEntity, SubjectEntity } from '@harpe/core';
 import {
   str, num, fmtFromMime, fmtFromUrl, first, timedFetch, iiifImage, IIIF,
-  LOSSLESS_FORMATS, MAX_ITEMS, mapPool, UA, deadline,
+  LOSSLESS_FORMATS, mapPool, UA, deadline,
 } from './helpers.js';
 import { dumpHttpPolicy, isBrokenCircuitError } from './resilience.js';
 
@@ -1616,7 +1616,9 @@ export function fetchDumpSearch(dataset: string, q: string): Promise<ArtItem[]> 
 // HF /filter (ILIKE), not one shared /search — a single BM25 /search let the text-
 // rich Wikidata rows monopolise all 100 slots (97% even at offset 400), starving
 // every museum source to 0 results. Per-source querying guarantees diversity.
-const DUMP_PER_SOURCE = Number(process.env.HARPE_DUMP_PER_SOURCE) || 30;
+// 100 = HF /filter's max rows-per-request (free, no billing). Going beyond needs
+// offset pagination (the infinite-scroll "load more" feature). Tunable via env.
+const DUMP_PER_SOURCE = Math.min(100, Number(process.env.HARPE_DUMP_PER_SOURCE) || 100);
 
 // Single in-flight probe for the notability column (nb_sitelinks, added by the
 // ingest enrichment pass) so we can ORDER BY fame. A shared Promise collapses all
@@ -1739,7 +1741,9 @@ export async function fetchDumpSource(source: DumpSourceKey, q: string): Promise
   if (!dataset) return [];
   try {
     const all = await fetchDumpSearch(dataset, q);
-    return all.filter((it) => it.source === source).slice(0, MAX_ITEMS);
+    // Dump sources are pre-capped to DUMP_PER_SOURCE by the /filter length; don't
+    // re-clamp to the smaller live-API MAX_ITEMS or we'd throw away dump depth.
+    return all.filter((it) => it.source === source).slice(0, DUMP_PER_SOURCE);
   } catch (e) {
     // HF /search breaker open (or its retries exhausted): degrade quietly to no
     // dump results for this query rather than erroring all 9 dump sources.
