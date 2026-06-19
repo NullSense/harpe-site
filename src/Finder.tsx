@@ -1025,6 +1025,9 @@ const Finder = forwardRef<FinderHandle>(function Finder(_props, ref) {
   const [dumpTotal, setDumpTotal] = useState<number | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
   const loadMoreAbortRef = useRef<AbortController | null>(null);
+  // Synchronous in-flight guard: React state is async, so two sentinel fires in the
+  // same tick both see loadingMore=false and double-fetch. A ref flips immediately.
+  const loadingMoreRef = useRef(false);
 
   // shared lightbox (index into the currently-visible list)
   // The open detail is tracked by item ID (not index) so streaming re-ordering
@@ -1188,6 +1191,10 @@ const Finder = forwardRef<FinderHandle>(function Finder(_props, ref) {
         }
         if (candidates.length === 0) { setMode('empty'); return; }
         setImages(candidates.map((c) => ({ ...c, naturalWidth: -1, loaded: false })));
+        // Scanned-page mode is not dump-paginated → disable load-more so the sentinel
+        // doesn't render/fire here after a prior art search.
+        loadMoreAbortRef.current?.abort(); loadMoreAbortRef.current = null; loadingMoreRef.current = false;
+        setDumpHasMore(false); setDumpTotal(null); setDumpPage(1); setLoadingMore(false);
         setMode('scan');
       } catch (e) {
         setError(e instanceof Error ? e.message : 'Network error'); setMode('error');
@@ -1268,6 +1275,10 @@ const Finder = forwardRef<FinderHandle>(function Finder(_props, ref) {
     setDetailId(null); setWarnings([]); setArtItems([]); setEntity(null);
     setSourceFilter(new Set()); setMediumFilter(new Set()); setPdOnly(false);
     setLosslessOnly(false); setMinRes(0); setYearMin(''); setYearMax(''); setShown(SHOWN_STEP);
+    // Artist pages are a fixed work set (not dump-paginated) → disable load-more
+    // and cancel any in-flight page fetch so a stale sentinel can't fire here.
+    loadMoreAbortRef.current?.abort(); loadMoreAbortRef.current = null; loadingMoreRef.current = false;
+    setDumpPage(1); setDumpHasMore(false); setDumpTotal(null); setLoadingMore(false);
     setMode('loading'); setError('');
     try {
       const res = await fetch(`/api/artist?qid=${encodeURIComponent(qid)}`);
@@ -1289,6 +1300,9 @@ const Finder = forwardRef<FinderHandle>(function Finder(_props, ref) {
     setDetailId(null); setWarnings([]); setArtItems([]); setEntity(null);
     setSourceFilter(new Set()); setMediumFilter(new Set()); setPdOnly(false);
     setLosslessOnly(false); setMinRes(0); setYearMin(''); setYearMax(''); setShown(SHOWN_STEP);
+    // Subject pages are a fixed work set (not dump-paginated) → disable load-more.
+    loadMoreAbortRef.current?.abort(); loadMoreAbortRef.current = null; loadingMoreRef.current = false;
+    setDumpPage(1); setDumpHasMore(false); setDumpTotal(null); setLoadingMore(false);
     setMode('loading'); setError('');
     try {
       const res = await fetch(`/api/depicts?qid=${encodeURIComponent(qid)}`);
@@ -1607,7 +1621,11 @@ const Finder = forwardRef<FinderHandle>(function Finder(_props, ref) {
   // Fetch the next dump page and append deduplicated, re-ranked items.
   // Only active in art mode; scan mode has no dump backing.
   const loadMoreDump = useCallback(async () => {
-    if (loadingMore || !dumpHasMore || mode !== 'art') return;
+    // Don't paginate while the page-0 SSE is still streaming — onBatch wholesale-
+    // replaces artItems with its accumulator, which would clobber appended pages.
+    // The synchronous ref guard prevents a same-tick double-fire (state is async).
+    if (loadingMoreRef.current || streaming || !dumpHasMore || mode !== 'art') return;
+    loadingMoreRef.current = true;
     setLoadingMore(true);
     const ctrl = new AbortController();
     loadMoreAbortRef.current = ctrl;
@@ -1615,11 +1633,12 @@ const Finder = forwardRef<FinderHandle>(function Finder(_props, ref) {
       const resp = await fetchArtPage(query, dumpPage, ctrl.signal);
       if (ctrl.signal.aborted) return;
       const fresh = resp.items.map(normalizeArt);
+      // The server already ranked + capped this page; just dedupe by id and APPEND
+      // (no global re-rank of the cumulative array → avoids O(n²) growth per page).
       setArtItems((prev) => {
         const seen = new Set(prev.map((it) => it.id));
         const deduped = fresh.filter((it) => !seen.has(it.id));
-        if (deduped.length === 0) return prev;
-        return rankArt([...prev, ...deduped], query);
+        return deduped.length ? [...prev, ...deduped] : prev;
       });
       setDumpPage((p) => p + 1);
       setDumpHasMore(resp.hasMore);
@@ -1632,10 +1651,11 @@ const Finder = forwardRef<FinderHandle>(function Finder(_props, ref) {
         setDumpHasMore(false);
       }
     } finally {
+      loadingMoreRef.current = false;
       setLoadingMore(false);
       if (loadMoreAbortRef.current === ctrl) loadMoreAbortRef.current = null;
     }
-  }, [loadingMore, dumpHasMore, mode, query, dumpPage]);
+  }, [streaming, dumpHasMore, mode, query, dumpPage]);
 
   // Infinite scroll: reveal more cards as the sentinel nears the viewport.
   // When the locally-loaded pool is exhausted and the server has more dump

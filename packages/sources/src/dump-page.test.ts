@@ -23,7 +23,7 @@ vi.mock('./resilience.js', async (orig) => {
   };
 });
 
-import { fetchDumpPage, DUMP_SOURCE_LABELS } from './adapters.js';
+import { fetchDumpPage, DUMP_SOURCE_LABELS, _resetDumpPageCache } from './adapters.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -57,6 +57,7 @@ const DUMP_PER_SOURCE = 100; // matches the constant in adapters.ts
 
 beforeEach(() => {
   timedFetchMock.mockReset();
+  _resetDumpPageCache(); // fetchDumpPage is cached — clear so each case fetches fresh
   // name_to_qid.json fetch — mocked to empty so loadNameToQid resolves quickly.
   timedFetchMock.mockResolvedValue({ ok: false, status: 404, json: async () => ({}) });
 });

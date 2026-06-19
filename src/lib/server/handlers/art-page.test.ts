@@ -12,7 +12,6 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // Mock @harpe/sources before any imports so the handler gets the stub.
 vi.mock('@harpe/sources', () => ({
   fetchDumpPage: vi.fn(),
-  dumpDatasetFor: vi.fn(),
 }));
 
 // Mock @harpe/core: rankResults passes items through unchanged so tests can
@@ -36,14 +35,13 @@ vi.mock('../guard.js', () => ({
 }));
 
 import handler from './art-page.js';
-import { fetchDumpPage, dumpDatasetFor } from '@harpe/sources';
+import { fetchDumpPage } from '@harpe/sources';
 import { rankResults } from '@harpe/core';
 import { rateLimit, GuardError } from '../guard.js';
 
 // ─── Typed mock helpers ───────────────────────────────────────────────────────
 
 const mFetchDumpPage = vi.mocked(fetchDumpPage);
-const mDumpDatasetFor = vi.mocked(dumpDatasetFor);
 const mRateLimit = vi.mocked(rateLimit);
 const mRankResults = vi.mocked(rankResults);
 
@@ -97,11 +95,10 @@ const fakeItem = (id = 'wikidata-1') => ({
 
 beforeEach(() => {
   mFetchDumpPage.mockReset();
-  mDumpDatasetFor.mockReset();
   mRateLimit.mockResolvedValue(undefined);
   mRankResults.mockImplementation((items) => items as never);
-  // Default: a valid dataset is configured.
-  mDumpDatasetFor.mockReturnValue('NullSense/harpe-art');
+  // Default: a valid dataset is configured (handler reads process.env directly).
+  process.env.HARPE_DUMP_DATASET = 'NullSense/harpe-art';
 });
 
 // ─── Method guard ─────────────────────────────────────────────────────────────
@@ -183,10 +180,10 @@ describe('art-page handler — page clamping', () => {
     expect((r._body as { page: number }).page).toBe(1);
   });
 
-  it('clamps page>50 to 1', async () => {
+  it('clamps page>50 to 50 (nearest valid, not the wrong page 1)', async () => {
     const r = makeRes();
     await handler(makeReq('monet', '51'), r as never);
-    expect((r._body as { page: number }).page).toBe(1);
+    expect((r._body as { page: number }).page).toBe(50);
   });
 
   it('clamps page=50 boundary: page 50 is valid and passes through', async () => {
@@ -226,8 +223,7 @@ describe('art-page handler — page clamping', () => {
 
 describe('art-page handler — empty dataset env', () => {
   beforeEach(() => {
-    // Simulate HARPE_DUMP_DATASET not set — dumpDatasetFor returns ''
-    mDumpDatasetFor.mockReturnValue('');
+    delete process.env.HARPE_DUMP_DATASET; // simulate no dump dataset configured
   });
 
   it('returns 200 with empty items when no dataset is configured', async () => {

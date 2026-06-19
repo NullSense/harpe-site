@@ -1536,6 +1536,14 @@ type DumpSourceKey = keyof typeof DUMP_SOURCE_LABELS;
 // /search for the same query (3× the slow upstream call). One fetch returns all
 // dump-backed rows; each source filters its own out of the shared result.
 const dumpSearchCache = new Map<string, Promise<ArtItem[]>>();
+// Per-(dataset,query,page) cache for the infinite-scroll pages — a CDN miss would
+// otherwise fire 13 concurrent HF /filter calls; this coalesces + survives across
+// instances via Upstash, same two-tier pattern as dumpSearchCache.
+type DumpPage = { items: ArtItem[]; hasMore: boolean; total: number };
+const dumpPageCache = new Map<string, Promise<DumpPage>>();
+
+/** Test-only: clear the in-memory dump-page cache so each case fetches fresh. */
+export function _resetDumpPageCache(): void { dumpPageCache.clear(); }
 
 // Upstash KV cache for dump search results. Shares the same env vars as the rate
 // limiter / analyze cache so no extra configuration is needed. Falls back to the
@@ -1626,11 +1634,17 @@ const DUMP_PER_SOURCE = Math.min(100, Number(process.env.HARPE_DUMP_PER_SOURCE) 
 // Reset to null on a network error (vs a genuine 422) so a transient blip doesn't
 // permanently disable ordering; a fresh deploy after re-ingest re-probes → true.
 let _notabilityProbe: Promise<boolean> | null = null;
-function probeNotability(withOrder: string, signal: AbortSignal): Promise<boolean> {
+function probeNotability(dataset: string, signal: AbortSignal): Promise<boolean> {
   if (_notabilityProbe) return _notabilityProbe;
+  // A fixed, cheap, source-agnostic probe (length=1, no user WHERE) — just asks
+  // "does ORDER BY nb_sitelinks parse?". 422 ⇒ column absent (pre-enrich).
+  const probeUrl =
+    `https://datasets-server.huggingface.co/filter?dataset=${encodeURIComponent(dataset)}` +
+    `&config=default&split=train&where=${encodeURIComponent(`"source"='wikidata'`)}` +
+    `&orderby=${encodeURIComponent('"nb_sitelinks" DESC')}&offset=0&length=1`;
   _notabilityProbe = (async () => {
     try {
-      const r = await timedFetch(withOrder, signal);
+      const r = await timedFetch(probeUrl, signal);
       if (r.status === 422) return false;      // column absent (pre-enrich)
       if (!r.ok) { _notabilityProbe = null; return false; } // transient → re-probe later
       return true;
@@ -1670,7 +1684,7 @@ async function dumpFilterRows(
     `&config=default&split=train&where=${encodeURIComponent(where)}&offset=${offset}&length=${DUMP_PER_SOURCE}`;
   const withOrder = `${base}&orderby=${encodeURIComponent('"nb_sitelinks" DESC')}`;
   return dumpHttpPolicy.execute(async ({ signal }) => {
-    const ordered = await probeNotability(withOrder, signal);
+    const ordered = await probeNotability(dataset, signal);
     const res = await timedFetch(ordered ? withOrder : base, signal);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const json = await res.json() as {
@@ -1741,7 +1755,7 @@ async function fetchDumpSearchUncached(q: string, dataset: string): Promise<ArtI
       const { rows } = await dumpFilterRows(dataset, s, q);
       anyOk = true;
       return rows;
-    } catch (e) { if (isBrokenCircuitError(e)) { return []; } anyOk = anyOk || false; return []; }
+    } catch { return []; } // anyOk stays false on any failure → the all-failed guard below catches it
   });
   const rows = perSource.flat().filter((r): r is Record<string, unknown> => !!r);
   if (!anyOk && rows.length === 0) throw new Error('all dump sources failed');
@@ -1779,11 +1793,44 @@ export async function fetchDumpSource(source: DumpSourceKey, q: string): Promise
  *  is DUMP_PER_SOURCE rows/source (offset = page × DUMP_PER_SOURCE), pooled across
  *  all dump sources. `hasMore` = at least one source still has rows beyond this
  *  page; `total` = summed match counts (HF num_rows_total) across sources. */
-export async function fetchDumpPage(
+/** Cached wrapper: in-memory (warm instance) → Upstash KV (cross-instance, 5 min)
+ *  → live per-source /filter. Coalesces concurrent callers onto one Promise. */
+export function fetchDumpPage(dataset: string, q: string, page: number): Promise<DumpPage> {
+  const memKey = `${dataset}\n${q}\n${page}`;
+  let cached = dumpPageCache.get(memKey);
+  if (!cached) {
+    cached = (async () => {
+      const redis = await getDumpRedis();
+      const kvKey = `${DUMP_CACHE_KEY_PREFIX}page:${memKey}`;
+      if (redis) {
+        try {
+          const hit = await redis.get(kvKey);
+          if (hit) return typeof hit === 'string' ? (JSON.parse(hit) as DumpPage) : (hit as DumpPage);
+        } catch { /* ignore KV errors — fall through to live fetch */ }
+      }
+      const out = await fetchDumpPageUncached(dataset, q, page);
+      if (redis) {
+        try { await redis.set(kvKey, JSON.stringify(out), { ex: DUMP_CACHE_TTL_S, nx: true }); }
+        catch { /* ignore KV write errors */ }
+      }
+      return out;
+    })();
+    dumpPageCache.set(memKey, cached);
+    cached.catch(() => dumpPageCache.delete(memKey)); // never cache a failed call
+    while (dumpPageCache.size > 64) {
+      const oldest = dumpPageCache.keys().next().value;
+      if (!oldest) break;
+      dumpPageCache.delete(oldest);
+    }
+  }
+  return cached;
+}
+
+async function fetchDumpPageUncached(
   dataset: string,
   q: string,
   page: number,
-): Promise<{ items: ArtItem[]; hasMore: boolean; total: number }> {
+): Promise<DumpPage> {
   const nameMap = await loadNameToQid(); // memoised; {} on miss
   const sources = Object.keys(DUMP_SOURCE_LABELS) as DumpSourceKey[];
   const offset = page * DUMP_PER_SOURCE;
@@ -1800,9 +1847,8 @@ export async function fetchDumpPage(
         const result = await dumpFilterRows(dataset, s, q, offset);
         anyOk = true;
         return result;
-      } catch (e) {
-        if (isBrokenCircuitError(e)) return { rows: [], total: 0 };
-        anyOk = anyOk || false;
+      } catch {
+        // anyOk stays false on any failure → the all-failed guard below catches it.
         return { rows: [], total: 0 };
       }
     },

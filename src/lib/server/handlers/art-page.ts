@@ -16,7 +16,7 @@
 import type { VercelRequest, VercelResponse } from '../vercel.js';
 import { GuardError, rateLimit, clientIp } from '../guard.js';
 import { rankResults, qualityScore, type ArtItem } from '@harpe/core';
-import { fetchDumpPage, dumpDatasetFor } from '@harpe/sources';
+import { fetchDumpPage } from '@harpe/sources';
 
 const PAGE_SIZE = 100; // matches DUMP_PER_SOURCE — HF /filter's per-request max
 
@@ -33,8 +33,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     res.setHeader('Cache-Control', 'no-store');
     return res.status(400).json({ error: 'Missing or empty ?q= parameter' });
   }
-  const pageRaw = typeof req.query.page === 'string' ? Number(req.query.page) : 0;
-  const page = Number.isInteger(pageRaw) && pageRaw >= 1 && pageRaw <= 50 ? pageRaw : 1;
+  // Clamp into [1, 50]: non-integer/NaN/<1 → 1; >50 → 50 (the nearest valid page,
+  // never silently the wrong one).
+  const pageRaw = typeof req.query.page === 'string' ? Number(req.query.page) : 1;
+  const page = !Number.isInteger(pageRaw) || pageRaw < 1 ? 1 : Math.min(pageRaw, 50);
 
   const ip = clientIp(req.headers as Record<string, string | string[] | undefined>);
   try {
@@ -47,7 +49,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     throw e;
   }
 
-  const dataset = dumpDatasetFor('wikidata'); // any dump source resolves the shared dataset env
+  const dataset = process.env.HARPE_DUMP_DATASET || ''; // shared dump dataset (matches artist.ts)
   if (!dataset) {
     res.setHeader('Cache-Control', 'no-store');
     return res.status(200).json({ items: [], page, hasMore: false, total: 0 });
@@ -61,7 +63,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(502).json({ error: 'Dump page fetch failed' });
   }
 
-  const ranked = rankResults(result.items, q, { qualityOf: (it) => qualityScore(it, q) });
+  // Cap the page to PAGE_SIZE — the pool is up to 13×100 rows, but a page should be
+  // a bounded slice (the client appends pages, so depth comes from more pages).
+  const ranked = rankResults(result.items, q, { qualityOf: (it) => qualityScore(it, q) }).slice(0, PAGE_SIZE);
   res.setHeader('Cache-Control', 'public, s-maxage=3600, stale-while-revalidate=86400');
   return res.status(200).json({ items: ranked, page, hasMore: result.hasMore, total: result.total });
 }
