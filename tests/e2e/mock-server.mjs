@@ -51,6 +51,10 @@ const ITEMS = [
     fullUrl: 'http://museum.test/plain/full.jpg', format: 'jpeg', lossless: false,
     downloads: [{ label: 'JPEG', url: 'http://museum.test/plain/full.jpg', format: 'jpeg', lossless: false }],
     source: 'met', isPublicDomain: true, date: '1850', medium: 'Watercolour',
+    // Knowledge-graph fields (Stage 1/2 + enrichment) so the detail viewer renders
+    // the artist-entity link + depicts pills — exercised by the KG e2e test.
+    artistId: 'Q5582', wikidataId: 'Q12418', nbSitelinks: 12,
+    depicts: ['Q7569'], depictsLabels: ['child'],
   },
 ];
 

@@ -1916,6 +1916,9 @@ const HF_ENTITY_CDN = 'https://huggingface.co/datasets/NullSense/harpe-art/resol
 // decoupled from the dump breaker (a miss just means no name-resolution).
 let _nameIndex: Record<string, string> | null | undefined;
 
+/** Test-only: drop the memoised name→QID index so a case re-fetches it fresh. */
+export function _resetNameIndex(): void { _nameIndex = undefined; }
+
 export function buildNameIndex(raw: Record<string, string>): Record<string, string> {
   const idx: Record<string, string> = {};
   const suffixHits = new Map<string, Set<string>>();

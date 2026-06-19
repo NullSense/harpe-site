@@ -12,6 +12,20 @@ test('search renders the grid and a card opens the detail viewer', async ({ page
   await expect(dialog.getByText('Plain Image Demo')).toBeVisible();
 });
 
+test('an enriched card surfaces the knowledge graph: artist link + depicts pill', async ({ page }) => {
+  // The plain-image item carries KG fields (artistId / depicts) — the detail viewer
+  // must render the artist as a clickable entity link and the depicts subject pill.
+  // Locks the end-to-end payload→UI path for the knowledge graph.
+  await page.goto('/?q=demo');
+  await page.locator('img[alt*="Plain Image Demo"]').first().click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog).toBeVisible();
+  // artistId present → the artist renders as a button (entity link), not plain text.
+  await expect(dialog.getByRole('button', { name: /Test Painter/ })).toBeVisible();
+  // depicts label → a subject pill the viewer exposes.
+  await expect(dialog.getByText('child')).toBeVisible();
+});
+
 test('IIIF deep-zoom renders via the tile proxy (not 1x1, not blank, not ORB-blocked)', async ({ page }) => {
   await page.goto('/?q=demo');
   await page.locator('img[alt*="Deep Zoom Demo"]').first().click();

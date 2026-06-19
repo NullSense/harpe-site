@@ -14,7 +14,7 @@ vi.mock('./helpers.js', async (orig) => ({
 import {
   fetchArtistEntity, fetchArtistWorkIds, fetchSubjectEntity,
   entityBucket, ENTITY_SHARDS, _resetEntityBucketCache,
-  workTitleKey, enrichWorkIds,
+  workTitleKey, enrichWorkIds, enrichArtistIds, _resetNameIndex,
 } from './adapters.js';
 
 const ok = (body: unknown) => ({ ok: true, status: 200, json: async () => body });
@@ -95,6 +95,31 @@ describe('workTitleKey (MUST match enrich_entities.py `_work_title_key`)', () =>
     expect(workTitleKey("Belshazzar's Feast")).toBe('belshazzar s feast');
     expect(workTitleKey('Café Terrace, Arles')).toBe('cafe terrace arles');
     expect(workTitleKey('神奈川沖浪裏')).toBe('神奈川沖浪裏'); // CJK preserved for JP aliases
+  });
+});
+
+describe('enrichArtistIds (universal artist linking across ALL sources)', () => {
+  it('links live-source items via name→QID; suffix-matches, is idempotent, skips no-artist', async () => {
+    _resetNameIndex();
+    timedFetchMock.mockResolvedValue(ok({ 'Claude Monet': 'Q41406', 'Vincent van Gogh': 'Q5582' }));
+    const items = [
+      { id: 'commons-1', source: 'commons', title: 'Water Lilies', artist: 'Claude Monet' }, // live → resolved
+      { id: 'vam-1', source: 'vam', title: 'X', artist: 'van Gogh' },                          // ≥4-char surname
+      { id: 'aic-9', source: 'aic', title: 'Y', artist: 'Nobody', artistId: 'Q1' },            // already linked → kept
+      { id: 'met-3', source: 'met', title: 'Z' },                                              // no artist → skipped
+    ];
+    await enrichArtistIds(items as never);
+    expect((items[0] as { artistId?: string }).artistId).toBe('Q41406');
+    expect((items[1] as { artistId?: string }).artistId).toBe('Q5582');
+    expect((items[2] as { artistId?: string }).artistId).toBe('Q1');        // not overwritten
+    expect((items[3] as { artistId?: string }).artistId).toBeUndefined();   // no artist text
+  });
+  it('is a graceful no-op when the name index is unavailable (404)', async () => {
+    _resetNameIndex();
+    timedFetchMock.mockResolvedValue({ ok: false, status: 404, json: async () => ({}) });
+    const items = [{ id: 'commons-2', source: 'commons', title: 'A', artist: 'Claude Monet' }];
+    await enrichArtistIds(items as never);
+    expect((items[0] as { artistId?: string }).artistId).toBeUndefined();
   });
 });
 
