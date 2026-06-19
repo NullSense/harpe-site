@@ -34,6 +34,16 @@ test('a ?artist= deep link reopens the entity page (not a text search)', async (
   await expect(page.locator('img[alt*="Plain Image Demo"]').first()).toBeVisible(); // its works
 });
 
+test('a ?v= deep link to an item outside the result set opens it via /api/item', async ({ page }) => {
+  // Regression: a shared ?v=<id> can point at a work that isn't in this (non-
+  // deterministic, live-source) result set. The by-id fallback must resolve it via
+  // /api/item and open the viewer anyway, so the link stays coherent.
+  await page.goto('/?q=demo&v=commons-999');
+  const dialog = page.getByRole('dialog');
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByText('Fallback Loaded Work')).toBeVisible();
+});
+
 test('an enriched card surfaces the knowledge graph: artist link + depicts pill', async ({ page }) => {
   // The plain-image item carries KG fields (artistId / depicts) — the detail viewer
   // must render the artist as a clickable entity link and the depicts subject pill.

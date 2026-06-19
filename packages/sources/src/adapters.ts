@@ -372,6 +372,104 @@ export async function fetchCleveland(q: string, signal?: AbortSignal): Promise<A
 // ImageDescription → description, Credit → creditLine, LicenseUrl → licenseUrl,
 // and constructed sourceUrl from page title.
 
+// One Commons API page entry (action=query&prop=imageinfo). Shared by the search
+// generator and the by-pageid fetch so the page→ArtItem mapping lives in ONE place.
+type CommonsPage = {
+  title?: unknown;
+  imageinfo?: Array<{
+    url?: unknown; thumburl?: unknown;
+    width?: unknown; height?: unknown; mime?: unknown;
+    extmetadata?: {
+      LicenseShortName?: { value?: unknown };
+      License?: { value?: unknown };
+      UsageTerms?: { value?: unknown };
+      Artist?: { value?: unknown };
+      DateTimeOriginal?: { value?: unknown };
+      DateTime?: { value?: unknown };
+      ImageDescription?: { value?: unknown };
+      Credit?: { value?: unknown };
+      LicenseUrl?: { value?: unknown };
+      ObjectName?: { value?: unknown };
+    };
+  }>;
+};
+type CommonsResponse = { query?: { pages?: Record<string, CommonsPage> } };
+
+// Map one Commons page → ArtItem. Returns null when it carries no renderable image
+// (no imageinfo, non-raster mime, or no URL). Keys of `pages` are numeric pageids —
+// the stable, unique id (a filename is NOT unique: File:Foo.jpg / .png collide).
+function commonsPageToItem(pageId: string, p: CommonsPage): ArtItem | null {
+  const ii = p.imageinfo?.[0];
+  if (!ii) return null;
+  const mime = str(ii.mime);
+  if (!/^image\/(jpeg|png|tiff|webp)/.test(mime)) return null;
+  const full = str(ii.url);
+  if (!full) return null;
+  const w = Number(ii.width) || 0;
+  const h = Number(ii.height) || 0;
+  const rawTitle = str(p.title);
+  const title = rawTitle.replace(/^File:/, '').replace(/\.[A-Za-z0-9]+$/, '');
+  // The rendered thumbnail (`thumburl`) is always a browser-renderable JPEG/PNG
+  // even when the original is a TIFF, so it's safe for both the card and lightbox.
+  const rendered = str(ii.thumburl) || full;
+  const format = fmtFromMime(mime);
+  const lossless = LOSSLESS_FORMATS.has(format);
+  // Commons hosts CC0 / PD as well as CC-BY / CC-BY-SA / GFDL works.
+  // Use extmetadata to determine the actual license; only mark public-domain
+  // for CC0 and unambiguously PD-marked items. Missing metadata → false.
+  const licShort = str(ii.extmetadata?.LicenseShortName?.value).toLowerCase();
+  const licKey = str(ii.extmetadata?.License?.value).toLowerCase();
+  const usage = str(ii.extmetadata?.UsageTerms?.value).toLowerCase();
+  const isPublicDomain =
+    licShort.includes('cc0') || licShort.includes('public domain') ||
+    licKey.includes('cc0') || licKey.includes('publicdomain') ||
+    usage.includes('public domain') || usage.includes('no known copyright');
+
+  // GOD-FORMAT: map extmetadata fields that were previously ignored.
+  const rawArtist = str(ii.extmetadata?.Artist?.value).replace(/<[^>]+>/g, '').trim();
+  // Commons date fields embed a hidden <div style=display:none>date QS:P571,…
+  // </div> machine-data blob. Strip tags, then cleanDate() cuts the QS: tail so
+  // it never fuses onto the readable date ("circa 1665date QS:…" → "circa 1665").
+  const rawDate = cleanDate(
+    (str(ii.extmetadata?.DateTimeOriginal?.value) || str(ii.extmetadata?.DateTime?.value))
+      .replace(/<[^>]+>/g, ' ').trim(),
+  );
+  const rawDesc = str(ii.extmetadata?.ImageDescription?.value).replace(/<[^>]+>/g, '').trim();
+  const rawCredit = str(ii.extmetadata?.Credit?.value).replace(/<[^>]+>/g, '').trim();
+  const rawLicUrl = str(ii.extmetadata?.LicenseUrl?.value).trim();
+  // ObjectName ("painting", "photograph", …) → the object/medium descriptor when the
+  // file gives no other medium. Already in the response (extmetadata), so it's free.
+  const objectName = str(ii.extmetadata?.ObjectName?.value).replace(/<[^>]+>/g, '').trim();
+  // Canonical source URL: the file description page on Commons.
+  const pageTitle = str(p.title);
+  const sourceUrl = pageTitle
+    ? `https://commons.wikimedia.org/wiki/${pageTitle.replace(/ /g, '_')}`
+    : undefined;
+
+  return {
+    id: `commons-${pageId}`,
+    title: title || 'Untitled',
+    artist: rawArtist || '',
+    dimensions: w && h ? `${w} × ${h} px` : '',
+    thumbUrl: rendered,
+    previewUrl: rendered,
+    fullUrl: full,
+    width: w || undefined,
+    height: h || undefined,
+    format,
+    lossless,
+    downloads: [{ label: `Original ${format.toUpperCase()}`, url: full, format, lossless }],
+    source: 'commons',
+    isPublicDomain,
+    date: rawDate,
+    medium: objectName || undefined,
+    description: rawDesc || undefined,
+    creditLine: rawCredit || undefined,
+    licenseUrl: rawLicUrl || undefined,
+    sourceUrl,
+  };
+}
+
 export async function fetchCommons(q: string, signal?: AbortSignal): Promise<ArtItem[]> {
   const dl = deadline(signal);
 
@@ -384,99 +482,12 @@ export async function fetchCommons(q: string, signal?: AbortSignal): Promise<Art
     const res = await timedFetch(url, dl.signal);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
-    const json = await res.json() as {
-      query?: {
-        pages?: Record<string, {
-          title?: unknown;
-          imageinfo?: Array<{
-            url?: unknown; thumburl?: unknown;
-            width?: unknown; height?: unknown; mime?: unknown;
-            extmetadata?: {
-              LicenseShortName?: { value?: unknown };
-              License?: { value?: unknown };
-              UsageTerms?: { value?: unknown };
-              Artist?: { value?: unknown };
-              DateTimeOriginal?: { value?: unknown };
-              DateTime?: { value?: unknown };
-              ImageDescription?: { value?: unknown };
-              Credit?: { value?: unknown };
-              LicenseUrl?: { value?: unknown };
-            };
-          }>;
-        }>;
-      };
-    };
+    const json = await res.json() as CommonsResponse;
 
     const items: ArtItem[] = [];
-    // Keys of `pages` are numeric pageids — use them for a stable, unique id.
-    // The filename (title) is NOT unique: File:Foo.jpg and File:Foo.png would
-    // collide on `commons-Foo` and the dedup Map would silently drop one.
     for (const [pageId, p] of Object.entries(json.query?.pages ?? {})) {
-      const ii = p.imageinfo?.[0];
-      if (!ii) continue;
-      const mime = str(ii.mime);
-      if (!/^image\/(jpeg|png|tiff|webp)/.test(mime)) continue;
-      const full = str(ii.url);
-      if (!full) continue;
-      const w = Number(ii.width) || 0;
-      const h = Number(ii.height) || 0;
-      const rawTitle = str(p.title);
-      const title = rawTitle.replace(/^File:/, '').replace(/\.[A-Za-z0-9]+$/, '');
-      // The rendered thumbnail (`thumburl`) is always a browser-renderable JPEG/PNG
-      // even when the original is a TIFF, so it's safe for both the card and lightbox.
-      const rendered = str(ii.thumburl) || full;
-      const format = fmtFromMime(mime);
-      const lossless = LOSSLESS_FORMATS.has(format);
-      // Commons hosts CC0 / PD as well as CC-BY / CC-BY-SA / GFDL works.
-      // Use extmetadata to determine the actual license; only mark public-domain
-      // for CC0 and unambiguously PD-marked items. Missing metadata → false.
-      const licShort = str(ii.extmetadata?.LicenseShortName?.value).toLowerCase();
-      const licKey = str(ii.extmetadata?.License?.value).toLowerCase();
-      const usage = str(ii.extmetadata?.UsageTerms?.value).toLowerCase();
-      const isPublicDomain =
-        licShort.includes('cc0') || licShort.includes('public domain') ||
-        licKey.includes('cc0') || licKey.includes('publicdomain') ||
-        usage.includes('public domain') || usage.includes('no known copyright');
-
-      // GOD-FORMAT: map extmetadata fields that were previously ignored.
-      const rawArtist = str(ii.extmetadata?.Artist?.value).replace(/<[^>]+>/g, '').trim();
-      // Commons date fields embed a hidden <div style=display:none>date QS:P571,…
-      // </div> machine-data blob. Strip tags, then cleanDate() cuts the QS: tail so
-      // it never fuses onto the readable date ("circa 1665date QS:…" → "circa 1665").
-      const rawDate = cleanDate(
-        (str(ii.extmetadata?.DateTimeOriginal?.value) || str(ii.extmetadata?.DateTime?.value))
-          .replace(/<[^>]+>/g, ' ').trim(),
-      );
-      const rawDesc = str(ii.extmetadata?.ImageDescription?.value).replace(/<[^>]+>/g, '').trim();
-      const rawCredit = str(ii.extmetadata?.Credit?.value).replace(/<[^>]+>/g, '').trim();
-      const rawLicUrl = str(ii.extmetadata?.LicenseUrl?.value).trim();
-      // Canonical source URL: the file description page on Commons.
-      const pageTitle = str(p.title);
-      const sourceUrl = pageTitle
-        ? `https://commons.wikimedia.org/wiki/${pageTitle.replace(/ /g, '_')}`
-        : undefined;
-
-      items.push({
-        id: `commons-${pageId}`,
-        title: title || 'Untitled',
-        artist: rawArtist || '',
-        dimensions: w && h ? `${w} × ${h} px` : '',
-        thumbUrl: rendered,
-        previewUrl: rendered,
-        fullUrl: full,
-        width: w || undefined,
-        height: h || undefined,
-        format,
-        lossless,
-        downloads: [{ label: `Original ${format.toUpperCase()}`, url: full, format, lossless }],
-        source: 'commons',
-        isPublicDomain,
-        date: rawDate,
-        description: rawDesc || undefined,
-        creditLine: rawCredit || undefined,
-        licenseUrl: rawLicUrl || undefined,
-        sourceUrl,
-      });
+      const it = commonsPageToItem(pageId, p);
+      if (it) items.push(it);
     }
 
     await enrichCommonsWikidataIds(items, dl.signal);
@@ -484,6 +495,42 @@ export async function fetchCommons(q: string, signal?: AbortSignal): Promise<Art
   } finally {
     dl.clear();
   }
+}
+
+// Fetch ONE Commons file by its numeric pageid → ArtItem (+ SDC enrichment).
+// Powers the by-id deep-link fallback (?v=commons-<n>) when the item isn't in the
+// live result set. Best-effort: null on any miss/error.
+export async function fetchCommonsItemById(pageId: string, signal?: AbortSignal): Promise<ArtItem | null> {
+  const dl = deadline(signal);
+  try {
+    const url =
+      `https://commons.wikimedia.org/w/api.php?action=query&format=json` +
+      `&pageids=${encodeURIComponent(pageId)}` +
+      `&prop=imageinfo&iiprop=url%7Csize%7Cmime%7Cextmetadata&iiurlwidth=1024`;
+    const res = await timedFetch(url, dl.signal);
+    if (!res.ok) return null;
+    const json = await res.json() as CommonsResponse;
+    const page = json.query?.pages?.[pageId];
+    if (!page) return null;
+    const it = commonsPageToItem(pageId, page);
+    if (it) await enrichCommonsWikidataIds([it], dl.signal);
+    return it;
+  } catch {
+    return null;
+  } finally {
+    dl.clear();
+  }
+}
+
+// Resolve ANY item id → ArtItem, routing by the id's source prefix: a live Commons
+// file (commons-<pageid>) goes to the Commons API; everything else is a dump row
+// resolved by exact id from that source's HF dataset. The single entry point the
+// by-id deep-link fallback (/api/item) calls. null on any miss (best-effort).
+export async function fetchItemById(id: string, signal?: AbortSignal): Promise<ArtItem | null> {
+  const commons = /^commons-(\d+)$/.exec(id);
+  if (commons) return fetchCommonsItemById(commons[1], signal);
+  const source = id.split('-')[0] as DumpSourceKey;
+  return fetchDumpItemById(dumpDatasetFor(source), id);
 }
 
 // ─── Commons → Wikidata QID enrichment (the cross-language unifier) ────────────
@@ -1836,6 +1883,31 @@ async function fetchDumpSearchUncached(q: string, dataset: string): Promise<{ it
   return { items, complete: failed === 0 };
 }
 
+
+// Fetch ONE dump row by its exact stored id (e.g. "aic-123", "wikidata-Q42") →
+// ArtItem. Powers the by-id deep-link fallback for the 13 dump sources. A single
+// HF /filter with `"id"='<id>'` — cheap, exact, no per-source fan-out. Best-effort:
+// null on any miss/error so a deep link never breaks the page.
+export async function fetchDumpItemById(dataset: string, id: string): Promise<ArtItem | null> {
+  if (!dataset || !id) return null;
+  const where = `"id"='${_sqlEsc(id)}'`;
+  const url =
+    `https://datasets-server.huggingface.co/filter?dataset=${encodeURIComponent(dataset)}` +
+    `&config=default&split=train&where=${encodeURIComponent(where)}&offset=0&length=1`;
+  try {
+    const row = await dumpHttpPolicy.execute(async ({ signal }) => {
+      const res = await timedFetch(url, signal);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const json = await res.json() as { rows?: Array<{ row?: Record<string, unknown> }> };
+      return json.rows?.[0]?.row ?? null;
+    });
+    if (!row) return null;
+    const nameMap = await loadNameToQid();
+    return rowToItem(row, nameMap, 0);
+  } catch {
+    return null;
+  }
+}
 
 export async function fetchDumpSource(source: DumpSourceKey, q: string): Promise<ArtItem[]> {
   const dataset = dumpDatasetFor(source);

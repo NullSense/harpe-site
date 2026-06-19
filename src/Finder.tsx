@@ -1055,6 +1055,11 @@ const Finder = forwardRef<FinderHandle>(function Finder(_props, ref) {
   // The open detail is tracked by item ID (not index) so streaming re-ordering
   // doesn't swap which artwork is shown — the index is derived from the id.
   const [detailId, setDetailId] = useState<string | null>(null);
+  // By-id deep-link fallback: a shared ?v=<id> can point at an item that isn't in
+  // THIS (non-deterministic, live-source) result set. When the id can't be found in
+  // the current results, /api/item resolves it directly and we inject it here so the
+  // viewer still opens — the link stays coherent regardless of what streamed in.
+  const [fallbackItem, setFallbackItem] = useState<ArtItem | null>(null);
   // Knowledge-graph entity view: when set, the results grid shows an artist's or a
   // subject's works under a banner (loaded from /api/artist|/api/depicts). Cleared
   // by any new search.
@@ -1531,7 +1536,15 @@ const Finder = forwardRef<FinderHandle>(function Finder(_props, ref) {
   }, [artItems]);
 
   // The active list for the shared detail viewer: scanned-page images or museum art.
-  const detailItems = mode === 'scan' ? scanAsArt : visibleArt;
+  // The by-id fallback item (a deep link to something outside the result set) is
+  // appended so the viewer can open it; it's dropped once the real item streams in.
+  const detailItems = useMemo<ArtItem[]>(() => {
+    const base = mode === 'scan' ? scanAsArt : visibleArt;
+    if (fallbackItem && !base.some((it) => it.id === fallbackItem.id || it.mergedIds?.includes(fallbackItem.id))) {
+      return [...base, fallbackItem];
+    }
+    return base;
+  }, [mode, scanAsArt, visibleArt, fallbackItem]);
   // Match the survivor card directly OR any id dedupe() folded into it — a shared
   // ?v=<id> link must still open even when dedupe later elects a different
   // representative (more duplicate sources stream in → the survivor id changes).
@@ -1665,6 +1678,26 @@ const Finder = forwardRef<FinderHandle>(function Finder(_props, ref) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // By-id deep-link fallback: when a detail is requested (?v= or a click) but the id
+  // isn't in the settled result set, resolve it directly via /api/item and inject it.
+  // Wait until streaming finishes before deciding it's truly absent (it may still be
+  // arriving). Cleared the moment the real item is present, so it never shadows it.
+  useEffect(() => {
+    if (!detailId || detailIndex >= 0) { if (fallbackItem) setFallbackItem(null); return; }
+    if (streaming) return;                         // results not settled yet
+    if (fallbackItem?.id === detailId) return;     // already resolved this id
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`/api/item?id=${encodeURIComponent(detailId)}`);
+        if (!res.ok) return;
+        const { item } = await res.json();
+        if (!cancelled && item) setFallbackItem(item);
+      } catch { /* deep link to a now-gone item — viewer just stays closed */ }
+    })();
+    return () => { cancelled = true; };
+  }, [detailId, detailIndex, streaming, fallbackItem]);
+
   // Keep the address bar in sync (replaceState → no history spam during streaming).
   // Clean canonical form only (?q=&v=) — no t/img/d clutter. A copied address-bar
   // link still gets a social card: middleware.ts resolves it via /api/preview. The
@@ -1673,9 +1706,15 @@ const Finder = forwardRef<FinderHandle>(function Finder(_props, ref) {
     if (mode !== 'art' && mode !== 'scan') return;
     const term = mode === 'scan' ? pageUrl : query;
     if (!term) return;
-    const hasDetail = !!detailId && detailIndex >= 0;
-    window.history.replaceState(null, '', buildShareUrl(hasDetail ? detailId : undefined));
-  }, [mode, query, pageUrl, detailId, detailIndex, buildShareUrl]);
+    // Keep ?v= whenever a detail is open. Prefer the LIVE survivor id (the one in the
+    // current set) so a reload resolves it from results directly; fall back to the raw
+    // detailId (deep link to an item outside the set, served by /api/item). Previously
+    // a survivor change dropped ?v= entirely — the share link silently lost the work.
+    const viewId = detailId
+      ? (detailIndex >= 0 ? detailItems[detailIndex].id : detailId)
+      : undefined;
+    window.history.replaceState(null, '', buildShareUrl(viewId));
+  }, [mode, query, pageUrl, detailId, detailIndex, detailItems, buildShareUrl]);
 
   // Fetch the next dump page and append deduplicated, re-ranked items.
   // Only active in art mode; scan mode has no dump backing.

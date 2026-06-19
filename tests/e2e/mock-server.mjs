@@ -120,6 +120,19 @@ const server = http.createServer(async (req, res) => {
       entity: { qid: 'Q7569', labelEn: 'child', workCount: 1 },
       works: ITEMS,
     });
+    // By-id deep-link fallback: a ?v= pointing OUTSIDE the result set resolves here
+    // (exercised by the by-id fallback e2e). Only commons-999 is known; else 404.
+    if (u.pathname === '/api/item') {
+      const id = u.searchParams.get('id') || '';
+      if (id !== 'commons-999') return json(res, { error: 'item not found' }, 404);
+      return json(res, { item: {
+        id: 'commons-999', title: 'Fallback Loaded Work', artist: 'Test Painter',
+        thumbUrl: 'http://museum.test/plain/thumb.jpg', previewUrl: 'http://museum.test/plain/preview.jpg',
+        fullUrl: 'http://museum.test/plain/full.jpg', format: 'jpeg', lossless: false,
+        downloads: [{ label: 'JPEG', url: 'http://museum.test/plain/full.jpg', format: 'jpeg', lossless: false }],
+        source: 'commons', isPublicDomain: true,
+      } });
+    }
     if (u.pathname === '/api/tile' || u.pathname === '/api/fetch') {
       res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'public, max-age=60' });
       return res.end(await tile());
