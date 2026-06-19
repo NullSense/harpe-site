@@ -32,7 +32,11 @@ const WANT_BOOK_RE = /\b(book|magazine|periodical|pamphlet|manuscript|illustrati
 // frame, "(Louvre)-cropped", "detail", "verso", "before restoration", "raking
 // light"). These bury the clean flat reproduction of the same painting; demote
 // them hard unless the user is actually after photographs.
-const PHOTO_OF_ART_RE = /\b(tilted|cropped|detail|verso|recto|framed|reframed|unframed|before restoration|after (cleaning|restoration)|raking light|infra-?red|x-?ray|backside|reverse side|in its frame|with frame|in frame|angled|perspective view|wide shot|close-?up|on the wall|on display|gallery view)\b|avec\s+cadre|sans\s+cadre|signature\s+of/i;
+// "on the wall" must be verb-anchored (hung/mounted/…) so it catches gallery-photo
+// captions without burying canonical titles like "Writing on the Wall" (Belshazzar).
+// "signature of …" was dropped — the small-area penalty already sinks signature
+// crops, and the phrase wrongly hit titles like "Signature of Charles I".
+const PHOTO_OF_ART_RE = /\b(tilted|cropped|detail|verso|recto|framed|reframed|unframed|before restoration|after (cleaning|restoration)|raking light|infra-?red|x-?ray|backside|reverse side|in its frame|with frame|in frame|angled|perspective view|wide shot|close-?up|on display|gallery view)\b|\b(hung|mounted|displayed|installed|exhibited)\s+on the wall\b|avec\s+cadre|sans\s+cadre/i;
 // digitalnz/commons are noisy; wikidata/europeana are aggregators with variable
 // metadata — a soft penalty aligns ranking with their representative-pick priority.
 const SRC_PRIOR: Record<string, number> = { digitalnz: -5, commons: -1, si: -1, wikidata: -0.5, europeana: -0.5 };
@@ -92,18 +96,22 @@ export function qualityScore(item: RankableItem, query = ''): number {
   // media id, e.g. "The gods of the Egyptians (1904) (14763839232)". Dozens of
   // near-identical plates from one book; demote hard so real works rank above them.
   if (!wantsBook && /\(\d{7,}\)\s*$/.test(t)) s -= 6;
-  // Resolution signal: museum scans (megapixels) up, postage-stamp thumbnails /
-  // signature crops / icons down. 0 area = unknown (most live-API items) → neutral.
+  // Resolution + notability are POSITIVE signals, but only some sources expose
+  // pixel dims / sitelinks (dump, AIC, Commons, Harvard, WikiArt) while others
+  // (Met, V&A, Wikidata-live) don't — so an uncapped stack would systematically
+  // demote the dimensionless museums. Cap the combined positive bonus so quality
+  // nudges ranking without letting an enriched item leapfrog a relevant one.
   const area = (item.width ?? 0) * (item.height ?? 0);
-  if (area > 0) {
-    if (area >= 4_000_000) s += 3;        // ≥2 MP — full museum scan
-    else if (area >= 1_000_000) s += 1;   // ~1 MP — decent scan
-    else if (area < 50_000) s -= 4;       // <~224² — thumbnail / signature / icon
-    else if (area < 200_000) s -= 2;      // <~447² — low-res
-  }
-  // Notability prior (Wikidata sitelinks): log-scaled so iconic works (high
-  // sitelink counts) decisively outrank minor works by the same prolific artist.
-  if (item.nbSitelinks && item.nbSitelinks > 0) s += Math.min(3, Math.log2(item.nbSitelinks + 1) * 0.7);
+  let bonus = 0;
+  if (area >= 4_000_000) bonus += 2;        // ≥2 MP — full museum scan
+  else if (area >= 1_000_000) bonus += 1;   // ~1 MP — decent scan
+  // log-scaled fame prior (sitelinks): iconic works float above minor ones.
+  if (item.nbSitelinks && item.nbSitelinks > 0) bonus += Math.min(2, Math.log2(item.nbSitelinks + 1) * 0.6);
+  s += Math.min(3, bonus);                  // cap the stacked enrichment advantage
+  // Small-image PENALTIES are uncapped (thumbnails/signature crops should sink),
+  // and only apply when dims are known (area>0) so live items aren't punished.
+  if (area > 0 && area < 50_000) s -= 4;    // <~224² — thumbnail / signature / icon
+  else if (area > 0 && area < 200_000) s -= 2; // <~447² — low-res
   // Public-domain works rank slightly higher on a download-focused site.
   if (item.isPublicDomain) s += 1;
   s += SRC_PRIOR[item.source] ?? 0;

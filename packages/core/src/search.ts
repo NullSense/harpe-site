@@ -382,8 +382,11 @@ function artistCompatible(a: { artist?: string }, b: { artist?: string }): boole
   const ta = new Set(tokenize(a.artist || ''));
   const tb = new Set(tokenize(b.artist || ''));
   if (!ta.size || !tb.size) return false;
-  for (const t of ta) if (ATTRIBUTION_QUALIFIERS.has(t)) return false;
-  for (const t of tb) if (ATTRIBUTION_QUALIFIERS.has(t)) return false;
+  // Block a cross-merge only when ONE side carries an attribution qualifier the
+  // other lacks ("after Rembrandt" vs "Rembrandt"). Two records that BOTH say
+  // "Workshop of Rubens" are the same attributed work and SHOULD still fold.
+  for (const t of ta) if (ATTRIBUTION_QUALIFIERS.has(t) && !tb.has(t)) return false;
+  for (const t of tb) if (ATTRIBUTION_QUALIFIERS.has(t) && !ta.has(t)) return false;
   const [small, big] = ta.size <= tb.size ? [ta, tb] : [tb, ta];
   for (const t of small) if (!big.has(t)) return false;
   return true;
@@ -456,7 +459,10 @@ function mergeGroup<T extends Fusable>(members: T[]): T {
       const md = m as Record<string, unknown>;
       const qids = Array.isArray(md.depicts) ? (md.depicts as string[]) : [];
       const labels = Array.isArray(md.depictsLabels) ? (md.depictsLabels as string[]) : [];
-      qids.forEach((q, i) => { if (q && !qidLabel.has(q)) qidLabel.set(q, labels[i] ?? ''); });
+      // First NON-EMPTY label wins: a lower-priority copy's real label beats an
+      // empty placeholder the representative stored (its label fetch may have failed).
+      qids.forEach((q, i) => { if (q && (!qidLabel.has(q) || !qidLabel.get(q)) && labels[i]) qidLabel.set(q, labels[i]); });
+      qids.forEach((q) => { if (q && !qidLabel.has(q)) qidLabel.set(q, ''); });
     }
     if (qidLabel.size) {
       const qids = [...qidLabel.keys()];
@@ -614,7 +620,7 @@ export function fuse<T extends Fusable>(items: T[], query: string, opts: FuseOpt
 
   // Weighted RRF: relevance leads, the source's own ranking supports it, quality
   // nudges, consensus rewards cross-museum agreement.
-  const W_REL = 3, W_SRC = 1, W_QUAL = 1.5, W_CONSENSUS = 0.4;
+  const W_REL = 3, W_SRC = 1, W_QUAL = 1.0, W_CONSENSUS = 0.4;
   const fused = new Map<T, number>();
   for (const it of items) {
     let s = W_REL / (K + relRank.get(it)!) + W_SRC / (K + srcRank.get(it)!);

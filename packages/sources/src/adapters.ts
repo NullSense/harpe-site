@@ -1618,40 +1618,53 @@ export function fetchDumpSearch(dataset: string, q: string): Promise<ArtItem[]> 
 // every museum source to 0 results. Per-source querying guarantees diversity.
 const DUMP_PER_SOURCE = Number(process.env.HARPE_DUMP_PER_SOURCE) || 30;
 
-// Whether the dataset has the notability column (nb_sitelinks, added by the ingest
-// enrichment pass) so we can ORDER BY fame. null = unknown (probe once); false =
-// absent (skip orderby, don't re-probe this process). A fresh deploy after a
-// re-ingest re-probes and starts ordering famous works first again.
-let _dumpNotabilityOrderable: boolean | null = null;
+// Single in-flight probe for the notability column (nb_sitelinks, added by the
+// ingest enrichment pass) so we can ORDER BY fame. A shared Promise collapses all
+// concurrent per-source calls onto ONE probe — no 422 storm across the 13 workers.
+// Reset to null on a network error (vs a genuine 422) so a transient blip doesn't
+// permanently disable ordering; a fresh deploy after re-ingest re-probes → true.
+let _notabilityProbe: Promise<boolean> | null = null;
+function probeNotability(withOrder: string, signal: AbortSignal): Promise<boolean> {
+  if (_notabilityProbe) return _notabilityProbe;
+  _notabilityProbe = (async () => {
+    try {
+      const r = await timedFetch(withOrder, signal);
+      if (r.status === 422) return false;      // column absent (pre-enrich)
+      if (!r.ok) { _notabilityProbe = null; return false; } // transient → re-probe later
+      return true;
+    } catch { _notabilityProbe = null; return false; }
+  })();
+  return _notabilityProbe;
+}
 
 const _sqlEsc = (s: string) => s.replace(/'/g, "''");
+const _stripWild = (s: string) => s.toLowerCase().replace(/[%_]/g, '');
 
 // HF /filter WHERE for one source. Restrictive grammar (validated live): supports
 // AND/OR/parens/ILIKE with columns in double quotes. Artist must contain EVERY
 // query token (so "Rembrandt van Rijn" matches "Rembrandt (Rembrandt van Rijn)"),
 // OR the title / depicts label contains the whole phrase (title + theme queries).
-export function dumpWhere(source: string, q: string): string {
+// Returns null when the query has no usable content after stripping ILIKE wildcards
+// (e.g. "%%") — the caller then skips the HF call instead of issuing a match-all.
+export function dumpWhere(source: string, q: string): string | null {
   const toks = q.toLowerCase().split(/\s+/).map((t) => t.replace(/[%_]/g, '')).filter((t) => t.length >= 2).slice(0, 6);
-  const artist = (toks.length ? toks : [q.toLowerCase().replace(/[%_]/g, '')])
-    .map((t) => `"artist" ILIKE '%${_sqlEsc(t)}%'`).join(' AND ');
-  const fq = _sqlEsc(q.toLowerCase().replace(/[%_]/g, ''));
-  return `"source"='${_sqlEsc(source)}' AND ((${artist}) OR "title" ILIKE '%${fq}%' OR "depicts_labels" ILIKE '%${fq}%')`;
+  const fq = _stripWild(q).trim();
+  const effective = toks.length ? toks : (fq.length >= 2 ? [fq] : null);
+  if (!effective) return null;
+  const artist = effective.map((t) => `"artist" ILIKE '%${_sqlEsc(t)}%'`).join(' AND ');
+  return `"source"='${_sqlEsc(source)}' AND ((${artist}) OR "title" ILIKE '%${_sqlEsc(fq)}%' OR "depicts_labels" ILIKE '%${_sqlEsc(fq)}%')`;
 }
 
 async function dumpFilterRows(dataset: string, source: string, q: string): Promise<Array<Record<string, unknown>>> {
+  const where = dumpWhere(source, q);
+  if (!where) return []; // degenerate query (all wildcards) → no match-all scan
   const base =
     `https://datasets-server.huggingface.co/filter?dataset=${encodeURIComponent(dataset)}` +
-    `&config=default&split=train&where=${encodeURIComponent(dumpWhere(source, q))}&offset=0&length=${DUMP_PER_SOURCE}`;
+    `&config=default&split=train&where=${encodeURIComponent(where)}&offset=0&length=${DUMP_PER_SOURCE}`;
   const withOrder = `${base}&orderby=${encodeURIComponent('"nb_sitelinks" DESC')}`;
   return dumpHttpPolicy.execute(async ({ signal }) => {
-    const tryOrder = _dumpNotabilityOrderable !== false;
-    let res = await timedFetch(tryOrder ? withOrder : base, signal);
-    if (tryOrder && res.status === 422) {
-      _dumpNotabilityOrderable = false; // column absent (pre-enrich) → stop ordering
-      res = await timedFetch(base, signal);
-    } else if (tryOrder && res.ok && _dumpNotabilityOrderable === null) {
-      _dumpNotabilityOrderable = true;
-    }
+    const ordered = await probeNotability(withOrder, signal);
+    const res = await timedFetch(ordered ? withOrder : base, signal);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const json = await res.json() as { rows?: Array<{ row?: Record<string, unknown> }> };
     return (json.rows ?? []).map((r) => r.row).filter((r): r is Record<string, unknown> => !!r);

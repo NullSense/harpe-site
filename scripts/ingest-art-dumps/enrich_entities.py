@@ -192,8 +192,13 @@ def harvest_work_entities(client: httpx.Client, qids: list[str]) -> dict[str, di
                         agg[q]["nb"] = max(agg[q]["nb"], int(nb))
                     except ValueError:
                         pass
-        except Exception as e:  # greedy: keep what we have, skip this window
+        except Exception as e:
+            # A failed query returns ZERO rows → agg is all-defaults. Writing that to
+            # `out` would checkpoint nb=0/None for the whole batch AND mark it done
+            # (resume skips it forever). So skip the batch entirely and retry next run
+            # — matches harvest_artists. (Mirrors the correct `continue` pattern.)
             print(f"  works batch failed ({e}); skipping {len(batch)} qids")
+            continue
         for q, a in agg.items():
             dsorted = sorted(a["depicts"])
             out[q] = {
@@ -208,7 +213,7 @@ def harvest_work_entities(client: httpx.Client, qids: list[str]) -> dict[str, di
                 "movement": a["movement"],
                 "nb_sitelinks": a["nb"] or None,
             }
-        json.dump(out, open(_CKPT, "w"))  # checkpoint after every batch
+        json.dump(out, open(_CKPT, "w"))  # checkpoint after every successful batch
     return out
 
 

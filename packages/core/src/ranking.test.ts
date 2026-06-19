@@ -74,6 +74,20 @@ describe('qualityScore', () => {
     const base = { medium: 'oil on canvas', source: 'met', title: 'A Work' };
     expect(qualityScore({ ...base, isPublicDomain: true })).toBeGreaterThan(qualityScore({ ...base, isPublicDomain: false }));
   });
+  it('does NOT penalise canonical titles that contain "on the wall" or "signature of"', () => {
+    // "Writing on the Wall" = Belshazzar's Feast; "Signature of Charles I" = a real
+    // subject — neither is a photo-of-artwork, so the photo-of-art penalty must not fire.
+    const belshazzar = qualityScore({ medium: 'oil on canvas', source: 'wikidata', title: "Belshazzar's Feast — Writing on the Wall", nbSitelinks: 40 }, 'belshazzar');
+    const clean = qualityScore({ medium: 'oil on canvas', source: 'wikidata', title: "Belshazzar's Feast", nbSitelinks: 40 }, 'belshazzar');
+    expect(belshazzar).toBe(clean);
+    const sig = qualityScore({ medium: 'oil on canvas', source: 'wikidata', title: 'Signature of Charles I' }, 'charles');
+    expect(sig).toBeGreaterThan(0); // not buried by a -5 photo-of-art penalty
+  });
+  it('still demotes a real gallery photo caption ("hung on the wall")', () => {
+    const caption = qualityScore({ medium: 'oil on canvas', source: 'commons', title: 'Mona Lisa hung on the wall (Louvre)' }, 'mona lisa');
+    const clean = qualityScore({ medium: 'oil on canvas', source: 'commons', title: 'Mona Lisa' }, 'mona lisa');
+    expect(caption).toBeLessThan(clean);
+  });
   it('does NOT demote framing/angle terms when the user wants photos', () => {
     const t = art('photograph', 'commons', 'detail of a fresco');
     expect(qualityScore(t, 'fresco detail photograph')).toBeGreaterThanOrEqual(qualityScore(t, ''));

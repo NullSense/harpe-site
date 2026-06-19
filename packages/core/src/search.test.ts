@@ -421,6 +421,24 @@ describe('dedupe', () => {
     expect(out).toHaveLength(2); // the copy stays separate from the original
   });
 
+  it('DOES merge two records that carry the SAME attribution ("Workshop of Rubens")', () => {
+    const out = dedupe([
+      mk({ id: 'a', source: 'met', title: 'The Lion Hunt', artist: 'Workshop of Rubens', fullUrl: 'https://m/a.jpg', width: 100, height: 80 }),
+      mk({ id: 'b', source: 'europeana', title: 'The Lion Hunt', artist: 'Workshop of Rubens', fullUrl: 'https://m/b.jpg', width: 4000, height: 3000 }),
+    ]);
+    expect(out).toHaveLength(1); // identical attribution → same work, folds
+  });
+
+  it('prefers a non-empty depicts label even when the representative has a blank one', () => {
+    const out = dedupe([
+      // rep (larger image) has Q146 with a BLANK label; the smaller copy has "cat"
+      mk({ id: 'wikidata-Q219831', source: 'wikidata', title: 'Cat Study', artist: 'X', fullUrl: 'https://m/b.jpg', depicts: ['Q146'], depictsLabels: [''], width: 4000, height: 3000 }),
+      mk({ id: 'commons-1', source: 'commons', title: 'Cat Study', artist: 'X', fullUrl: 'https://m/a.jpg', wikidataId: 'Q219831', depicts: ['Q146'], depictsLabels: ['cat'], width: 100, height: 80 }),
+    ]);
+    expect(out).toHaveLength(1);
+    expect(out[0].depictsLabels).toEqual(['cat']); // blank placeholder did not win
+  });
+
   it('never merges on an empty / missing QID', () => {
     const out = dedupe([
       mk({ id: 'commons-1', source: 'commons', title: 'Thing One', artist: 'A', fullUrl: 'https://m/1.jpg' }),

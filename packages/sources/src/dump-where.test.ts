@@ -6,7 +6,8 @@ import { dumpWhere } from './adapters.js';
 // token; title/depicts match the whole phrase.
 describe('dumpWhere', () => {
   it('scopes to the source and ANDs every artist token', () => {
-    const w = dumpWhere('met', 'Rembrandt van Rijn');
+    const w = dumpWhere('met', 'Rembrandt van Rijn')!;
+    expect(w).not.toBeNull();
     expect(w.startsWith(`"source"='met' AND (`)).toBe(true);
     expect(w).toContain(`"artist" ILIKE '%rembrandt%'`);
     expect(w).toContain(`"artist" ILIKE '%van%'`);
@@ -15,9 +16,14 @@ describe('dumpWhere', () => {
     expect(w).toContain(`'%rembrandt%' AND "artist" ILIKE '%van%'`);
   });
   it('also matches title and depicts on the whole phrase', () => {
-    const w = dumpWhere('nga', 'great red dragon');
+    const w = dumpWhere('nga', 'great red dragon')!;
     expect(w).toContain(`"title" ILIKE '%great red dragon%'`);
     expect(w).toContain(`"depicts_labels" ILIKE '%great red dragon%'`);
+  });
+  it('returns null for an all-wildcard query (no match-all scan)', () => {
+    expect(dumpWhere('met', '%%')).toBeNull();
+    expect(dumpWhere('met', '% _')).toBeNull();
+    expect(dumpWhere('met', '   ')).toBeNull();
   });
   it("escapes single quotes to prevent breaking the clause (O'Keeffe)", () => {
     const w = dumpWhere('met', "O'Keeffe");
