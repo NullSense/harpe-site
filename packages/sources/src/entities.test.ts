@@ -14,6 +14,7 @@ vi.mock('./helpers.js', async (orig) => ({
 import {
   fetchArtistEntity, fetchArtistWorkIds, fetchSubjectEntity,
   entityBucket, ENTITY_SHARDS, _resetEntityBucketCache,
+  workTitleKey, enrichWorkIds,
 } from './adapters.js';
 
 const ok = (body: unknown) => ({ ok: true, status: 200, json: async () => body });
@@ -83,5 +84,53 @@ describe('bucket memo', () => {
     expect((await fetchArtistEntity('Q41406'))?.labelEn).toBe('Monet');
     expect((await fetchArtistEntity('Q41662'))?.labelEn).toBe('Renoir');
     expect(timedFetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('workTitleKey (MUST match enrich_entities.py `_work_title_key`)', () => {
+  it('normalises titles byte-identically to the Python index builder', () => {
+    expect(workTitleKey('The Great Wave off Kanagawa')).toBe('the great wave off kanagawa');
+    expect(workTitleKey('Under the Wave off Kanagawa (Kanagawa oki nami ura)'))
+      .toBe('under the wave off kanagawa kanagawa oki nami ura');
+    expect(workTitleKey("Belshazzar's Feast")).toBe('belshazzar s feast');
+    expect(workTitleKey('Café Terrace, Arles')).toBe('cafe terrace arles');
+    expect(workTitleKey('神奈川沖浪裏')).toBe('神奈川沖浪裏'); // CJK preserved for JP aliases
+  });
+});
+
+describe('enrichWorkIds (work_index → wikidataId; the cross-title unifier)', () => {
+  const aid = 'Q5599'; // Hokusai stand-in (bucket 223)
+  const shard = {
+    [`the great wave off kanagawa~${aid}`]: 'Q1782705',
+    [`under the wave off kanagawa kanagawa oki nami ura~${aid}`]: 'Q1782705',
+  };
+
+  it('resolves DIFFERENT-titled copies of one work to the same QID', async () => {
+    timedFetchMock.mockResolvedValue(ok(shard));
+    const items = [
+      { id: 'met-1', source: 'met', title: 'Under the Wave off Kanagawa (Kanagawa oki nami ura)', artist: 'Katsushika Hokusai', artistId: aid },
+      { id: 'commons-1', source: 'commons', title: 'Hokusai - The Great Wave off Kanagawa - Google Art Project', artist: 'Katsushika Hokusai', artistId: aid },
+    ];
+    await enrichWorkIds(items as never);
+    expect((items[0] as { wikidataId?: string }).wikidataId).toBe('Q1782705'); // clean museum title
+    expect((items[1] as { wikidataId?: string }).wikidataId).toBe('Q1782705'); // artist-prefix + programme suffix stripped
+  });
+
+  it('is a graceful no-op when the shard is absent (pre-enrichment)', async () => {
+    timedFetchMock.mockResolvedValue({ ok: false, status: 404, json: async () => ({}) });
+    const items = [{ id: 'a', source: 'met', title: 'The Great Wave off Kanagawa', artist: 'Katsushika Hokusai', artistId: aid }];
+    await enrichWorkIds(items as never);
+    expect((items[0] as { wikidataId?: string }).wikidataId).toBeUndefined();
+  });
+
+  it('leaves items that already have a wikidataId or lack an artistId untouched', async () => {
+    timedFetchMock.mockResolvedValue(ok(shard));
+    const items = [
+      { id: 'a', source: 'wikidata', title: 'The Great Wave off Kanagawa', artist: 'Hokusai', artistId: aid, wikidataId: 'Q9' },
+      { id: 'b', source: 'met', title: 'The Great Wave off Kanagawa', artist: 'Hokusai' }, // no artistId
+    ];
+    await enrichWorkIds(items as never);
+    expect((items[0] as { wikidataId?: string }).wikidataId).toBe('Q9'); // not overwritten
+    expect((items[1] as { wikidataId?: string }).wikidataId).toBeUndefined(); // no artistId → skipped
   });
 });

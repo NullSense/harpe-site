@@ -35,6 +35,7 @@ import json
 import os
 import re
 import tempfile
+import unicodedata
 import urllib.parse
 from collections import defaultdict
 
@@ -70,6 +71,29 @@ def _bucket(qid: str) -> int:
     """Shard key for an entity QID — MUST match adapters.ts `entityBucket`."""
     return int(qid[1:]) % _SHARDS
 
+# Generic titles that must NEVER key the work_index (every artist has dozens) — a
+# match on these would falsely fold unrelated works. Mirrors the spirit of search.ts
+# GENERIC_TITLES, kept deliberately small + obvious.
+_GENERIC_TITLES = frozenset({
+    "", "untitled", "unknown", "no title", "untitled work", "sans titre",
+    "self portrait", "portrait of a man", "portrait of a woman", "landscape",
+    "still life", "composition", "study", "sketch", "drawing", "painting",
+})
+
+
+def _work_title_key(title: str) -> str:
+    """Normalise a title for the work_index. MUST stay byte-identical to adapters.ts
+    `workTitleKey`: NFKD-fold, drop combining marks, lowercase, collapse every run of
+    non-(letter|number) to a single space, trim. Keeps CJK/Cyrillic letters so a
+    Japanese alias matches a Japanese source title. Artist-anchored at lookup, so this
+    can be aggressive without cross-artist false merges."""
+    s = unicodedata.normalize("NFKD", title or "")
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    s = s.lower()
+    s = re.sub(r"[^0-9\w]+", " ", s, flags=re.UNICODE)  # \w keeps unicode letters/digits
+    s = s.replace("_", " ")
+    return " ".join(s.split())
+
 _PREFIX = (
     "PREFIX wdt: <http://www.wikidata.org/prop/direct/> "
     "PREFIX wd: <http://www.wikidata.org/entity/> "
@@ -81,13 +105,16 @@ _PREFIX = (
 # ?nb = Wikidata sitelink count — the notability/fame prior. Patched onto the works
 # Parquet as nb_sitelinks so search can ORDER BY it (famous works first) and the
 # runtime ranker can boost iconic works. Validated on QLever (Mona Lisa=146).
-_Q_WORKS = _PREFIX + """SELECT ?item ?creator ?depicts ?depictsLabel ?collection ?movementLabel ?nb WHERE {{
+_Q_WORKS = _PREFIX + """SELECT ?item ?creator ?depicts ?depictsLabel ?collection ?movementLabel ?nb ?label ?alias ?p1476 WHERE {{
   VALUES ?item {{ {values} }}
   OPTIONAL {{ ?item wdt:P170 ?creator . }}
   OPTIONAL {{ ?item wdt:P180 ?depicts . OPTIONAL {{ ?depicts rdfs:label ?depictsLabel . FILTER(LANG(?depictsLabel) = "en") }} }}
   OPTIONAL {{ ?item wdt:P195 ?collection . }}
   OPTIONAL {{ ?item wdt:P135 ?movement . OPTIONAL {{ ?movement rdfs:label ?movementLabel . FILTER(LANG(?movementLabel) = "en") }} }}
   OPTIONAL {{ ?item wikibase:sitelinks ?nb . }}
+  OPTIONAL {{ ?item rdfs:label ?label . FILTER(LANG(?label) = "en") }}
+  OPTIONAL {{ ?item skos:altLabel ?alias . FILTER(LANG(?alias) = "en") }}
+  OPTIONAL {{ ?item wdt:P1476 ?p1476 . }}
 }}
 """
 _Q_ARTISTS = _PREFIX + """SELECT ?a ?aLabel ?aDescription ?birth ?death ?natLabel ?ulan ?img ?alias ?movementLabel WHERE {{
@@ -165,7 +192,16 @@ def harvest_work_entities(client: httpx.Client, qids: list[str]) -> dict[str, di
     if os.path.exists(_CKPT):
         try:
             out = json.load(open(_CKPT))
-            print(f"  resuming: {len(out):,} works already enriched")
+            # Schema guard: entries written before the title harvest lack the "titles"
+            # key. Resuming from such a checkpoint would skip every work and leave the
+            # work_index empty. If ANY entry predates titles, discard and re-harvest
+            # (≈12 min) so the index is complete — no manual rm of the checkpoint needed.
+            if out and not all("titles" in v for v in out.values()):
+                print(f"  checkpoint ({len(out):,} works) predates title harvest — "
+                      "discarding to re-harvest titles for the work_index")
+                out = {}
+            else:
+                print(f"  resuming: {len(out):,} works already enriched")
         except Exception:
             out = {}
     todo = [q for q in qids if q not in out]
@@ -173,7 +209,8 @@ def harvest_work_entities(client: httpx.Client, qids: list[str]) -> dict[str, di
     for batch in tqdm(list(_batches(todo, _BATCH)), desc="works", unit="batch"):
         values = " ".join(f"wd:{q}" for q in batch)
         agg: dict[str, dict] = {q: {"creators": set(), "depicts": set(), "dlabels": {},
-                                    "collection": None, "movement": None, "nb": 0} for q in batch}
+                                    "collection": None, "movement": None, "nb": 0,
+                                    "titles": set()} for q in batch}
         try:
             for b in _wd_query(client, _Q_WORKS.format(values=values)):
                 q = _qid(_val(b, "item") or "")
@@ -197,6 +234,12 @@ def harvest_work_entities(client: httpx.Client, qids: list[str]) -> dict[str, di
                         agg[q]["nb"] = max(agg[q]["nb"], int(nb))
                     except ValueError:
                         pass
+                # Title variants (label + EN aliases + any-language P1476 title) feed
+                # the work_index so the SAME work folds across sources that title it
+                # differently ("The Great Wave" ↔ "Under the Wave off Kanagawa").
+                for tkey in ("label", "alias", "p1476"):
+                    if (tv := _val(b, tkey)):
+                        agg[q]["titles"].add(tv)
         except Exception as e:
             # A failed query returns ZERO rows → agg is all-defaults. Writing that to
             # `out` would checkpoint nb=0/None for the whole batch AND mark it done
@@ -218,6 +261,8 @@ def harvest_work_entities(client: httpx.Client, qids: list[str]) -> dict[str, di
                 "collection_qid": a["collection"],
                 "movement": a["movement"],
                 "nb_sitelinks": a["nb"] or None,
+                # all known title variants → work_index keys (display title untouched).
+                "titles": sorted(a["titles"]) or None,
             }
         json.dump(out, open(_CKPT, "w"))  # checkpoint after every successful batch
     if failed:
@@ -436,10 +481,43 @@ def enrich(repo: str = "NullSense/harpe-art", out: str | None = None) -> None:
     for q, e in subjects.items():
         subject_buckets[_bucket(q)][q] = _clean(e)
 
+    # ── work_index: title-variant + artist_qid → work QID ──────────────────────
+    # The cross-title/-language unifier. At runtime a source's work (Met "Under the
+    # Wave off Kanagawa", a Commons JP upload) resolves its artist → QID (name_to_qid),
+    # then looks up its normalised title here → the work QID, which dedupe folds with
+    # every other copy. Keyed BY artist (sharded on _bucket(artist_qid), entry key
+    # "<normtitle>\x01<artist_qid>"), so an aggressive title norm can't cross-merge
+    # different artists. Same (title, artist) → two different works = ambiguous → dropped.
+    work_index_buckets: dict[int, dict] = defaultdict(dict)
+    wi_seen: dict[str, str] = {}
+    wi_ambiguous: set[str] = set()
+    for q, e in work_ent.items():
+        aq = e.get("artist_qid")
+        if not aq:
+            continue
+        for tv in (e.get("titles") or []):
+            k = _work_title_key(tv)
+            if len(k) < 4 or k in _GENERIC_TITLES:
+                continue
+            fk = f"{k}~{aq}"
+            if fk in wi_ambiguous:
+                continue
+            prev = wi_seen.get(fk)
+            if prev is None:
+                wi_seen[fk] = q
+            elif prev != q:
+                wi_ambiguous.add(fk)  # one (title, artist) → two works: drop both
+    for fk, q in wi_seen.items():
+        if fk in wi_ambiguous:
+            continue
+        work_index_buckets[_bucket(fk.split("~", 1)[1])][fk] = q
+    wi_entries = sum(len(v) for v in work_index_buckets.values())
+    print(f"{wi_entries:,} work_index entries ({len(wi_ambiguous):,} ambiguous dropped)")
+
     # Clear any prior entity layout first — the failed per-file run left orphan
     # files that would (a) re-trip the 10k/dir cap and (b) shadow the new bundles.
     print("Clearing previous entity layout…")
-    for sub in ("artists", "work_ids_by_artist", "depicts"):
+    for sub in ("artists", "work_ids_by_artist", "depicts", "work_index"):
         try:
             api.delete_folder(path_in_repo=f"data/{sub}", repo_id=repo, repo_type="dataset",
                               commit_message=f"reset data/{sub} for sharded layout")
@@ -461,15 +539,19 @@ def enrich(repo: str = "NullSense/harpe-art", out: str | None = None) -> None:
     for b, m in subject_buckets.items():
         ops.append(CommitOperationAdd(path_in_repo=f"data/depicts/{b}.json",
                    path_or_fileobj=json.dumps(m, **_J).encode()))
+    for b, m in work_index_buckets.items():
+        ops.append(CommitOperationAdd(path_in_repo=f"data/work_index/{b}.json",
+                   path_or_fileobj=json.dumps(m, **_J).encode()))
 
-    # ~769 files total → a couple of chunked commits (HF caps operations per commit).
+    # ~1k files total → a couple of chunked commits (HF caps operations per commit).
     CHUNK = 256
     for i in tqdm(range(0, len(ops), CHUNK), desc="commit", unit="chunk"):
         api.create_commit(repo_id=repo, repo_type="dataset", operations=ops[i:i + CHUNK],
                           commit_message=f"entity files {i // CHUNK + 1}")
 
     print(f"\nDone. {len(artists):,} artists, {len(subjects):,} subjects, "
-          f"{sum(len(v) for v in work_ids_by_artist.values()):,} artist↔work links "
+          f"{sum(len(v) for v in work_ids_by_artist.values()):,} artist↔work links, "
+          f"{wi_entries:,} work_index entries "
           f"across {len(artist_buckets)} shards.")
     print("Patched works + entity files are live on the HF CDN — redeploy Vercel to serve them.")
 

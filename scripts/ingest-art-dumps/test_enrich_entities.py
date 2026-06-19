@@ -50,6 +50,24 @@ def test_bucket_matches_adapters_ts_scheme():
     assert E._bucket("Q119007077") == 101
 
 
+def test_work_title_key_matches_adapters_ts_workTitleKey():
+    # MUST equal adapters.ts workTitleKey (verified byte-identical incl. CJK + accents):
+    # NFKD-fold, drop marks, lowercase, non-(letter|number)→space, collapse, trim.
+    assert E._work_title_key("The Great Wave off Kanagawa") == "the great wave off kanagawa"
+    assert (E._work_title_key("Under the Wave off Kanagawa (Kanagawa oki nami ura)")
+            == "under the wave off kanagawa kanagawa oki nami ura")
+    assert E._work_title_key("Belshazzar's Feast") == "belshazzar s feast"
+    assert E._work_title_key("Café Terrace, Arles") == "cafe terrace arles"
+    assert E._work_title_key("神奈川沖浪裏") == "神奈川沖浪裏"  # CJK preserved
+    assert E._work_title_key("") == ""
+
+
+def test_generic_titles_are_excluded_from_work_index():
+    # Generic titles must never key the index (would falsely fold unrelated works).
+    for t in ("untitled", "landscape", "self portrait", "still life"):
+        assert E._work_title_key(t) in E._GENERIC_TITLES
+
+
 def test_build_name_to_qid_label_and_aliases_first_wins():
     artists = {
         "Q5582": {"labelEn": "Vincent van Gogh", "aliases": ["van Gogh", "Vincent Willem van Gogh"]},

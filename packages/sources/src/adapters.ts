@@ -2025,6 +2025,66 @@ async function fetchShardedEntity<T>(dir: string, qid: string): Promise<T | null
   return v == null ? null : (v as T);
 }
 
+// ─── Work-level knowledge-graph linking (the cross-title/-language unifier) ────
+// `data/work_index/<bucket>.json` maps "<normTitle>~<artistQID>" → workQID, built at
+// ingest from every Wikidata title/alias (enrich_entities.py). Sharded by
+// entityBucket(artistQID), so an item that already has an artistId (from
+// enrichArtistIds) fetches ONE shard and resolves its own work's QID — even when its
+// title differs from every other source's ("The Great Wave" ↔ "Under the Wave off
+// Kanagawa" ↔ "神奈川沖浪裏"). dedupe() then folds them all on the shared QID and the KG
+// (nb/depicts/movement) propagates. Absent shard (pre-enrichment) → graceful no-op.
+
+// Digitisation-programme suffixes Commons bolts onto titles — stripped from the
+// SOURCE title before work_index lookup (the index holds clean Wikidata titles).
+const WORK_PROGRAMME_SUFFIX = /\s*[-–—,]?\s*(google art project|google cultural institute|the yorck project|web gallery of art)\s*$/i;
+
+/** Normalise a title to a work_index key. MUST stay byte-identical to
+ *  enrich_entities.py `_work_title_key`: NFKD-fold, drop combining marks, lowercase,
+ *  collapse every run of non-(letter|number) to one space, trim. */
+export function workTitleKey(title: string): string {
+  return (title || '')
+    .normalize('NFKD')
+    .replace(/\p{M}+/gu, '')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .trim()
+    .replace(/\s+/g, ' ');
+}
+
+/** Set `wikidataId` on items that lack it by resolving (title, artistId) against the
+ *  work_index. Needs artistId set first (enrichArtistIds). Best-effort + bounded:
+ *  one memoised shard per artist bucket, capped fan-out, absent shard → no-op. */
+export async function enrichWorkIds(items: ArtItem[]): Promise<void> {
+  const need = items.filter((it) => it.artistId && !it.wikidataId && it.title);
+  if (!need.length) return;
+  const buckets = [...new Set(need.map((it) => entityBucket(it.artistId as string)))];
+  const MAX_BUCKETS = 24; // bound fan-out on broad multi-artist queries
+  const shards = new Map<number, Record<string, unknown> | null>();
+  await mapPool(buckets.slice(0, MAX_BUCKETS), 6, async (b) => {
+    const rep = need.find((it) => entityBucket(it.artistId as string) === b) as ArtItem;
+    shards.set(b, await fetchEntityBucket('work_index', rep.artistId as string).catch(() => null));
+  });
+  for (const it of need) {
+    const map = shards.get(entityBucket(it.artistId as string));
+    if (!map) continue;
+    const aid = it.artistId as string;
+    // Index keys are CLEAN Wikidata titles, so strip Commons' programme suffix from
+    // the source title first ("… - Google Art Project") before keying + prefix-strip.
+    const cleaned = (it.title as string).replace(WORK_PROGRAMME_SUFFIX, '');
+    const base = workTitleKey(cleaned);
+    // also try with a leading "<artist> " stripped (Commons "Creator - Title"): the
+    // index keys are clean Wikidata titles with no artist prefix.
+    const at = new Set(normalize(it.artist || '').split(' ').filter(Boolean));
+    const toks = base.split(' ');
+    while (toks.length > 1 && at.has(toks[0])) toks.shift();
+    const stripped = toks.join(' ');
+    for (const k of stripped === base ? [base] : [base, stripped]) {
+      const q = map[`${k}~${aid}`];
+      if (typeof q === 'string' && /^Q\d+$/.test(q)) { it.wikidataId = q; break; }
+    }
+  }
+}
+
 /** A knowledge-graph artist node by QID (null if not in the index). */
 export function fetchArtistEntity(qid: string): Promise<ArtistEntity | null> {
   return fetchShardedEntity<ArtistEntity>('artists', qid);

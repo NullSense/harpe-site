@@ -7,7 +7,7 @@ import type { SourceAdapter, ArtItem } from '@harpe/core';
 import {
   fetchCommons, fetchWikiArt, fetchVam,
   fetchNasjonalmuseet, fetchDigitalNZ, fetchParisMusees,
-  fetchDumpSource, fetchNypl, dumpDatasetEnv, enrichArtistIds,
+  fetchDumpSource, fetchNypl, dumpDatasetEnv, enrichArtistIds, enrichWorkIds,
 } from './adapters.js';
 import { runSource } from './resilience.js';
 export { mapPool } from './helpers.js';
@@ -71,11 +71,16 @@ export async function gatherSources(q: string): Promise<Array<[string, Promise<A
   // their own shared HF policy) — a degraded upstream fails fast instead of
   // taxing every query. See resilience.ts.
   //
-  // Every source's items pass through enrichArtistIds so the artist-entity link is
-  // present uniformly (live sources don't resolve it themselves) BEFORE the items
-  // are streamed or de-duplicated — the knowledge graph reaches the whole pool.
+  // Every source's items pass through the KG passes BEFORE they're streamed or
+  // de-duplicated, so linking reaches the whole pool: enrichArtistIds resolves the
+  // artist entity link (live sources don't), then enrichWorkIds resolves the work's
+  // Wikidata QID from its title (work_index) so cross-title/-language copies fold.
   return activeSources().map((s) => [
     s.label,
-    runSource(s, q).then(async (items) => { await enrichArtistIds(items); return items; }),
+    runSource(s, q).then(async (items) => {
+      await enrichArtistIds(items);
+      await enrichWorkIds(items);
+      return items;
+    }),
   ] as [string, Promise<ArtItem[]>]);
 }
