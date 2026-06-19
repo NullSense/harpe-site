@@ -529,6 +529,27 @@ export async function enrichCommonsWikidataIds(items: ArtItem[], signal: AbortSi
   } catch { /* best-effort: leave items unenriched */ }
 }
 
+// ─── Universal artist-entity linking ──────────────────────────────────────────
+// Dump rows resolve artist_qid in rowToItem, but LIVE sources (commons, vam,
+// wikiart, nasjonalmuseet, digitalnz, parismusees) build ArtItems directly and so
+// carried no artistId — a Commons/V&A work that didn't merge had no artist-page
+// link at all. This central pass gives EVERY item from EVERY source the same
+// name→QID resolution, so the knowledge graph (artist entity pages) reaches the
+// whole result set uniformly. Idempotent: items that already have an artistId
+// (dump rows, or a Wikidata-native work) are left untouched. Best-effort + cheap
+// (the name index is memoised; resolution is a map lookup), so it never blocks or
+// breaks a search.
+export async function enrichArtistIds(items: ArtItem[]): Promise<void> {
+  if (!items.some((it) => !it.artistId && it.artist)) return; // nothing to fill
+  const nameMap = await loadNameToQid(); // memoised; {} on miss
+  if (!Object.keys(nameMap).length) return;
+  for (const it of items) {
+    if (it.artistId || !it.artist) continue;
+    const qid = resolveArtistQid(nameMap, it.artist);
+    if (qid) it.artistId = qid;
+  }
+}
+
 // ─── WikiArt (paintings-focused; keyless v2 API) ──────────────────────────────
 // GOD-FORMAT: style, medium, artworkType, tags, accessionNumber require the per-painting
 // detail endpoint (GET /en/api/2/Painting?paintingUrl=…) — deferred for latency.

@@ -402,6 +402,28 @@ describe('dedupe', () => {
     expect(out[0].dupCount).toBe(2);
   });
 
+  it('folds a Commons "Artist - Title - Google Art Project" onto a museum bare title', () => {
+    // Commons names files "Creator - Title[ - programme]"; without stripping that
+    // the work never folds with a museum's clean title. No shared QID/file here —
+    // purely the artist-aware title key + programme-suffix strip doing the merge.
+    const out = dedupe([
+      mk({ id: 'commons-9', source: 'commons', title: 'Hokusai - The Great Wave off Kanagawa - Google Art Project', artist: 'Katsushika Hokusai', fullUrl: 'https://upload.wikimedia.org/wikipedia/commons/0/0a/wave_commons.jpg', width: 4000, height: 2700 }),
+      mk({ id: 'met-1', source: 'met', title: 'The Great Wave off Kanagawa', artist: 'Katsushika Hokusai', fullUrl: 'https://images.metmuseum.org/wave_met.jpg', width: 3000, height: 2000 }),
+    ]);
+    expect(out).toHaveLength(1);
+    expect(out[0].dupCount).toBe(2);
+  });
+
+  it('does NOT strip a leading word that merely looks like a name (no false merge)', () => {
+    // "Vincent's Bedroom" must not be treated as "Vincent" + "- s Bedroom"; and two
+    // unrelated works sharing a first word stay separate.
+    const out = dedupe([
+      mk({ id: 'a', source: 'met', title: "Vincent's Bedroom in Arles", artist: 'van Gogh', fullUrl: 'https://m/a.jpg' }),
+      mk({ id: 'b', source: 'aic', title: 'Vincent van Gogh Self Portrait', artist: 'van Gogh', fullUrl: 'https://m/b.jpg' }),
+    ]);
+    expect(out).toHaveLength(2);
+  });
+
   it('folds the SAME painting across languages via Wikidata QID (different files + titles)', () => {
     // The cross-language case: a Polish-titled Commons scan, an English-titled
     // Commons scan, and the Wikidata item — different files, different titles, no

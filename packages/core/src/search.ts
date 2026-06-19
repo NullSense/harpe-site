@@ -255,13 +255,38 @@ export function isRelevant(item: Scorable, query: string): boolean {
 // codes are matched on the RAW title (uppercase survives) to avoid eating real
 // words like "Kyiv"; qualifiers are matched after diacritic-folding.
 const TITLE_QUALIFIER_PARENS = /\s*[([{][^)\]}]*\b(detail|d[ée]tail|fragment|verso|recto|obverse|reverse|cropped)\b[^)\]}]*[)\]}]/gi;
+// Aggregator/digitisation-programme suffixes that Commons/Europeana bolt onto an
+// otherwise-clean title ("… - Google Art Project", "(Rijksmuseum)") — stripped from
+// the KEY so a museum's clean title folds with the Commons upload of the same work.
+const TITLE_PROGRAMME_SUFFIX = /\s*[-–—,]?\s*(google art project|google cultural institute|rijksmuseum|the yorck project|web gallery of art|wga|projekt gutenberg)\s*$/i;
 function stripRawTitleNoise(title: string): string {
   return title
     .replace(TITLE_QUALIFIER_PARENS, ' ')
+    .replace(TITLE_PROGRAMME_SUFFIX, ' ')
     // keyword accession codes: "inv. 1234", "no. 5", "acc. 1990.1"
     .replace(/[\s,;]+(?:inv\.?|no\.?|nr\.?|acc\.?|cat\.?)\s*[A-Za-z0-9.\-/]+\s*$/g, ' ')
     // bare uppercase museum codes at the end: 1–3 ALL-CAPS tokens then a number
     .replace(/(?:\b[A-Z]{2,5}\s+){1,3}\d{2,}\s*$/g, ' ');
+}
+
+/** Strip a leading "<artist> - " / "<artist>: " from a title. Commons names files
+ *  "Creator - Title" ("William Blake - The Great Red Dragon…"), which never folds
+ *  with a museum's bare "The Great Red Dragon…". Only removes the prefix when it is
+ *  exactly the item's own artist (token-prefix match) followed by a separator, so a
+ *  real title that merely starts with a name ("Vincent's Bedroom") is untouched. */
+function stripArtistPrefix(title: string, artist?: string): string {
+  const at = new Set(tokenize(artist || ''));
+  if (!at.size) return title;
+  // separator forms: " - ", " – ", " — ", ": ", " | " between artist and title.
+  const m = /^(.*?)\s*[-–—:|]\s+(.+)$/.exec(title.trim());
+  if (!m) return title;
+  const pt = tokenize(m[1]);
+  // Drop the leading segment only when it IS the artist (every prefix token is an
+  // artist token — handles short forms: "Hokusai" ⊆ "Katsushika Hokusai"). A title
+  // that merely starts with a word ("Vincent's Bedroom") has no separator and is
+  // left untouched; "Madonna - …" by Raphael isn't an artist match, so also kept.
+  if (pt.length && pt.every((tok) => at.has(tok))) return m[2];
+  return title;
 }
 
 /** Canonical, noise-stripped title for the work-identity key (display untouched). */
@@ -275,7 +300,7 @@ function canonTitle(title: string): string {
 
 /** Group key for "the same work across sources" (diacritic-folded title+artist). */
 export function workKey(it: { title?: string; artist?: string }): string {
-  return `${canonTitle(it.title || '')}|${normalize(it.artist || '')}`;
+  return `${canonTitle(stripArtistPrefix(it.title || '', it.artist))}|${normalize(it.artist || '')}`;
 }
 
 export interface Fusable {
@@ -355,9 +380,11 @@ export function imageIdentity(it: { thumbUrl?: string; previewUrl?: string; full
   return low.split('#')[0].split('?')[0];
 }
 
-/** Diacritic-folded, de-articled, noise-stripped title (for the work-identity bucket). */
-function titleKey(it: { title?: string }): string {
-  return canonTitle(it.title || '');
+/** Diacritic-folded, de-articled, noise-stripped title (for the work-identity bucket).
+ *  Artist-aware: a leading "<artist> - " prefix is stripped so Commons "Creator -
+ *  Title" folds with a museum's bare "Title". */
+function titleKey(it: { title?: string; artist?: string }): string {
+  return canonTitle(stripArtistPrefix(it.title || '', it.artist));
 }
 
 /** Bucket key for work identity, or '' when too generic / artist-less to merge. */

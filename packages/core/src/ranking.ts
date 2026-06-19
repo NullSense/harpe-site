@@ -39,7 +39,7 @@ const WANT_BOOK_RE = /\b(book|magazine|periodical|pamphlet|manuscript|illustrati
 const PHOTO_OF_ART_RE = /\b(tilted|cropped|detail|verso|recto|framed|reframed|unframed|before restoration|after (cleaning|restoration)|raking light|infra-?red|x-?ray|backside|reverse side|in its frame|with frame|in frame|angled|perspective view|wide shot|close-?up|on display|gallery view)\b|\b(hung|mounted|displayed|installed|exhibited)\s+on the wall\b|avec\s+cadre|sans\s+cadre/i;
 // digitalnz/commons are noisy; wikidata/europeana are aggregators with variable
 // metadata — a soft penalty aligns ranking with their representative-pick priority.
-const SRC_PRIOR: Record<string, number> = { digitalnz: -5, commons: -1, si: -1, wikidata: -0.5, europeana: -0.5 };
+const SRC_PRIOR: Record<string, number> = { digitalnz: -8, commons: -1, si: -1, wikidata: -0.5, europeana: -0.5 };
 
 /** Strip HTML tags + decode the common entities so raw "<em>…" never shows. */
 export function stripHtml(s: string): string {
