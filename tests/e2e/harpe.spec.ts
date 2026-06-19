@@ -34,6 +34,24 @@ test('a ?artist= deep link reopens the entity page (not a text search)', async (
   await expect(page.locator('img[alt*="Plain Image Demo"]').first()).toBeVisible(); // its works
 });
 
+test('the detail viewer moves focus in on open and restores it to the card on close (a11y)', async ({ page }) => {
+  // Regression: opening the viewer must move focus into the modal (so the focus trap
+  // + screen reader land inside it), and closing must return focus to the card the
+  // user came from — not drop it at the top of the page.
+  await page.goto('/?q=demo');
+  const card = page.getByRole('button', { name: 'Open Plain Image Demo' });
+  await expect(card).toBeVisible();
+  await card.focus();
+  await page.keyboard.press('Enter');
+  const dialog = page.getByRole('dialog');
+  await expect(dialog).toBeVisible();
+  // focus is inside the modal (on the dialog root or a descendant)
+  expect(await dialog.evaluate((el) => el.contains(document.activeElement) || el === document.activeElement)).toBe(true);
+  await page.keyboard.press('Escape');
+  await expect(dialog).toBeHidden();
+  await expect(card).toBeFocused(); // focus returned to the trigger
+});
+
 test('a ?v= deep link to an item outside the result set opens it via /api/item', async ({ page }) => {
   // Regression: a shared ?v=<id> can point at a work that isn't in this (non-
   // deterministic, live-source) result set. The by-id fallback must resolve it via

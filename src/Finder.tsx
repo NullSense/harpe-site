@@ -635,16 +635,42 @@ function ArtDetail({
 
   useEffect(() => { panRef.current = { x: 0, y: 0 }; setZ(1); setNat(null); setPickIdx(null); }, [index]);
   useEffect(() => { apply(z); }, [z, apply]);
+  const dialogRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
       else if (e.key === 'ArrowRight' && index < items.length - 1) onIndex(index + 1);
       else if (e.key === 'ArrowLeft' && index > 0) onIndex(index - 1);
+      else if (e.key === 'Tab') {
+        // Focus trap: keep Tab cycling inside the modal so keyboard / screen-reader
+        // users can't tab out into the (inert, aria-hidden) page behind it.
+        const root = dialogRef.current;
+        if (!root) return;
+        const f = root.querySelectorAll<HTMLElement>(
+          'a[href],button:not([disabled]),input:not([disabled]),select,textarea,[tabindex]:not([tabindex="-1"])',
+        );
+        if (f.length === 0) { e.preventDefault(); root.focus(); return; }
+        const first = f[0], last = f[f.length - 1];
+        const cur = document.activeElement;
+        if (e.shiftKey && (cur === first || cur === root)) { e.preventDefault(); last.focus(); }
+        else if (!e.shiftKey && cur === last) { e.preventDefault(); first.focus(); }
+      }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [open, index, items.length, onClose, onIndex]);
+
+  // a11y: when the viewer opens, move focus into it; when it closes, restore focus
+  // to whatever was focused before (the grid card / link the user came from), so
+  // keyboard users aren't dropped at the top of the page. Keyed on `open` only —
+  // navigating between works keeps the same focus session.
+  useEffect(() => {
+    if (!open) return;
+    const prevFocus = document.activeElement as HTMLElement | null;
+    dialogRef.current?.focus();
+    return () => { try { prevFocus?.focus?.(); } catch { /* trigger gone from the DOM */ } };
+  }, [open]);
 
   if (!open) return null;
   const item = items[index];
@@ -713,7 +739,7 @@ function ArtDetail({
   };
 
   return createPortal(
-    <div role="dialog" aria-modal="true" aria-label={item.title} className="fixed inset-0 z-[70] flex flex-col bg-[rgba(8,6,4,.96)] backdrop-blur-sm lg:flex-row">
+    <div ref={dialogRef} tabIndex={-1} role="dialog" aria-modal="true" aria-label={item.title} className="fixed inset-0 z-[70] flex flex-col bg-[rgba(8,6,4,.96)] backdrop-blur-sm outline-none lg:flex-row">
       {/* image stage */}
       <div className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden" {...imgHandlers}>
         {item.video ? (
