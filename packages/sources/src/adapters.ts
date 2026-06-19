@@ -1560,7 +1560,7 @@ const dumpSearchCache = new Map<string, Promise<ArtItem[]>>();
 // Per-(dataset,query,page) cache for the infinite-scroll pages — a CDN miss would
 // otherwise fire 13 concurrent HF /filter calls; this coalesces + survives across
 // instances via Upstash, same two-tier pattern as dumpSearchCache.
-type DumpPage = { items: ArtItem[]; hasMore: boolean; total: number };
+type DumpPage = { items: ArtItem[]; hasMore: boolean; total: number; complete?: boolean };
 const dumpPageCache = new Map<string, Promise<DumpPage>>();
 
 /** Test-only: clear the in-memory dump-page cache so each case fetches fresh. */
@@ -1587,7 +1587,11 @@ async function getDumpRedis() {
   return _dumpRedis;
 }
 
-const DUMP_CACHE_TTL_S = 5 * 60; // 5-minute TTL for dump search results
+// 6h TTL: the dump is static between ingests, so a complete result stays valid for
+// hours — long caching slashes HF /filter load (the 504 source). A re-ingest's
+// changes surface within the TTL; only COMPLETE results are written here (see
+// fetchDumpSearch), so a degraded answer never sticks.
+const DUMP_CACHE_TTL_S = 6 * 60 * 60;
 const DUMP_CACHE_KEY_PREFIX = 'dump-search:';
 
 export function dumpDatasetEnv(source: DumpSourceKey): string {
@@ -1617,9 +1621,13 @@ export function fetchDumpSearch(dataset: string, q: string): Promise<ArtItem[]> 
           }
         } catch { /* ignore KV errors — fall through to live fetch */ }
       }
-      const items = await fetchDumpSearchUncached(q, dataset);
-      // Populate KV with SET-if-not-exists (NX) to avoid stampede overwrites.
-      if (redis) {
+      const { items, complete } = await fetchDumpSearchUncached(q, dataset);
+      // Only cross-instance-cache a COMPLETE result, and then for a long TTL — the
+      // dump is static between ingests, so there's no reason to re-hit HF every few
+      // minutes (that re-exposed every instance to HF's latency → the 504s). A
+      // partial result (some source failed) is NOT written to KV, so a degraded
+      // answer can't propagate; it lives only in this warm instance's memory.
+      if (redis && complete) {
         try {
           await redis.set(kvKey, JSON.stringify(items), { ex: DUMP_CACHE_TTL_S, nx: true });
         } catch { /* ignore KV write errors */ }
@@ -1769,19 +1777,20 @@ function rowToItem(
   };
 }
 
-async function fetchDumpSearchUncached(q: string, dataset: string): Promise<ArtItem[]> {
+async function fetchDumpSearchUncached(q: string, dataset: string): Promise<{ items: ArtItem[]; complete: boolean }> {
   const nameMap = await loadNameToQid(); // memoised; {} on miss
   const sources = Object.keys(DUMP_SOURCE_LABELS) as DumpSourceKey[];
-  // Query every dump source independently (concurrency-capped to be polite to HF).
-  // A source that fails returns []; only if ALL fail do we throw (so a transient
-  // outage isn't cached as "no results" for the 5-minute TTL).
+  // Query every dump source independently in one wave. A source that fails returns
+  // []; we track failures so the caller only cross-instance-caches a COMPLETE result
+  // (every source answered) — a partial/degraded result must not stick in shared KV.
   let anyOk = false;
+  let failed = 0;
   const perSource = await mapPool(sources, DUMP_CONCURRENCY, async (s): Promise<Array<Record<string, unknown>>> => {
     try {
       const { rows } = await dumpFilterRows(dataset, s, q);
       anyOk = true;
       return rows;
-    } catch { return []; } // anyOk stays false on any failure → the all-failed guard below catches it
+    } catch { failed++; return []; }
   });
   const rows = perSource.flat().filter((r): r is Record<string, unknown> => !!r);
   if (!anyOk && rows.length === 0) throw new Error('all dump sources failed');
@@ -1795,7 +1804,7 @@ async function fetchDumpSearchUncached(q: string, dataset: string): Promise<ArtI
     const item = rowToItem(row, nameMap, items.length);
     if (item) items.push(item);
   }
-  return items;
+  return { items, complete: failed === 0 };
 }
 
 
@@ -1835,7 +1844,9 @@ export function fetchDumpPage(dataset: string, q: string, page: number): Promise
         } catch { /* ignore KV errors — fall through to live fetch */ }
       }
       const out = await fetchDumpPageUncached(dataset, q, page);
-      if (redis) {
+      // Only cross-instance-cache a COMPLETE page (every source answered) so a
+      // degraded page never sticks in shared KV for the long TTL.
+      if (redis && out.complete) {
         try { await redis.set(kvKey, JSON.stringify(out), { ex: DUMP_CACHE_TTL_S, nx: true }); }
         catch { /* ignore KV write errors */ }
       }
@@ -1865,6 +1876,7 @@ async function fetchDumpPageUncached(
   // A broken-circuit source yields [] + 0 total (quiet degradation). Only throw
   // when ALL sources fail, matching fetchDumpSearchUncached's error tolerance.
   let anyOk = false;
+  let failed = 0;
   const perSource = await mapPool(
     sources,
     DUMP_CONCURRENCY,
@@ -1874,7 +1886,7 @@ async function fetchDumpPageUncached(
         anyOk = true;
         return result;
       } catch {
-        // anyOk stays false on any failure → the all-failed guard below catches it.
+        failed++; // a partial page must not be cross-instance-cached (see fetchDumpPage)
         return { rows: [], total: 0 };
       }
     },
@@ -1901,7 +1913,7 @@ async function fetchDumpPageUncached(
     if (item) items.push(item);
   }
 
-  return { items, hasMore, total };
+  return { items, hasMore, total, complete: failed === 0 };
 }
 
 // ─── Knowledge-graph entity files (static JSON on the HF CDN) ──────────────────
