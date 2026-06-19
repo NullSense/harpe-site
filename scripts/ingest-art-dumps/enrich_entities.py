@@ -44,6 +44,8 @@ import httpx
 import tenacity
 from tqdm import tqdm
 
+from paths import cache_path
+
 # QLever: a SPARQL engine over the full Wikidata dump with no 60s timeout — the
 # same endpoint the harvest uses. Far faster than WDQS for this VALUES-driven pass,
 # and it lets us use big batches. It needs explicit PREFIXes and rdfs:label /
@@ -55,7 +57,7 @@ _WDQS = "https://qlever.dev/api/wikidata"
 _UA = "HarpeArtIngest/1.0 (github.com/NullSense/harpe; matas234@gmail.com)"
 _BATCH = 1000        # QIDs per VALUES block — QLever handles big blocks fast
 _SUBJECT_CAP = 4000  # build depicts entity files only for the most-used subjects
-_CKPT = os.path.join(tempfile.gettempdir(), "harpe-entities.json")
+_CKPT = cache_path("entities.json")  # durable (~/.cache) so a reboot resumes, not recomputes
 # Entity files are SHARDED into bucket bundles ({QID: entity} per file) because HF
 # caps any directory at 10,000 files — one-file-per-QID (~90k artists) blows past it.
 # bucket = int(QID-digits) % _SHARDS. The runtime (adapters.ts `entityBucket`) MUST
@@ -64,10 +66,10 @@ _CKPT = os.path.join(tempfile.gettempdir(), "harpe-entities.json")
 _SHARDS = 256
 # Built artists+subjects are checkpointed here BEFORE the push, so a failed/slow HF
 # commit never forces a re-harvest of the ~16 min artist pass — re-run resumes here.
-_ENT_CKPT = os.path.join(tempfile.gettempdir(), "harpe-entities-built.json")
+_ENT_CKPT = cache_path("entities-built.json")
 # R3 same-as remap (member QID → canonical QID) checkpointed so a re-run skips the
 # ~12-min P460 pass. Cleared by `rm` of _CKPT (same as the work harvest).
-_SAMEAS_CKPT = os.path.join(tempfile.gettempdir(), "harpe-sameas-clusters.json")
+_SAMEAS_CKPT = cache_path("sameas-clusters.json")
 
 
 def _bucket(qid: str) -> int:

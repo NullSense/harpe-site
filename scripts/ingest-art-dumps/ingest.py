@@ -1513,18 +1513,28 @@ if __name__ == "__main__":
     ap.add_argument("--enrich-only", action="store_true",
                     help="skip harvesting — only (re)build the entity layer from the already-"
                          "published dataset; requires --push")
+    ap.add_argument("--crosswalk", action="store_true",
+                    help="fill wikidata_qid from the Wikidata external-id crosswalk (QLever) — "
+                         "improves QID coverage with NO source re-harvest; requires --push. "
+                         "Chain with --enrich-only to fold the new QIDs into canonical_id.")
     args = ap.parse_args()
 
     keys = ([k.strip() for k in args.sources.split(",") if k.strip()]
             if args.sources else list(DEFAULT_SOURCES))
 
     try:
+        if args.crosswalk:
+            if not args.push:
+                ap.error("--crosswalk requires --push <HF_DATASET>")
+            import crosswalk
+            crosswalk.run(args.push)  # patch wikidata_qid in place, no re-harvest
+
         if args.enrich_only:
             if not args.push:
                 ap.error("--enrich-only requires --push <HF_DATASET>")
             import enrich_entities
             enrich_entities.enrich(args.push)
-        else:
+        elif not args.crosswalk:
             built = build_parquet(args.out, keys, jobs=args.jobs)
             if args.push:
                 publish(args.out, built, args.push)
