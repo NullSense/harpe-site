@@ -288,8 +288,13 @@ def enrich(repo: str = "NullSense/harpe-art", out: str | None = None) -> None:
     print(f"{len(work_qids):,} distinct Wikidata works to enrich")
 
     client = httpx.Client(follow_redirects=True)
+    api = HfApi()
 
-    # Step 2 — work → creator/depicts/collection/movement
+    # ── Phase A — publish the per-work KG columns FIRST ────────────────────────
+    # The works→creator/depicts/collection/movement pass (checkpointed, resumable)
+    # is everything the search RESULTS need. Patch it onto the works Parquet and
+    # re-publish immediately, BEFORE the slower entity-page harvest — so card
+    # enrichment goes live on its own, and a Phase-B failure can't undo it.
     work_ent = harvest_work_entities(client, work_qids)
 
     # roll up: artist work-ids, artist work-counts, subject frequencies
@@ -303,17 +308,6 @@ def enrich(repo: str = "NullSense/harpe-art", out: str | None = None) -> None:
         for d in (e.get("depicts_qids") or "").split():
             subject_counts[d] += 1
 
-    # Step 4 — artist + subject metadata (subjects capped to the most-used)
-    artist_qids = sorted(artist_counts)
-    print(f"{len(artist_qids):,} distinct artists")
-    artists = harvest_artists(client, artist_qids, artist_counts)
-
-    top_subjects = sorted(subject_counts, key=lambda s: -subject_counts[s])[:_SUBJECT_CAP]
-    print(f"{len(top_subjects):,} subjects (capped at {_SUBJECT_CAP:,})")
-    subjects = harvest_subjects(client, top_subjects, subject_counts)
-    client.close()
-
-    # Step 3 — patch the works Parquet with the 4 KG columns, then re-publish
     print("Patching works Parquet…")
     rows = [(q, e.get("artist_qid"), e.get("depicts_qids"), e.get("depicts_labels"),
              e.get("collection_qid"), e.get("movement")) for q, e in work_ent.items()]
@@ -332,10 +326,23 @@ def enrich(repo: str = "NullSense/harpe-art", out: str | None = None) -> None:
     )
     con.close()
 
-    api = HfApi()
     print("Uploading patched works Parquet…")
     api.upload_file(path_or_fileobj=out, path_in_repo="data/train.parquet",
                     repo_id=repo, repo_type="dataset")
+    print("✓ Phase A live: search cards now carry artist_qid / depicts / movement "
+          "(redeploy Vercel to serve). Building entity pages next…")
+
+    # ── Phase B — artist + subject entity pages (the /artist + /depicts detail
+    # pages and non-Wikidata name resolution). Slower; published as a separate
+    # commit so it never blocks the card enrichment above.
+    artist_qids = sorted(artist_counts)
+    print(f"{len(artist_qids):,} distinct artists")
+    artists = harvest_artists(client, artist_qids, artist_counts)
+
+    top_subjects = sorted(subject_counts, key=lambda s: -subject_counts[s])[:_SUBJECT_CAP]
+    print(f"{len(top_subjects):,} subjects (capped at {_SUBJECT_CAP:,})")
+    subjects = harvest_subjects(client, top_subjects, subject_counts)
+    client.close()
 
     # name_to_qid.json → published to the HF CDN as part of the entity layer (a
     # future runtime singleton can resolve non-Wikidata artist names to QIDs from
