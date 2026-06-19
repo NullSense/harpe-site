@@ -33,11 +33,21 @@ export function decodeMessage(buf: Buffer): HostRequest {
 export function capReply(reply: HostReply): HostReply {
   if (encodeMessage(reply).length <= MAX_HOST_MESSAGE) return reply;
   if ('results' in reply && Array.isArray(reply.results)) {
-    const results = [...reply.results];
-    while (results.length && encodeMessage({ results, truncated: true }).length > MAX_HOST_MESSAGE) {
-      results.pop();
+    const all = reply.results;
+    // Binary-search the largest prefix that fits under the cap. O(log n) encodes
+    // instead of pop-one-and-re-encode (O(n²)) — the latter timed out CI on a
+    // 2000-item reply (each pop re-stringified the whole remaining array).
+    let lo = 0;          // known-fit length (empty always fits)
+    let hi = all.length; // upper bound
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (encodeMessage({ results: all.slice(0, mid), truncated: true }).length <= MAX_HOST_MESSAGE) {
+        lo = mid;
+      } else {
+        hi = mid - 1;
+      }
     }
-    return { results, truncated: true } as HostReply;
+    return { results: all.slice(0, lo), truncated: true } as HostReply;
   }
   return reply; // non-results replies are always small
 }
