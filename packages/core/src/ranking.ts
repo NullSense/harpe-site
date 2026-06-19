@@ -105,8 +105,13 @@ export function qualityScore(item: RankableItem, query = ''): number {
   let bonus = 0;
   if (area >= 4_000_000) bonus += 2;        // ≥2 MP — full museum scan
   else if (area >= 1_000_000) bonus += 1;   // ~1 MP — decent scan
-  // log-scaled fame prior (sitelinks): iconic works float above minor ones.
-  if (item.nbSitelinks && item.nbSitelinks > 0) bonus += Math.min(2, Math.log2(item.nbSitelinks + 1) * 0.6);
+  // NB: the fame prior (nbSitelinks) is deliberately NOT folded in here. It used to
+  // be, but mixing it with resolution let a high-res *minor* work (etching scan,
+  // +2 area) ride the same quality rank as an iconic painting, so fame was diluted
+  // to nothing. Fame now lives in its own RRF lane in fuse() (see W_NB) where only
+  // notable works score and the un-enriched majority sit at the bottom — so iconic
+  // works float up on flat-relevance artist/subject queries without this lane
+  // demoting the dimensionless live museums (Met/V&A) that have no nb at all.
   s += Math.min(3, bonus);                  // cap the stacked enrichment advantage
   // Small-image PENALTIES are uncapped (thumbnails/signature crops should sink),
   // and only apply when dims are known (area>0) so live items aren't punished.

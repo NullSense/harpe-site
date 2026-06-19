@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { normalize, tokenize, looksLikeName, within1, jaroWinkler, relevanceScore, isRelevant, workKey, fuse, rankResults, dedupe, imageIdentity } from './search';
+import { qualityScore, type RankableItem } from './ranking';
 
 describe('normalize', () => {
   it('folds diacritics and Nordic letters', () => {
@@ -139,6 +141,56 @@ describe('fuse (reciprocal rank fusion)', () => {
     const items = [mk('x', 'met', 'A'), mk('y', 'aic', 'B')];
     const out = fuse(items, 'zzz nomatch');
     expect(out).toHaveLength(2); // no crash, stable on a no-match query
+  });
+
+  // Regression: an artist-name query is near-flat on relevance (every hit matches
+  // the low-IDF name equally), so the tie-breaker lanes decide order. A unique
+  // masterpiece (The Night Watch, one collection → dupCount 2) used to sink below
+  // minor etchings a printmaker left in many museums (dupCount 8-10) because the
+  // consensus term was ~60× over-weighted AND fame was diluted inside qualityScore.
+  // Now fame has its own lane and consensus is a tiebreaker → the painting leads.
+  describe('notability lane vs cross-collection consensus', () => {
+    const etching = (id: string, title: string) =>
+      ({ id, source: 'mia', title, artist: 'Rembrandt van Rijn', isPublicDomain: true,
+         width: 6000, height: 7000, dupCount: 10 }); // widely-collected, no nb
+    const items = [
+      ...['Old Man with a Beard', 'Beggar Seated on a Bank', 'The Three Trees',
+          'Ephraim Bonus', 'Man Drawing from a Cast'].map((t, i) => etching(`e${i}`, t)),
+      // The unique masterpiece: high fame, held by a single collection.
+      { id: 'nightwatch', source: 'commons', title: 'The Night Watch',
+        artist: 'Rembrandt van Rijn', isPublicDomain: true,
+        width: 14000, height: 11000, nbSitelinks: 58, dupCount: 2 },
+    ];
+
+    it('floats the iconic work to #1 on a flat artist-name query', () => {
+      const out = fuse(items, 'Rembrandt', { qualityOf: (it) => qualityScore(it as RankableItem, 'Rembrandt') });
+      expect(out[0].id).toBe('nightwatch');
+    });
+  });
+
+  // Grounded in a real /api/art?q=Rembrandt page-0 result (40 deduped works). The
+  // specific-query protection is an emergent property of scale — relevance ranks
+  // separate enough across a real pool that fame stays a tiebreaker, not an
+  // override — so it can't be shown in a 6-item synthetic pool (RRF flattens score
+  // magnitude into rank-adjacency). This golden fixture pins BOTH behaviours.
+  describe('ranking on a real Rembrandt page-0 result (golden fixture)', () => {
+    const fixture = JSON.parse(
+      readFileSync(new URL('./__fixtures__/rembrandt-page0.json', import.meta.url), 'utf8'),
+    ) as Array<RankableItem & { id: string; artist?: string; dupCount?: number }>;
+    const rank = (q: string) =>
+      fuse(fixture as never[], q, { qualityOf: (it) => qualityScore(it as RankableItem, q) });
+
+    it('floats The Night Watch (nb=58) to #1 on the flat "Rembrandt" query', () => {
+      const out = rank('Rembrandt') as Array<{ title?: string }>;
+      expect(out[0].title).toMatch(/ronda de noche|night watch/i); // = The Night Watch
+    });
+
+    it('lets a specific query win: "self portrait" leads with a self-portrait, not the most-famous work', () => {
+      const out = rank('self portrait') as Array<{ title?: string }>;
+      expect(out[0].title).toMatch(/self-portrait/i);
+      const nightWatch = out.findIndex((it) => /ronda de noche|night watch/i.test(it.title || ''));
+      expect(nightWatch).toBeGreaterThan(0); // fame did NOT override the relevance signal
+    });
   });
 });
 

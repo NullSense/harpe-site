@@ -85,7 +85,7 @@ const fakeItem = (id = 'wikidata-1') => ({
   thumbUrl: 't.jpg',
   previewUrl: 'p.jpg',
   fullUrl: 'f.jpg',
-  source: 'wikidata',
+  source: 'wikidata' as const, // narrow to the ArtItem source union (not widened string)
   isPublicDomain: true,
   dimensions: '',
   format: 'jpeg',

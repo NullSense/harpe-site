@@ -611,6 +611,19 @@ export function fuse<T extends Fusable>(items: T[], query: string, opts: FuseOpt
   const relRank = rankOf((it) => rel.get(it)!);
   const qualRank = qual ? rankOf((it) => qual.get(it)!) : null;
 
+  // notability (fame) lane — ONLY items with a Wikidata sitelink count are ranked
+  // (by nb DESC); the un-enriched majority get no nb term at all. On an artist or
+  // subject query the relevance signal is near-flat (every "Rembrandt" hit matches
+  // "rembrandt" equally — a low-IDF token), so without this lane the tie is broken
+  // by arbitrary source/quality order and iconic works (The Night Watch, nb=58)
+  // sink below minor etchings. A small dedicated weight floats the famous works up
+  // on those flat-relevance queries while staying below the relevance spread of a
+  // SPECIFIC query, so "rembrandt self-portrait etching" still leads with etchings.
+  const nbBearing = items.filter((it) => (it.nbSitelinks ?? 0) > 0);
+  nbBearing.sort((a, b) => (b.nbSitelinks ?? 0) - (a.nbSitelinks ?? 0));
+  const nbRank = new Map<T, number>();
+  nbBearing.forEach((it, i) => nbRank.set(it, i));
+
   // consensus: how many distinct sources returned the same work.
   const sourcesPerWork = new Map<string, Set<string>>();
   for (const it of items) {
@@ -620,15 +633,29 @@ export function fuse<T extends Fusable>(items: T[], query: string, opts: FuseOpt
 
   // Weighted RRF: relevance leads, the source's own ranking supports it, quality
   // nudges, consensus rewards cross-museum agreement.
-  const W_REL = 3, W_SRC = 1, W_QUAL = 1.0, W_CONSENSUS = 0.4;
+  // W_NB tuned against real artist fixtures: 0.6 is the floor that floats an
+  // iconic work to #1 on a flat artist-name query; 0.7 keeps a small margin while
+  // staying well under the relevance spread of a SPECIFIC query (so "self-portrait"
+  // still leads with the self-portrait, not the most-famous unrelated work).
+  const W_REL = 3, W_SRC = 1, W_QUAL = 1.0, W_NB = 0.7, W_CONSENSUS = 0.4;
   const fused = new Map<T, number>();
   for (const it of items) {
     let s = W_REL / (K + relRank.get(it)!) + W_SRC / (K + srcRank.get(it)!);
     if (qualRank) s += W_QUAL / (K + qualRank.get(it)!);
+    // Fame lane: only notable works contribute (the rest add 0). W_NB/K ≈ 0.017 at
+    // the top — enough to break flat artist-query ties, below a real relevance lead.
+    const nr = nbRank.get(it);
+    if (nr !== undefined) s += W_NB / (K + nr);
     // After dedupe() each work is one item carrying dupCount; fall back to the
     // live same-key count for callers that fuse without de-duplicating first.
+    // NOTE: this term used to carry a trailing `* K`, which lifted it ~K(=60)× above
+    // every other RRF lane (≈0.4 vs relevance's ≈0.05) — so cross-museum agreement
+    // DOMINATED ranking. That's backwards for printmakers: a minor Rembrandt etching
+    // held by 10 museums (dup=10) buried The Night Watch, a unique painting in one
+    // collection (dup=2). Consensus is now a true RRF lane (a tiebreaker, not a
+    // sledgehammer) so fame/relevance lead and agreement only breaks near-ties.
     const consensus = Math.max(it.dupCount ?? 1, sourcesPerWork.get(keyOf(it))?.size ?? 1) - 1;
-    if (consensus > 0) s += W_CONSENSUS * (Math.min(consensus, 3) / 3) / (K + srcRank.get(it)!) * K;
+    if (consensus > 0) s += W_CONSENSUS * (Math.min(consensus, 3) / 3) / (K + srcRank.get(it)!);
     fused.set(it, s);
   }
 

@@ -64,11 +64,12 @@ describe('qualityScore', () => {
     expect(tiny).toBeLessThan(unknown);
     expect(huge).toBeGreaterThan(tiny);
   });
-  it('floats notable works up via the Wikidata sitelink prior', () => {
+  it('is fame-agnostic — the sitelink prior is NOT folded into quality', () => {
+    // qualityScore is purely physical (resolution/medium/PD). Fame (nbSitelinks)
+    // moved to its own RRF lane in fuse() so a high-res *minor* work can't ride the
+    // quality rank and dilute fame — see search.test.ts "notability lane".
     const base = { medium: 'oil on canvas', source: 'wikidata', title: 'A Work' };
-    const famous = qualityScore({ ...base, nbSitelinks: 80 });
-    const minor = qualityScore({ ...base, nbSitelinks: 0 });
-    expect(famous).toBeGreaterThan(minor);
+    expect(qualityScore({ ...base, nbSitelinks: 80 })).toBe(qualityScore({ ...base, nbSitelinks: 0 }));
   });
   it('gives public-domain works a small bonus', () => {
     const base = { medium: 'oil on canvas', source: 'met', title: 'A Work' };
