@@ -48,7 +48,9 @@ from tqdm import tqdm
 # and it lets us use big batches. It needs explicit PREFIXes and rdfs:label /
 # schema:description joins (no WDQS `SERVICE wikibase:label`). Results aggregated in
 # Python.
-_WDQS = "https://qlever.cs.uni-freiburg.de/api/wikidata"
+# qlever.cs.uni-freiburg.de now 308-redirects to qlever.dev (and 308 isn't followed
+# for POST), so target the canonical host directly.
+_WDQS = "https://qlever.dev/api/wikidata"
 _UA = "HarpeArtIngest/1.0 (github.com/NullSense/harpe; matas234@gmail.com)"
 _BATCH = 1000        # QIDs per VALUES block — QLever handles big blocks fast
 _SUBJECT_CAP = 4000  # build depicts entity files only for the most-used subjects
@@ -122,13 +124,15 @@ class _Retryable(Exception):
 )
 def _wd_query(client: httpx.Client, query: str) -> list[dict]:
     try:
-        resp = client.get(
-            _WDQS, params={"query": query},
+        # POST (form-encoded body), NOT GET: a batch of 1000 QIDs makes the query
+        # string exceed QLever's URI limit → HTTP 414. The body has no such limit.
+        resp = client.post(
+            _WDQS, data={"query": query},
             headers={"Accept": "application/sparql-results+json", "User-Agent": _UA},
             timeout=180,
         )
     except (httpx.TransportError, httpx.TimeoutException, OSError) as e:
-        raise _Retryable(str(e)) from e
+        raise _Retryable(str(e)[:200]) from e
     if resp.status_code == 429 or resp.status_code >= 500:
         raise _Retryable(f"HTTP {resp.status_code}")
     if resp.status_code == 400:                       # query error — not transient
@@ -165,6 +169,7 @@ def harvest_work_entities(client: httpx.Client, qids: list[str]) -> dict[str, di
         except Exception:
             out = {}
     todo = [q for q in qids if q not in out]
+    failed = 0
     for batch in tqdm(list(_batches(todo, _BATCH)), desc="works", unit="batch"):
         values = " ".join(f"wd:{q}" for q in batch)
         agg: dict[str, dict] = {q: {"creators": set(), "depicts": set(), "dlabels": {},
@@ -197,7 +202,8 @@ def harvest_work_entities(client: httpx.Client, qids: list[str]) -> dict[str, di
             # `out` would checkpoint nb=0/None for the whole batch AND mark it done
             # (resume skips it forever). So skip the batch entirely and retry next run
             # — matches harvest_artists. (Mirrors the correct `continue` pattern.)
-            print(f"  works batch failed ({e}); skipping {len(batch)} qids")
+            failed += 1
+            tqdm.write(f"  works batch failed ({str(e)[:160]}); skipping {len(batch)} qids")
             continue
         for q, a in agg.items():
             dsorted = sorted(a["depicts"])
@@ -214,6 +220,8 @@ def harvest_work_entities(client: httpx.Client, qids: list[str]) -> dict[str, di
                 "nb_sitelinks": a["nb"] or None,
             }
         json.dump(out, open(_CKPT, "w"))  # checkpoint after every successful batch
+    if failed:
+        print(f"  works: {failed} batch(es) failed (will retry on re-run); {len(out):,} enriched so far")
     return out
 
 
@@ -225,7 +233,7 @@ def harvest_artists(client: httpx.Client, qids: list[str], work_counts: dict[str
         try:
             rows = _wd_query(client, _Q_ARTISTS.format(values=values))
         except Exception as e:
-            print(f"  artists batch failed ({e}); skipping {len(batch)}")
+            tqdm.write(f"  artists batch failed ({str(e)[:160]}); skipping {len(batch)}")
             continue
         for b in rows:
             q = _qid(_val(b, "a") or "")
@@ -270,7 +278,7 @@ def harvest_subjects(client: httpx.Client, qids: list[str], counts: dict[str, in
         try:
             rows = _wd_query(client, _Q_SUBJECTS.format(values=values))
         except Exception as e:
-            print(f"  subjects batch failed ({e}); skipping {len(batch)}")
+            tqdm.write(f"  subjects batch failed ({str(e)[:160]}); skipping {len(batch)}")
             continue
         for b in rows:
             q = _qid(_val(b, "s") or "")
@@ -334,6 +342,12 @@ def enrich(repo: str = "NullSense/harpe-art", out: str | None = None) -> None:
     # re-publish immediately, BEFORE the slower entity-page harvest — so card
     # enrichment goes live on its own, and a Phase-B failure can't undo it.
     work_ent = harvest_work_entities(client, work_qids)
+    if not work_ent:
+        client.close()
+        raise SystemExit(
+            "No work entities were harvested — every QLever batch failed (check connectivity "
+            "to qlever.dev). Nothing to patch; aborting before touching the published dataset."
+        )
 
     # roll up: artist work-ids, artist work-counts, subject frequencies
     work_ids_by_artist: dict[str, list[str]] = defaultdict(list)
