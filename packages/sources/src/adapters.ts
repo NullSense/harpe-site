@@ -1603,66 +1603,114 @@ export function fetchDumpSearch(dataset: string, q: string): Promise<ArtItem[]> 
   return cached;
 }
 
-async function fetchDumpSearchUncached(q: string, dataset: string): Promise<ArtItem[]> {
-  const nameMap = await loadNameToQid(); // memoised; {} on miss
-  const url =
-    `https://datasets-server.huggingface.co/search?dataset=${encodeURIComponent(dataset)}` +
-    `&config=default&split=train&query=${encodeURIComponent(q)}&offset=0&length=100`;
-  // Run through the shared retry + breaker + (cooperative) timeout policy. The
-  // timeout supplies the AbortSignal; HF's cold-index latency gets the policy's
-  // headroom rather than a hand-rolled controller.
+// Per-source query depth. Each of the 13 dump sources is queried INDEPENDENTLY via
+// HF /filter (ILIKE), not one shared /search — a single BM25 /search let the text-
+// rich Wikidata rows monopolise all 100 slots (97% even at offset 400), starving
+// every museum source to 0 results. Per-source querying guarantees diversity.
+const DUMP_PER_SOURCE = Number(process.env.HARPE_DUMP_PER_SOURCE) || 30;
+
+// Whether the dataset has the notability column (nb_sitelinks, added by the ingest
+// enrichment pass) so we can ORDER BY fame. null = unknown (probe once); false =
+// absent (skip orderby, don't re-probe this process). A fresh deploy after a
+// re-ingest re-probes and starts ordering famous works first again.
+let _dumpNotabilityOrderable: boolean | null = null;
+
+const _sqlEsc = (s: string) => s.replace(/'/g, "''");
+
+// HF /filter WHERE for one source. Restrictive grammar (validated live): supports
+// AND/OR/parens/ILIKE with columns in double quotes. Artist must contain EVERY
+// query token (so "Rembrandt van Rijn" matches "Rembrandt (Rembrandt van Rijn)"),
+// OR the title / depicts label contains the whole phrase (title + theme queries).
+export function dumpWhere(source: string, q: string): string {
+  const toks = q.toLowerCase().split(/\s+/).map((t) => t.replace(/[%_]/g, '')).filter((t) => t.length >= 2).slice(0, 6);
+  const artist = (toks.length ? toks : [q.toLowerCase().replace(/[%_]/g, '')])
+    .map((t) => `"artist" ILIKE '%${_sqlEsc(t)}%'`).join(' AND ');
+  const fq = _sqlEsc(q.toLowerCase().replace(/[%_]/g, ''));
+  return `"source"='${_sqlEsc(source)}' AND ((${artist}) OR "title" ILIKE '%${fq}%' OR "depicts_labels" ILIKE '%${fq}%')`;
+}
+
+async function dumpFilterRows(dataset: string, source: string, q: string): Promise<Array<Record<string, unknown>>> {
+  const base =
+    `https://datasets-server.huggingface.co/filter?dataset=${encodeURIComponent(dataset)}` +
+    `&config=default&split=train&where=${encodeURIComponent(dumpWhere(source, q))}&offset=0&length=${DUMP_PER_SOURCE}`;
+  const withOrder = `${base}&orderby=${encodeURIComponent('"nb_sitelinks" DESC')}`;
   return dumpHttpPolicy.execute(async ({ signal }) => {
-    const res = await timedFetch(url, signal);
+    const tryOrder = _dumpNotabilityOrderable !== false;
+    let res = await timedFetch(tryOrder ? withOrder : base, signal);
+    if (tryOrder && res.status === 422) {
+      _dumpNotabilityOrderable = false; // column absent (pre-enrich) → stop ordering
+      res = await timedFetch(base, signal);
+    } else if (tryOrder && res.ok && _dumpNotabilityOrderable === null) {
+      _dumpNotabilityOrderable = true;
+    }
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const json = await res.json() as { rows?: Array<{ row?: Record<string, unknown> }> };
-    const items: ArtItem[] = [];
-    for (const { row } of json.rows ?? []) {
-      if (!row) continue;
-      const thumb = str(row.image_thumb) || str(row.image_full);
-      const full = str(row.image_full) || thumb;
-      if (!thumb) continue;
-      const source = str(row.source) as ArtItem['source'];
-      // Keep only rows for dump-backed sources we recognize (and can label);
-      // each fetchDumpSource() call filters this shared list to its own source.
-      if (!(source in DUMP_SOURCE_LABELS)) continue;
-      items.push({
-        id: str(row.id) || `dumps-${items.length}`,
-        title: str(row.title) || 'Untitled',
-        artist: str(row.artist),
-        dimensions: str(row.dimensions),
-        thumbUrl: thumb,
-        previewUrl: full,
-        fullUrl: full,
-        width: num(row.width),
-        height: num(row.height),
-        format: fmtFromUrl(full),
-        lossless: false,
-        downloads: [{ label: 'Full image', url: full, format: fmtFromUrl(full), lossless: false }],
-        source,
-        isPublicDomain: row.is_public_domain === true,
-        date: cleanDate(str(row.date)),
-        medium: str(row.medium),
-        culture: str(row.culture),
-        creditLine: str(row.credit_line),
-        description: str(row.description),
-        sourceUrl: str(row.source_url),
-        provider: DUMP_SOURCE_LABELS[source as DumpSourceKey],
-        // Knowledge-graph columns (present once the ingest enrichment pass has run;
-        // absent rows just leave these undefined → graceful no-op).
-        wikidataId: /^Q\d+$/.test(str(row.wikidata_qid)) ? str(row.wikidata_qid) : undefined,
-        // artist_qid from the enrichment pass (Wikidata rows), else resolve the
-        // free-text artist name via the name→QID map (other sources).
-        artistId: (/^Q\d+$/.test(str(row.artist_qid)) ? str(row.artist_qid) : undefined)
-          ?? resolveArtistQid(nameMap, str(row.artist)),
-        depicts: str(row.depicts_qids) ? str(row.depicts_qids).split(' ').filter(Boolean) : undefined,
-        depictsLabels: parseJsonArray(str(row.depicts_labels)),
-        clusterId: typeof row.cluster_id === 'number' ? row.cluster_id : undefined,
-        movement: str(row.movement) || undefined,
-      });
-    }
-    return items;
+    return (json.rows ?? []).map((r) => r.row).filter((r): r is Record<string, unknown> => !!r);
   });
 }
+
+async function fetchDumpSearchUncached(q: string, dataset: string): Promise<ArtItem[]> {
+  const nameMap = await loadNameToQid(); // memoised; {} on miss
+  const sources = Object.keys(DUMP_SOURCE_LABELS) as DumpSourceKey[];
+  // Query every dump source independently (concurrency-capped to be polite to HF).
+  // A source that fails returns []; only if ALL fail do we throw (so a transient
+  // outage isn't cached as "no results" for the 5-minute TTL).
+  let anyOk = false;
+  const perSource = await mapPool(sources, 6, async (s): Promise<Array<Record<string, unknown>>> => {
+    try { const r = await dumpFilterRows(dataset, s, q); anyOk = true; return r; }
+    catch (e) { if (isBrokenCircuitError(e)) { return []; } anyOk = anyOk || false; return []; }
+  });
+  const rows = perSource.flat().filter((r): r is Record<string, unknown> => !!r);
+  if (!anyOk && rows.length === 0) throw new Error('all dump sources failed');
+
+  const httpsify = (u: string) => u.replace(/^http:\/\//i, 'https://');
+  const seen = new Set<string>();
+  const items: ArtItem[] = [];
+  for (const row of rows) {
+    const id = str(row.id);
+    if (id && seen.has(id)) continue; // a work can match multiple per-source queries
+    if (id) seen.add(id);
+    const thumb = httpsify(str(row.image_thumb) || str(row.image_full));
+    const full = httpsify(str(row.image_full) || str(row.image_thumb));
+    if (!thumb) continue;
+    const source = str(row.source) as ArtItem['source'];
+    if (!(source in DUMP_SOURCE_LABELS)) continue;
+    const nb = Number(row.nb_sitelinks);
+    items.push({
+      id: id || `dumps-${items.length}`,
+      title: str(row.title) || 'Untitled',
+      artist: str(row.artist),
+      dimensions: str(row.dimensions),
+      thumbUrl: thumb,
+      previewUrl: full,
+      fullUrl: full,
+      width: num(row.width),
+      height: num(row.height),
+      format: fmtFromUrl(full),
+      lossless: false,
+      downloads: [{ label: 'Full image', url: full, format: fmtFromUrl(full), lossless: false }],
+      source,
+      isPublicDomain: row.is_public_domain === true,
+      date: cleanDate(str(row.date)),
+      medium: str(row.medium),
+      culture: str(row.culture),
+      creditLine: str(row.credit_line),
+      description: str(row.description),
+      sourceUrl: str(row.source_url),
+      provider: DUMP_SOURCE_LABELS[source as DumpSourceKey],
+      wikidataId: /^Q\d+$/.test(str(row.wikidata_qid)) ? str(row.wikidata_qid) : undefined,
+      artistId: (/^Q\d+$/.test(str(row.artist_qid)) ? str(row.artist_qid) : undefined)
+        ?? resolveArtistQid(nameMap, str(row.artist)),
+      depicts: str(row.depicts_qids) ? str(row.depicts_qids).split(' ').filter(Boolean) : undefined,
+      depictsLabels: parseJsonArray(str(row.depicts_labels)),
+      clusterId: typeof row.cluster_id === 'number' ? row.cluster_id : undefined,
+      movement: str(row.movement) || undefined,
+      nbSitelinks: Number.isFinite(nb) && nb > 0 ? nb : undefined,
+    });
+  }
+  return items;
+}
+
 
 export async function fetchDumpSource(source: DumpSourceKey, q: string): Promise<ArtItem[]> {
   const dataset = dumpDatasetFor(source);

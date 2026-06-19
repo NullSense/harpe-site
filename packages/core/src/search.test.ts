@@ -266,7 +266,7 @@ type Item = {
   thumbUrl?: string; previewUrl?: string; fullUrl?: string;
   width?: number; height?: number;
   date?: string; medium?: string; tags?: string[]; downloads?: unknown[];
-  wikidataId?: string; artistId?: string; depicts?: string[]; clusterId?: number; movement?: string;
+  wikidataId?: string; artistId?: string; depicts?: string[]; depictsLabels?: string[]; clusterId?: number; movement?: string; nbSitelinks?: number;
   // set at runtime by dedupe()
   dupCount?: number; mergedSources?: string[]; mergedIds?: string[];
   variants?: Array<{ source: string; date?: string; medium?: string }>;
@@ -400,6 +400,25 @@ describe('dedupe', () => {
     ]);
     expect(out).toHaveLength(1);
     expect(new Set(out[0].depicts)).toEqual(new Set(['Q5', 'Q12271']));
+  });
+
+  it('rebuilds index-aligned depictsLabels from all copies (no raw-QID fallback)', () => {
+    const out = dedupe([
+      // representative (larger) knows only "human figure"; the other copy has the cat label
+      mk({ id: 'wikidata-Q219831', source: 'wikidata', title: 'The Night Watch', artist: 'Rembrandt', fullUrl: 'https://m/b.jpg', depicts: ['Q12271'], depictsLabels: ['human figure'], width: 4000, height: 3000 }),
+      mk({ id: 'commons-1', source: 'commons', title: 'The Night Watch', artist: 'Rembrandt', fullUrl: 'https://m/a.jpg', wikidataId: 'Q219831', depicts: ['Q146'], depictsLabels: ['cat'], width: 100, height: 80 }),
+    ]);
+    expect(out).toHaveLength(1);
+    const map = Object.fromEntries((out[0].depicts ?? []).map((q, i) => [q, out[0].depictsLabels![i]]));
+    expect(map).toEqual({ Q12271: 'human figure', Q146: 'cat' }); // every QID has its label
+  });
+
+  it('does NOT merge an attribution copy ("after Rembrandt") with the master', () => {
+    const out = dedupe([
+      mk({ id: 'a', source: 'met', title: 'Self-Portrait', artist: 'Rembrandt van Rijn', fullUrl: 'https://m/a.jpg', width: 100, height: 80 }),
+      mk({ id: 'b', source: 'aic', title: 'Self-Portrait', artist: 'after Rembrandt van Rijn', fullUrl: 'https://m/b.jpg', width: 4000, height: 3000 }),
+    ]);
+    expect(out).toHaveLength(2); // the copy stays separate from the original
   });
 
   it('never merges on an empty / missing QID', () => {

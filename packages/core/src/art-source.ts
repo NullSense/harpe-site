@@ -92,6 +92,9 @@ export interface ArtItem {
   clusterId?: number;
   /** Art-historical movement label (Wikidata P135 or ArtGraph enrichment). */
   movement?: string;
+  /** Wikidata sitelink count — a notability/fame prior so iconic works rank first
+   *  (set at ingest for Wikidata works). Consumed by ranking.qualityScore(). */
+  nbSitelinks?: number;
   /** When this item is the merge of several sources (set by dedupe()), the
    *  per-source catalogue records that were collapsed — so the AI analysis can
    *  still draw on EVERY source's facts/descriptions even after de-duplication. */

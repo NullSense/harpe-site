@@ -88,6 +88,8 @@ interface ArtItem {
   depictsLabels?: string[];
   clusterId?: number;
   movement?: string;
+  /** Wikidata sitelink count — notability prior fed into client-side ranking. */
+  nbSitelinks?: number;
   /** Per-source records merged into this item by dedupe() (quality-ranked, rep
    *  first) — feed every source's facts to the AI analysis AND drive the sidebar
    *  "same work" copies strip, so each carries its own image + dimensions. */
@@ -335,6 +337,7 @@ function normalizeArt(raw: unknown): ArtItem {
     depictsLabels: Array.isArray(d.depictsLabels) ? (d.depictsLabels as unknown[]).filter((s): s is string => typeof s === 'string') : undefined,
     clusterId: typeof d.clusterId === 'number' ? d.clusterId : undefined,
     movement: txt('movement'),
+    nbSitelinks: typeof d.nbSitelinks === 'number' ? d.nbSitelinks : undefined,
   };
 }
 
@@ -579,7 +582,7 @@ function ArtDetail({
       }
     })();
     return () => { cancelled = true; try { viewer?.destroy(); } catch { /* noop */ } };
-  }, [useOsd, iiifBase, dz, dzKey, plainSrc, index]);
+  }, [useOsd, iiifBase, dz, dzKey, plainSrc, index, pickIdx]);
   // ── Full-resolution tile-stitch download (DZI/Zoomify deep-zoom items) ──
   const [stitch, setStitch] = useState<
     null | { phase: 'busy' | 'done' | 'error'; done: number; total: number; w?: number; h?: number; msg?: string }

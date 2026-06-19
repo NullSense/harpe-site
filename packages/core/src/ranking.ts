@@ -12,6 +12,14 @@ export interface RankableItem {
   medium?: string;
   title?: string;
   source: string;
+  /** Pixel dimensions — a resolution/quality signal (museum scan vs thumbnail). */
+  width?: number;
+  height?: number;
+  /** Freely-reusable works rank slightly higher on a download-focused site. */
+  isPublicDomain?: boolean;
+  /** Wikidata sitelink count — a fame/notability prior so iconic works float up
+   *  (set at ingest for Wikidata works; undefined elsewhere → no effect). */
+  nbSitelinks?: number;
 }
 
 const PAINT_RE = /\b(oil|tempera|acrylic|gouache|fresco|distemper|encaustic|watercolou?r|panel|canvas)\b/;
@@ -24,8 +32,10 @@ const WANT_BOOK_RE = /\b(book|magazine|periodical|pamphlet|manuscript|illustrati
 // frame, "(Louvre)-cropped", "detail", "verso", "before restoration", "raking
 // light"). These bury the clean flat reproduction of the same painting; demote
 // them hard unless the user is actually after photographs.
-const PHOTO_OF_ART_RE = /\b(tilted|cropped|detail|verso|recto|framed|reframed|unframed|before restoration|after (cleaning|restoration)|raking light|infra-?red|x-?ray|backside|reverse side|in its frame|with frame|in frame|angled|perspective view|wide shot|close-?up)\b|avec\s+cadre|sans\s+cadre/i;
-const SRC_PRIOR: Record<string, number> = { digitalnz: -5, commons: -1, si: -1 };
+const PHOTO_OF_ART_RE = /\b(tilted|cropped|detail|verso|recto|framed|reframed|unframed|before restoration|after (cleaning|restoration)|raking light|infra-?red|x-?ray|backside|reverse side|in its frame|with frame|in frame|angled|perspective view|wide shot|close-?up|on the wall|on display|gallery view)\b|avec\s+cadre|sans\s+cadre|signature\s+of/i;
+// digitalnz/commons are noisy; wikidata/europeana are aggregators with variable
+// metadata — a soft penalty aligns ranking with their representative-pick priority.
+const SRC_PRIOR: Record<string, number> = { digitalnz: -5, commons: -1, si: -1, wikidata: -0.5, europeana: -0.5 };
 
 /** Strip HTML tags + decode the common entities so raw "<em>…" never shows. */
 export function stripHtml(s: string): string {
@@ -82,6 +92,20 @@ export function qualityScore(item: RankableItem, query = ''): number {
   // media id, e.g. "The gods of the Egyptians (1904) (14763839232)". Dozens of
   // near-identical plates from one book; demote hard so real works rank above them.
   if (!wantsBook && /\(\d{7,}\)\s*$/.test(t)) s -= 6;
+  // Resolution signal: museum scans (megapixels) up, postage-stamp thumbnails /
+  // signature crops / icons down. 0 area = unknown (most live-API items) → neutral.
+  const area = (item.width ?? 0) * (item.height ?? 0);
+  if (area > 0) {
+    if (area >= 4_000_000) s += 3;        // ≥2 MP — full museum scan
+    else if (area >= 1_000_000) s += 1;   // ~1 MP — decent scan
+    else if (area < 50_000) s -= 4;       // <~224² — thumbnail / signature / icon
+    else if (area < 200_000) s -= 2;      // <~447² — low-res
+  }
+  // Notability prior (Wikidata sitelinks): log-scaled so iconic works (high
+  // sitelink counts) decisively outrank minor works by the same prolific artist.
+  if (item.nbSitelinks && item.nbSitelinks > 0) s += Math.min(3, Math.log2(item.nbSitelinks + 1) * 0.7);
+  // Public-domain works rank slightly higher on a download-focused site.
+  if (item.isPublicDomain) s += 1;
   s += SRC_PRIOR[item.source] ?? 0;
   return s;
 }

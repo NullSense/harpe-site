@@ -55,6 +55,25 @@ describe('qualityScore', () => {
     expect(qualityScore(tilted, 'john martin painting')).toBeLessThan(qualityScore(clean, 'john martin painting'));
     expect(qualityScore(framed, 'john martin painting')).toBeLessThan(qualityScore(clean, 'john martin painting'));
   });
+  it('rewards high resolution and penalises thumbnails (pixel-area signal)', () => {
+    const base = { medium: 'oil on canvas', source: 'met', title: 'A Work' };
+    const huge = qualityScore({ ...base, width: 4000, height: 3000 }); // 12 MP
+    const tiny = qualityScore({ ...base, width: 133, height: 52 });     // signature crop
+    const unknown = qualityScore(base);                                 // no dims → neutral
+    expect(huge).toBeGreaterThan(unknown);
+    expect(tiny).toBeLessThan(unknown);
+    expect(huge).toBeGreaterThan(tiny);
+  });
+  it('floats notable works up via the Wikidata sitelink prior', () => {
+    const base = { medium: 'oil on canvas', source: 'wikidata', title: 'A Work' };
+    const famous = qualityScore({ ...base, nbSitelinks: 80 });
+    const minor = qualityScore({ ...base, nbSitelinks: 0 });
+    expect(famous).toBeGreaterThan(minor);
+  });
+  it('gives public-domain works a small bonus', () => {
+    const base = { medium: 'oil on canvas', source: 'met', title: 'A Work' };
+    expect(qualityScore({ ...base, isPublicDomain: true })).toBeGreaterThan(qualityScore({ ...base, isPublicDomain: false }));
+  });
   it('does NOT demote framing/angle terms when the user wants photos', () => {
     const t = art('photograph', 'commons', 'detail of a fresco');
     expect(qualityScore(t, 'fresco detail photograph')).toBeGreaterThanOrEqual(qualityScore(t, ''));

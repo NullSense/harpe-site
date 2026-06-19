@@ -307,6 +307,10 @@ export interface Fusable {
   clusterId?: number;
   /** Art-historical movement label (merge-filled). */
   movement?: string;
+  /** Wikidata sitelink count (notability prior; ranking only). */
+  nbSitelinks?: number;
+  /** P180 depicts labels, index-aligned with `depicts` (merged QID-keyed). */
+  depictsLabels?: string[];
 }
 
 /** Language-independent work identity: the explicit Wikidata QID if present, else
@@ -367,10 +371,19 @@ function safeTitleKey(it: { title?: string; artist?: string }): string {
 /** True if two artist strings are the same person allowing for name variants:
  *  one's significant tokens are a subset of the other's ("Rembrandt" ⊆
  *  "Rembrandt van Rijn", "van Gogh" ⊆ "Vincent van Gogh"). Both must be present. */
+// Attribution qualifiers mark a DIFFERENT creator than the named master — a copy
+// "after Rembrandt" / "School of Raphael" / "Circle of Rubens" must never fold into
+// the master's own work. If either side carries one, they're not the same person.
+const ATTRIBUTION_QUALIFIERS = new Set([
+  'after', 'circle', 'school', 'workshop', 'studio', 'attributed',
+  'follower', 'manner', 'imitator', 'copy', 'pupil', 'associate',
+]);
 function artistCompatible(a: { artist?: string }, b: { artist?: string }): boolean {
   const ta = new Set(tokenize(a.artist || ''));
   const tb = new Set(tokenize(b.artist || ''));
   if (!ta.size || !tb.size) return false;
+  for (const t of ta) if (ATTRIBUTION_QUALIFIERS.has(t)) return false;
+  for (const t of tb) if (ATTRIBUTION_QUALIFIERS.has(t)) return false;
   const [small, big] = ta.size <= tb.size ? [ta, tb] : [tb, ta];
   for (const t of small) if (!big.has(t)) return false;
   return true;
@@ -380,7 +393,7 @@ function artistCompatible(a: { artist?: string }, b: { artist?: string }): boole
 const MERGE_FILL_FIELDS = [
   'date', 'medium', 'culture', 'creditLine', 'description', 'sourceUrl',
   'accessionNumber', 'licenseUrl', 'artworkType', 'style', 'inscriptions',
-  'dimensions', 'width', 'height', 'wikidataId', 'artistId', 'movement',
+  'dimensions', 'width', 'height', 'wikidataId', 'artistId', 'movement', 'nbSitelinks',
 ] as const;
 const MERGE_UNION_FIELDS = ['tags', 'downloads', 'depicts'] as const;
 
@@ -389,7 +402,7 @@ const MERGE_UNION_FIELDS = ['tags', 'downloads', 'depicts'] as const;
 const VARIANT_FIELDS = [
   'title', 'thumbUrl', 'previewUrl', 'fullUrl', 'width', 'height', 'isPublicDomain',
   'date', 'medium', 'culture', 'creditLine', 'description', 'sourceUrl',
-  'accessionNumber', 'artworkType', 'style', 'tags', 'inscriptions',
+  'accessionNumber', 'artworkType', 'style', 'tags', 'inscriptions', 'depictsLabels',
 ] as const;
 
 // Prefer the source with the richest first-party metadata as the representative
@@ -432,6 +445,23 @@ function mergeGroup<T extends Fusable>(members: T[]): T {
           ? Array.from(new Set([...(base as string[]), ...(add as string[])]))
           : [...base, ...add]; // downloads: concat (variants from multiple holders)
       }
+    }
+  }
+  // Reconcile depicts QIDs ↔ labels across all copies: dedup the QIDs and rebuild
+  // the index-aligned label array (a copy may hold a QID whose label the chosen
+  // representative lacks), so subject pills never fall back to raw "Q12271".
+  {
+    const qidLabel = new Map<string, string>();
+    for (const m of sorted) {
+      const md = m as Record<string, unknown>;
+      const qids = Array.isArray(md.depicts) ? (md.depicts as string[]) : [];
+      const labels = Array.isArray(md.depictsLabels) ? (md.depictsLabels as string[]) : [];
+      qids.forEach((q, i) => { if (q && !qidLabel.has(q)) qidLabel.set(q, labels[i] ?? ''); });
+    }
+    if (qidLabel.size) {
+      const qids = [...qidLabel.keys()];
+      r.depicts = qids;
+      r.depictsLabels = qids.map((q) => qidLabel.get(q) || '');
     }
   }
   rep.dupCount = sources.size;
@@ -584,7 +614,7 @@ export function fuse<T extends Fusable>(items: T[], query: string, opts: FuseOpt
 
   // Weighted RRF: relevance leads, the source's own ranking supports it, quality
   // nudges, consensus rewards cross-museum agreement.
-  const W_REL = 3, W_SRC = 1, W_QUAL = 0.6, W_CONSENSUS = 0.4;
+  const W_REL = 3, W_SRC = 1, W_QUAL = 1.5, W_CONSENSUS = 0.4;
   const fused = new Map<T, number>();
   for (const it of items) {
     let s = W_REL / (K + relRank.get(it)!) + W_SRC / (K + srcRank.get(it)!);
