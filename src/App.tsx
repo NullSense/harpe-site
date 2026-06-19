@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
+import { Analytics } from '@vercel/analytics/react';
 import AsciiHero from './AsciiHero.tsx';
 import Finder, { type FinderHandle } from './Finder.tsx';
 import StatsBar from './components/StatsBar.tsx';
@@ -290,6 +291,7 @@ export default function App() {
           </p>
         </footer>
       </main>
+      <Analytics />
     </>
   );
 }

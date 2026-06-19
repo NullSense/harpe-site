@@ -24,6 +24,7 @@
     "@harpe/sources": "workspace:*",
     "@upstash/ratelimit": "^2.0.8",
     "@upstash/redis": "^1.38.0",
+    "@vercel/analytics": "^2.0.1",
     "node-html-parser": "^6.1.13",
     "openseadragon": "^4.1.1",
     "react": "^19.0.1",
@@ -39,8 +40,8 @@
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^6.0.2",
-    "tailwindcss": "^4.1.14",
     "esbuild": "^0.28.1",
+    "tailwindcss": "^4.1.14",
     "typescript": "~5.8.2",
     "vite": "^8.0.16",
     "vitest": "^4.1.9"
