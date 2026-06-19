@@ -1364,12 +1364,23 @@ def build_parquet(path: str, keys: list[str], jobs: int | None = None) -> set[st
         raise SystemExit("No sources succeeded — nothing to write.")
 
     # Combine the per-source parquets locally (fast, no network) → atomic final write.
+    # ORDER BY source first so HF /filter "source='X'" can prune row-groups entirely
+    # (a filter-push-down on a sorted column skips groups whose min/max don't overlap
+    # the predicate, cutting latency proportionally to the number of sources).
+    # nb_sitelinks DESC NULLS LAST clusters the most-notable works at the front of
+    # each source partition so page-0 queries surface the canonical hits first.
+    # nb_sitelinks is written only by the entity-enrichment pass; guard so a plain
+    # build (without --enrich) doesn't fail with "column not found".
     con = duckdb.connect()
     con.execute(f"SET temp_directory='{workdir}';")
     con.execute("SET preserve_insertion_order=false;")
     paths = "[" + ", ".join("'" + p.replace("'", "''") + "'" for _, p in made) + "]"
+    _cols_local = {r[0] for r in con.execute(
+        f"DESCRIBE SELECT * FROM read_parquet({paths}, union_by_name=true)").fetchall()}
+    _order_local = ("ORDER BY source, nb_sitelinks DESC NULLS LAST"
+                    if "nb_sitelinks" in _cols_local else "ORDER BY source")
     tmp_out = path + ".tmp"
-    con.execute(f"COPY (SELECT * FROM read_parquet({paths}, union_by_name=true)) "
+    con.execute(f"COPY (SELECT * FROM read_parquet({paths}, union_by_name=true) {_order_local}) "
                 f"TO '{tmp_out}' (FORMAT parquet, COMPRESSION zstd);")
     os.replace(tmp_out, path)
 
@@ -1414,7 +1425,17 @@ def publish(path: str, built_keys: set[str], repo: str) -> None:
         print("No existing dataset found — publishing fresh.")
 
     merged = path + ".publish.parquet"
-    con.execute(f"COPY ({' UNION ALL BY NAME '.join(parts)}) "
+    _union_sql = ' UNION ALL BY NAME '.join(parts)
+    # Re-sort after merging new + carried-over rows so the published file keeps the
+    # same layout guarantee: row-groups contiguous by source (enabling HF /filter
+    # predicate-pushdown to skip groups) with nb_sitelinks DESC NULLS LAST within
+    # each source (most-notable first). Guard: nb_sitelinks may be absent when the
+    # entity-enrichment pass hasn't run yet (pre-enrich builds still get source sort).
+    _cols_pub = {r[0] for r in con.execute(
+        f"DESCRIBE SELECT * FROM ({_union_sql})").fetchall()}
+    _order_pub = ("ORDER BY source, nb_sitelinks DESC NULLS LAST"
+                  if "nb_sitelinks" in _cols_pub else "ORDER BY source")
+    con.execute(f"COPY (SELECT * FROM ({_union_sql}) {_order_pub}) "
                 f"TO '{merged}' (FORMAT parquet, COMPRESSION zstd);")
     mq = merged.replace(chr(39), chr(39) * 2)
     by_src = con.execute(f"SELECT source, count(*) FROM read_parquet('{mq}') "

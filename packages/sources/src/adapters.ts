@@ -1513,7 +1513,7 @@ export async function fetchParisMusees(q: string, signal?: AbortSignal): Promise
 // Each museum still has a first-class SOURCES entry; the transport/cache below is
 // shared so one query does not fan out into repeated HF calls.
 
-const DUMP_SOURCE_LABELS = {
+export const DUMP_SOURCE_LABELS = {
   moma: 'MoMA',
   nga: 'NGA',
   mia: 'MIA',
@@ -1657,20 +1657,76 @@ export function dumpWhere(source: string, q: string): string | null {
   return `"source"='${_sqlEsc(source)}' AND ((${artist}) OR "title" ILIKE '%${_sqlEsc(fq)}%' OR "depicts_labels" ILIKE '%${_sqlEsc(fq)}%')`;
 }
 
-async function dumpFilterRows(dataset: string, source: string, q: string): Promise<Array<Record<string, unknown>>> {
+async function dumpFilterRows(
+  dataset: string,
+  source: string,
+  q: string,
+  offset = 0,
+): Promise<{ rows: Array<Record<string, unknown>>; total: number }> {
   const where = dumpWhere(source, q);
-  if (!where) return []; // degenerate query (all wildcards) → no match-all scan
+  if (!where) return { rows: [], total: 0 }; // degenerate query (all wildcards) → no match-all scan
   const base =
     `https://datasets-server.huggingface.co/filter?dataset=${encodeURIComponent(dataset)}` +
-    `&config=default&split=train&where=${encodeURIComponent(where)}&offset=0&length=${DUMP_PER_SOURCE}`;
+    `&config=default&split=train&where=${encodeURIComponent(where)}&offset=${offset}&length=${DUMP_PER_SOURCE}`;
   const withOrder = `${base}&orderby=${encodeURIComponent('"nb_sitelinks" DESC')}`;
   return dumpHttpPolicy.execute(async ({ signal }) => {
     const ordered = await probeNotability(withOrder, signal);
     const res = await timedFetch(ordered ? withOrder : base, signal);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const json = await res.json() as { rows?: Array<{ row?: Record<string, unknown> }> };
-    return (json.rows ?? []).map((r) => r.row).filter((r): r is Record<string, unknown> => !!r);
+    const json = await res.json() as {
+      rows?: Array<{ row?: Record<string, unknown> }>;
+      num_rows_total?: number;
+    };
+    const rows = (json.rows ?? []).map((r) => r.row).filter((r): r is Record<string, unknown> => !!r);
+    return { rows, total: Number(json.num_rows_total) || 0 };
   });
+}
+
+/** Map one HF Parquet row → ArtItem. Returns null when mandatory image URLs are absent. */
+function rowToItem(
+  row: Record<string, unknown>,
+  nameMap: Record<string, string>,
+  fallbackIndex: number,
+): ArtItem | null {
+  const httpsify = (u: string) => u.replace(/^http:\/\//i, 'https://');
+  const id = str(row.id);
+  const thumb = httpsify(str(row.image_thumb) || str(row.image_full));
+  const full = httpsify(str(row.image_full) || str(row.image_thumb));
+  if (!thumb) return null;
+  const source = str(row.source) as ArtItem['source'];
+  if (!(source in DUMP_SOURCE_LABELS)) return null;
+  const nb = Number(row.nb_sitelinks);
+  return {
+    id: id || `dumps-${fallbackIndex}`,
+    title: str(row.title) || 'Untitled',
+    artist: str(row.artist),
+    dimensions: str(row.dimensions),
+    thumbUrl: thumb,
+    previewUrl: full,
+    fullUrl: full,
+    width: num(row.width),
+    height: num(row.height),
+    format: fmtFromUrl(full),
+    lossless: false,
+    downloads: [{ label: 'Full image', url: full, format: fmtFromUrl(full), lossless: false }],
+    source,
+    isPublicDomain: row.is_public_domain === true,
+    date: cleanDate(str(row.date)),
+    medium: str(row.medium),
+    culture: str(row.culture),
+    creditLine: str(row.credit_line),
+    description: str(row.description),
+    sourceUrl: str(row.source_url),
+    provider: DUMP_SOURCE_LABELS[source as DumpSourceKey],
+    wikidataId: /^Q\d+$/.test(str(row.wikidata_qid)) ? str(row.wikidata_qid) : undefined,
+    artistId: (/^Q\d+$/.test(str(row.artist_qid)) ? str(row.artist_qid) : undefined)
+      ?? resolveArtistQid(nameMap, str(row.artist)),
+    depicts: str(row.depicts_qids) ? str(row.depicts_qids).split(' ').filter(Boolean) : undefined,
+    depictsLabels: parseJsonArray(str(row.depicts_labels)),
+    clusterId: typeof row.cluster_id === 'number' ? row.cluster_id : undefined,
+    movement: str(row.movement) || undefined,
+    nbSitelinks: Number.isFinite(nb) && nb > 0 ? nb : undefined,
+  };
 }
 
 async function fetchDumpSearchUncached(q: string, dataset: string): Promise<ArtItem[]> {
@@ -1681,56 +1737,23 @@ async function fetchDumpSearchUncached(q: string, dataset: string): Promise<ArtI
   // outage isn't cached as "no results" for the 5-minute TTL).
   let anyOk = false;
   const perSource = await mapPool(sources, 6, async (s): Promise<Array<Record<string, unknown>>> => {
-    try { const r = await dumpFilterRows(dataset, s, q); anyOk = true; return r; }
-    catch (e) { if (isBrokenCircuitError(e)) { return []; } anyOk = anyOk || false; return []; }
+    try {
+      const { rows } = await dumpFilterRows(dataset, s, q);
+      anyOk = true;
+      return rows;
+    } catch (e) { if (isBrokenCircuitError(e)) { return []; } anyOk = anyOk || false; return []; }
   });
   const rows = perSource.flat().filter((r): r is Record<string, unknown> => !!r);
   if (!anyOk && rows.length === 0) throw new Error('all dump sources failed');
 
-  const httpsify = (u: string) => u.replace(/^http:\/\//i, 'https://');
   const seen = new Set<string>();
   const items: ArtItem[] = [];
   for (const row of rows) {
     const id = str(row.id);
     if (id && seen.has(id)) continue; // a work can match multiple per-source queries
     if (id) seen.add(id);
-    const thumb = httpsify(str(row.image_thumb) || str(row.image_full));
-    const full = httpsify(str(row.image_full) || str(row.image_thumb));
-    if (!thumb) continue;
-    const source = str(row.source) as ArtItem['source'];
-    if (!(source in DUMP_SOURCE_LABELS)) continue;
-    const nb = Number(row.nb_sitelinks);
-    items.push({
-      id: id || `dumps-${items.length}`,
-      title: str(row.title) || 'Untitled',
-      artist: str(row.artist),
-      dimensions: str(row.dimensions),
-      thumbUrl: thumb,
-      previewUrl: full,
-      fullUrl: full,
-      width: num(row.width),
-      height: num(row.height),
-      format: fmtFromUrl(full),
-      lossless: false,
-      downloads: [{ label: 'Full image', url: full, format: fmtFromUrl(full), lossless: false }],
-      source,
-      isPublicDomain: row.is_public_domain === true,
-      date: cleanDate(str(row.date)),
-      medium: str(row.medium),
-      culture: str(row.culture),
-      creditLine: str(row.credit_line),
-      description: str(row.description),
-      sourceUrl: str(row.source_url),
-      provider: DUMP_SOURCE_LABELS[source as DumpSourceKey],
-      wikidataId: /^Q\d+$/.test(str(row.wikidata_qid)) ? str(row.wikidata_qid) : undefined,
-      artistId: (/^Q\d+$/.test(str(row.artist_qid)) ? str(row.artist_qid) : undefined)
-        ?? resolveArtistQid(nameMap, str(row.artist)),
-      depicts: str(row.depicts_qids) ? str(row.depicts_qids).split(' ').filter(Boolean) : undefined,
-      depictsLabels: parseJsonArray(str(row.depicts_labels)),
-      clusterId: typeof row.cluster_id === 'number' ? row.cluster_id : undefined,
-      movement: str(row.movement) || undefined,
-      nbSitelinks: Number.isFinite(nb) && nb > 0 ? nb : undefined,
-    });
+    const item = rowToItem(row, nameMap, items.length);
+    if (item) items.push(item);
   }
   return items;
 }
@@ -1755,15 +1778,58 @@ export async function fetchDumpSource(source: DumpSourceKey, q: string): Promise
 /** A deeper page of dump results for infinite scroll. `page` is 0-based; each page
  *  is DUMP_PER_SOURCE rows/source (offset = page × DUMP_PER_SOURCE), pooled across
  *  all dump sources. `hasMore` = at least one source still has rows beyond this
- *  page; `total` = summed match counts (HF num_rows_total) across sources.
- *  CONTRACT STUB — implemented by the pagination work (do not change the signature). */
+ *  page; `total` = summed match counts (HF num_rows_total) across sources. */
 export async function fetchDumpPage(
   dataset: string,
   q: string,
   page: number,
 ): Promise<{ items: ArtItem[]; hasMore: boolean; total: number }> {
-  void dataset; void q; void page;
-  return { items: [], hasMore: false, total: 0 };
+  const nameMap = await loadNameToQid(); // memoised; {} on miss
+  const sources = Object.keys(DUMP_SOURCE_LABELS) as DumpSourceKey[];
+  const offset = page * DUMP_PER_SOURCE;
+
+  // Query all sources at the requested offset, concurrency-capped like page-0.
+  // A broken-circuit source yields [] + 0 total (quiet degradation). Only throw
+  // when ALL sources fail, matching fetchDumpSearchUncached's error tolerance.
+  let anyOk = false;
+  const perSource = await mapPool(
+    sources,
+    6,
+    async (s): Promise<{ rows: Array<Record<string, unknown>>; total: number }> => {
+      try {
+        const result = await dumpFilterRows(dataset, s, q, offset);
+        anyOk = true;
+        return result;
+      } catch (e) {
+        if (isBrokenCircuitError(e)) return { rows: [], total: 0 };
+        anyOk = anyOk || false;
+        return { rows: [], total: 0 };
+      }
+    },
+  );
+
+  // Aggregate rows and compute pagination metadata. mapPool yields (R|null)[]
+  // (null if a thunk threw — shouldn't happen since we catch, but narrow it).
+  const ok = perSource.filter((r): r is { rows: Array<Record<string, unknown>>; total: number } => !!r);
+  const allRows = ok.flatMap((r) => r.rows);
+  const total = ok.reduce((acc, r) => acc + r.total, 0);
+  // hasMore = at least one source has rows beyond the end of this page.
+  const hasMore = ok.some((r) => r.total > (page + 1) * DUMP_PER_SOURCE);
+
+  if (!anyOk && allRows.length === 0) throw new Error('all dump sources failed');
+
+  // Dedupe by id (a work can appear in multiple per-source results), then map rows.
+  const seen = new Set<string>();
+  const items: ArtItem[] = [];
+  for (const row of allRows) {
+    const id = str(row.id);
+    if (id && seen.has(id)) continue;
+    if (id) seen.add(id);
+    const item = rowToItem(row, nameMap, items.length);
+    if (item) items.push(item);
+  }
+
+  return { items, hasMore, total };
 }
 
 // ─── Knowledge-graph entity files (static JSON on the HF CDN) ──────────────────

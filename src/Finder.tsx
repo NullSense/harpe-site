@@ -18,6 +18,7 @@ import DownloadMenu from './components/DownloadMenu';
 import SearchSuggest from './components/SearchSuggest';
 import Discover from './components/Discover';
 import { streamArt } from './lib/useArtStream';
+import { fetchArtPage } from './lib/artPage';
 import { SOURCE_LABELS, SOURCE_ORDER, type DisplaySource } from './lib/source-meta';
 import { fitsScreen } from './lib/resolutions';
 import { dist, pinchZoom } from './lib/gesture';
@@ -1017,6 +1018,14 @@ const Finder = forwardRef<FinderHandle>(function Finder(_props, ref) {
   const streamCancelRef = useRef<null | (() => void)>(null);
   const sentinelRef = useRef<HTMLDivElement>(null);
 
+  // Dump-backed deep-index pagination (art mode, pages ≥ 1).
+  // page 0 is the SSE/live-API pool; we start fetching from page 1 here.
+  const [dumpPage, setDumpPage] = useState(1);
+  const [dumpHasMore, setDumpHasMore] = useState(true);
+  const [dumpTotal, setDumpTotal] = useState<number | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const loadMoreAbortRef = useRef<AbortController | null>(null);
+
   // shared lightbox (index into the currently-visible list)
   // The open detail is tracked by item ID (not index) so streaming re-ordering
   // doesn't swap which artwork is shown — the index is derived from the id.
@@ -1065,6 +1074,7 @@ const Finder = forwardRef<FinderHandle>(function Finder(_props, ref) {
         setArtItems(items); setWarnings([]); setQuery(q); setStreaming(false);
         setSourceFilter(new Set()); setPdOnly(false); setLosslessOnly(false);
         setMediumFilter(new Set()); setMinRes(0); setYearMin(''); setYearMax('');
+        setDumpHasMore(false); setDumpTotal(null); setDumpPage(1);
         setMode('art');
       } catch (e) {
         setError(e instanceof Error ? e.message : 'Network error'); setMode('error');
@@ -1076,7 +1086,9 @@ const Finder = forwardRef<FinderHandle>(function Finder(_props, ref) {
     if (isURL(q) && IIIF_MANIFEST_RE.test(q)) {
       const result = await resolveIIIF(q);
       if (result) {
-        setArtItems([result]); setWarnings([]); setQuery(q); setMode('art');
+        setArtItems([result]); setWarnings([]); setQuery(q);
+        setDumpHasMore(false); setDumpTotal(null); setDumpPage(1);
+        setMode('art');
       } else {
         setError('Could not resolve a downloadable image from that IIIF URL. Try the Harpe CLI for full tile-stitching support.');
         setMode('error');
@@ -1093,6 +1105,7 @@ const Finder = forwardRef<FinderHandle>(function Finder(_props, ref) {
         if (json.ok && json.descriptor) {
           setArtItems([deepzoomItem(json.descriptor, q)]); setWarnings([]); setQuery(q);
           setStreaming(false); setSourceFilter(new Set()); setPdOnly(false); setLosslessOnly(false);
+          setDumpHasMore(false); setDumpTotal(null); setDumpPage(1);
           setMode('art'); return;
         }
         setError(json.message || 'Could not read that zoomable-image descriptor.'); setMode('error');
@@ -1124,6 +1137,7 @@ const Finder = forwardRef<FinderHandle>(function Finder(_props, ref) {
       };
       setArtItems([it]); setWarnings([]); setQuery(q); setStreaming(false);
       setSourceFilter(new Set()); setPdOnly(false); setLosslessOnly(false);
+      setDumpHasMore(false); setDumpTotal(null); setDumpPage(1);
       setMode('art');
       return;
     }
@@ -1140,6 +1154,7 @@ const Finder = forwardRef<FinderHandle>(function Finder(_props, ref) {
             setArtItems(items); setWarnings([]); setQuery(q); setStreaming(false);
             setSourceFilter(new Set()); setPdOnly(false); setLosslessOnly(false);
             setMediumFilter(new Set()); setMinRes(0); setYearMin(''); setYearMax('');
+            setDumpHasMore(false); setDumpTotal(null); setDumpPage(1);
             setMode('art'); return;
           }
         }
@@ -1165,6 +1180,7 @@ const Finder = forwardRef<FinderHandle>(function Finder(_props, ref) {
           if (candidates.length === 0) {
             setArtItems([deepzoomItem(json.deepzoom, q)]); setWarnings([]);
             setStreaming(false); setSourceFilter(new Set()); setPdOnly(false); setLosslessOnly(false);
+            setDumpHasMore(false); setDumpTotal(null); setDumpPage(1);
             setMode('art'); return;
           }
           // Has flat images too → list them, but offer the gigapixel viewer up top.
@@ -1181,6 +1197,10 @@ const Finder = forwardRef<FinderHandle>(function Finder(_props, ref) {
 
     // Plain text → museum search, STREAMED per-source (with /api/art fallback).
     streamCancelRef.current?.();         // abort any in-flight stream
+    // Cancel and reset any in-flight dump pagination from a prior query.
+    loadMoreAbortRef.current?.abort();
+    loadMoreAbortRef.current = null;
+    setDumpPage(1); setDumpHasMore(true); setDumpTotal(null); setLoadingMore(false);
     setQuery(q); setArtItems([]); setWarnings([]); setShown(SHOWN_STEP); setStreaming(true);
     setSourceFilter(new Set()); setPdOnly(false); setLosslessOnly(false); setDetailId(null);
     setMediumFilter(new Set()); setMinRes(0); setYearMin(''); setYearMax('');
@@ -1315,6 +1335,13 @@ const Finder = forwardRef<FinderHandle>(function Finder(_props, ref) {
     setEntity(null);
     setSauce(null);
     setAnalysis(null);
+    // Reset dump pagination and cancel any in-flight load-more fetch.
+    loadMoreAbortRef.current?.abort();
+    loadMoreAbortRef.current = null;
+    setDumpPage(1);
+    setDumpHasMore(true);
+    setDumpTotal(null);
+    setLoadingMore(false);
     if (typeof window !== 'undefined') window.history.replaceState(null, '', window.location.pathname);
   }, []);
 
@@ -1459,6 +1486,11 @@ const Finder = forwardRef<FinderHandle>(function Finder(_props, ref) {
     setArtItems([it]); setWarnings([]); setStreaming(false);
     setSourceFilter(new Set()); setPdOnly(false); setLosslessOnly(false);
     setMediumFilter(new Set()); setMinRes(0); setYearMin(''); setYearMax('');
+    // A single deep-zoom item has no dump backing — stop the sentinel from
+    // appearing or triggering a stale-query fetch.
+    loadMoreAbortRef.current?.abort();
+    loadMoreAbortRef.current = null;
+    setDumpPage(1); setDumpHasMore(false); setDumpTotal(null); setLoadingMore(false);
     setMode('art'); setDetailId(it.id);
   }, [pageUrl]);
 
@@ -1572,17 +1604,65 @@ const Finder = forwardRef<FinderHandle>(function Finder(_props, ref) {
     window.history.replaceState(null, '', buildShareUrl(hasDetail ? detailId : undefined));
   }, [mode, query, pageUrl, detailId, detailIndex, buildShareUrl]);
 
+  // Fetch the next dump page and append deduplicated, re-ranked items.
+  // Only active in art mode; scan mode has no dump backing.
+  const loadMoreDump = useCallback(async () => {
+    if (loadingMore || !dumpHasMore || mode !== 'art') return;
+    setLoadingMore(true);
+    const ctrl = new AbortController();
+    loadMoreAbortRef.current = ctrl;
+    try {
+      const resp = await fetchArtPage(query, dumpPage, ctrl.signal);
+      if (ctrl.signal.aborted) return;
+      const fresh = resp.items.map(normalizeArt);
+      setArtItems((prev) => {
+        const seen = new Set(prev.map((it) => it.id));
+        const deduped = fresh.filter((it) => !seen.has(it.id));
+        if (deduped.length === 0) return prev;
+        return rankArt([...prev, ...deduped], query);
+      });
+      setDumpPage((p) => p + 1);
+      setDumpHasMore(resp.hasMore);
+      // Surface the total only once (it's stable across pages for the same query).
+      if (resp.total > 0) setDumpTotal((prev) => prev ?? resp.total);
+    } catch (e) {
+      // AbortError is expected on query change — swallow it silently.
+      if (e instanceof Error && e.name !== 'AbortError') {
+        // Non-fatal: stop trying to load more but don't crash the results view.
+        setDumpHasMore(false);
+      }
+    } finally {
+      setLoadingMore(false);
+      if (loadMoreAbortRef.current === ctrl) loadMoreAbortRef.current = null;
+    }
+  }, [loadingMore, dumpHasMore, mode, query, dumpPage]);
+
   // Infinite scroll: reveal more cards as the sentinel nears the viewport.
+  // When the locally-loaded pool is exhausted and the server has more dump
+  // pages, kick off a background fetch to extend it before showing the sentinel.
   useEffect(() => {
     const el = sentinelRef.current;
     if (!el) return;
     const obs = new IntersectionObserver(
-      (entries) => { if (entries[0]?.isIntersecting) setShown((s) => s + SHOWN_STEP); },
+      (entries) => {
+        if (!entries[0]?.isIntersecting) return;
+        // Still have locally-loaded cards to reveal → just advance the window.
+        if (shown < visibleArt.length) {
+          setShown((s) => s + SHOWN_STEP);
+          return;
+        }
+        // Local pool exhausted — fetch the next dump page if available.
+        if (mode === 'art' && dumpHasMore && !loadingMore) {
+          void loadMoreDump();
+        }
+      },
       { rootMargin: '600px' },
     );
     obs.observe(el);
     return () => obs.disconnect();
-  }, [mode, visibleArt.length]);
+  // Re-wire whenever the pool size, dump availability, or load state changes.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, visibleArt.length, shown, dumpHasMore, loadingMore, loadMoreDump]);
 
   const URL_EXAMPLE = 'https://en.wikipedia.org/wiki/Perseus';
 
@@ -1790,6 +1870,9 @@ const Finder = forwardRef<FinderHandle>(function Finder(_props, ref) {
                     <p className="font-mono text-[.78rem] text-muted/70">
                       {visibleArt.length} work{visibleArt.length !== 1 ? 's' : ''}
                       {visibleArt.length !== artItems.length && ` of ${artItems.length}`}
+                      {dumpTotal != null && (
+                        <span className="ml-2 text-muted/50">· ≈{dumpTotal.toLocaleString()} in index</span>
+                      )}
                       {streaming && <span className="ml-2 text-bronze">· searching…</span>}
                     </p>
                     <button type="button" onClick={() => setPdOnly((v) => !v)} disabled={pdCount === 0} aria-pressed={pdOnly} className={chip(pdOnly)}>
@@ -1853,8 +1936,14 @@ const Finder = forwardRef<FinderHandle>(function Finder(_props, ref) {
                           />
                         ))}
                       </div>
-                      {shown < visibleArt.length && (
-                        <div ref={sentinelRef} className="h-12" aria-hidden />
+                      {/* Sentinel: visible whenever there are more cards to show (locally
+                          or from the dump index). The IntersectionObserver above handles
+                          both: advancing `shown` while the local pool has cards, then
+                          fetching the next dump page when the pool is exhausted. */}
+                      {(shown < visibleArt.length || dumpHasMore) && (
+                        <div ref={sentinelRef} className="mt-6 flex h-12 items-center justify-center" aria-hidden>
+                          {loadingMore && <Spinner small />}
+                        </div>
                       )}
                     </>
                   )}
