@@ -440,8 +440,13 @@ export async function fetchCommons(q: string, signal?: AbortSignal): Promise<Art
 
       // GOD-FORMAT: map extmetadata fields that were previously ignored.
       const rawArtist = str(ii.extmetadata?.Artist?.value).replace(/<[^>]+>/g, '').trim();
-      const rawDate = str(ii.extmetadata?.DateTimeOriginal?.value) ||
-        str(ii.extmetadata?.DateTime?.value);
+      // Commons date fields embed a hidden <div style=display:none>date QS:P571,…
+      // </div> machine-data blob. Strip tags, then cleanDate() cuts the QS: tail so
+      // it never fuses onto the readable date ("circa 1665date QS:…" → "circa 1665").
+      const rawDate = cleanDate(
+        (str(ii.extmetadata?.DateTimeOriginal?.value) || str(ii.extmetadata?.DateTime?.value))
+          .replace(/<[^>]+>/g, ' ').trim(),
+      );
       const rawDesc = str(ii.extmetadata?.ImageDescription?.value).replace(/<[^>]+>/g, '').trim();
       const rawCredit = str(ii.extmetadata?.Credit?.value).replace(/<[^>]+>/g, '').trim();
       const rawLicUrl = str(ii.extmetadata?.LicenseUrl?.value).trim();
@@ -466,7 +471,7 @@ export async function fetchCommons(q: string, signal?: AbortSignal): Promise<Art
         downloads: [{ label: `Original ${format.toUpperCase()}`, url: full, format, lossless }],
         source: 'commons',
         isPublicDomain,
-        date: rawDate || undefined,
+        date: rawDate,
         description: rawDesc || undefined,
         creditLine: rawCredit || undefined,
         licenseUrl: rawLicUrl || undefined,
@@ -549,14 +554,13 @@ export async function fetchWikiArt(q: string, signal?: AbortSignal): Promise<Art
     for (const d of json.data ?? []) {
       const image = str(d.image);
       if (!image) continue;
-      const year = d.completitionYear ? ` (${str(d.completitionYear)})` : '';
       const w = Number(d.width) || 0;
       const h = Number(d.height) || 0;
       const original = image.replace(/!.*$/, ''); // strip variant suffix → original
       const format = fmtFromUrl(original);
       items.push({
         id: `wikiart-${str(d.id)}`,
-        title: (str(d.title) || 'Untitled') + year,
+        title: str(d.title) || 'Untitled', // date is its own field — don't append it
         artist: str(d.artistName),
         dimensions: w && h ? `${w} × ${h} px` : '',
         thumbUrl: image, // the "!Large.jpg" variant
@@ -616,7 +620,9 @@ export async function fetchVam(q: string, signal?: AbortSignal): Promise<ArtItem
       const artType = str(r.objectType) || undefined;
       items.push({
         id: `vam-${str(r.systemNumber)}`,
-        title: (str(r._primaryTitle) || str(r.objectType) || 'Untitled') + (date ? ` (${date})` : ''),
+        // Title only — the date lives in its own field; appending it duplicated the
+        // date in the UI AND broke dedupe's workKey ("Portrait (1750)" ≠ "Portrait").
+        title: str(r._primaryTitle) || str(r.objectType) || 'Untitled',
         artist: str(r._primaryMaker?.name),
         dimensions: '',
         thumbUrl: iiifImage(base, IIIF.THUMB),
@@ -628,7 +634,8 @@ export async function fetchVam(q: string, signal?: AbortSignal): Promise<ArtItem
         source: 'vam',
         isPublicDomain: false, // V&A images are mixed-rights — badge a caution
         date,
-        medium: str(r.objectType),
+        // objectType ("Painting", "Ceramics") is an artwork TYPE, not a physical
+        // medium — it's carried by artworkType below; don't mislabel it as medium.
         sourceUrl: `https://collections.vam.ac.uk/item/${str(r.systemNumber)}`,
         artworkType: artType,
       });
@@ -1079,7 +1086,9 @@ export async function fetchWikidata(q: string, signal?: AbortSignal): Promise<Ar
         downloads: [{ label: 'Full image', url: fileBase, format: fmtFromUrl(fileBase), lossless: false }],
         source: 'wikidata',
         isPublicDomain: true, // P18 images live on Commons (freely licensed)
-        date: str(b.inception?.value).slice(0, 4),
+        // Year only — but BCE ISO dates start with '-' ("-0620-…"), so slice(0,4)
+        // would truncate to "-062"; match an optional sign + 1-4 digits instead.
+        date: str(b.inception?.value).replace(/^(-?\d{1,4}).*/, '$1'),
         medium: str(b.materialLabel?.value), // P186 material/technique
         culture,                              // P136 genre + P276 location
         creditLine: collection,               // P195 holding collection
