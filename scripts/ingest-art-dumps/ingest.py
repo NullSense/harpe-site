@@ -47,6 +47,7 @@ import itertools
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -841,7 +842,9 @@ def harvest_wikidata(max_batches=None) -> str:
                         "source": "wikidata", "id": wid,
                         "title": b.get("itemLabel", {}).get("value") or None,
                         "artist": b.get("creatorLabel", {}).get("value") or None,
-                        "date": inception[:4] if inception else None,
+                        # Year only — BCE ISO dates start with '-' ("-0620-…"), so a
+                        # plain [:4] truncates to "-062"; keep an optional sign + digits.
+                        "date": (m.group() if inception and (m := re.match(r"-?\d{1,4}", inception)) else None),
                         "medium": b.get("materialLabel", {}).get("value") or None,
                         "dimensions": None, "culture": None,
                         "credit_line": b.get("collectionLabel", {}).get("value") or None,

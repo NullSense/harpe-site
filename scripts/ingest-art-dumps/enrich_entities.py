@@ -33,7 +33,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import tempfile
+import urllib.parse
 from collections import defaultdict
 
 import duckdb
@@ -72,13 +74,18 @@ _PREFIX = (
     "PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#> "
     "PREFIX skos: <http://www.w3.org/2004/02/skos/core#> "
     "PREFIX schema: <http://schema.org/> "
+    "PREFIX wikibase: <http://wikiba.se/ontology#> "
 )
-_Q_WORKS = _PREFIX + """SELECT ?item ?creator ?depicts ?depictsLabel ?collection ?movementLabel WHERE {{
+# ?nb = Wikidata sitelink count — the notability/fame prior. Patched onto the works
+# Parquet as nb_sitelinks so search can ORDER BY it (famous works first) and the
+# runtime ranker can boost iconic works. Validated on QLever (Mona Lisa=146).
+_Q_WORKS = _PREFIX + """SELECT ?item ?creator ?depicts ?depictsLabel ?collection ?movementLabel ?nb WHERE {{
   VALUES ?item {{ {values} }}
   OPTIONAL {{ ?item wdt:P170 ?creator . }}
   OPTIONAL {{ ?item wdt:P180 ?depicts . OPTIONAL {{ ?depicts rdfs:label ?depictsLabel . FILTER(LANG(?depictsLabel) = "en") }} }}
   OPTIONAL {{ ?item wdt:P195 ?collection . }}
   OPTIONAL {{ ?item wdt:P135 ?movement . OPTIONAL {{ ?movement rdfs:label ?movementLabel . FILTER(LANG(?movementLabel) = "en") }} }}
+  OPTIONAL {{ ?item wikibase:sitelinks ?nb . }}
 }}
 """
 _Q_ARTISTS = _PREFIX + """SELECT ?a ?aLabel ?aDescription ?birth ?death ?natLabel ?ulan ?img ?alias ?movementLabel WHERE {{
@@ -161,14 +168,16 @@ def harvest_work_entities(client: httpx.Client, qids: list[str]) -> dict[str, di
     for batch in tqdm(list(_batches(todo, _BATCH)), desc="works", unit="batch"):
         values = " ".join(f"wd:{q}" for q in batch)
         agg: dict[str, dict] = {q: {"creators": set(), "depicts": set(), "dlabels": {},
-                                    "collection": None, "movement": None} for q in batch}
+                                    "collection": None, "movement": None, "nb": 0} for q in batch}
         try:
             for b in _wd_query(client, _Q_WORKS.format(values=values)):
                 q = _qid(_val(b, "item") or "")
                 if q not in agg:
                     continue
                 if (c := _val(b, "creator")):
-                    agg[q]["creators"].add(_qid(c))
+                    cq = _qid(c)
+                    if re.fullmatch(r"Q\d+", cq):   # discard stale hash-format non-QIDs
+                        agg[q]["creators"].add(cq)
                 if (d := _val(b, "depicts")):
                     dq = _qid(d)
                     agg[q]["depicts"].add(dq)
@@ -178,18 +187,26 @@ def harvest_work_entities(client: httpx.Client, qids: list[str]) -> dict[str, di
                     agg[q]["collection"] = _qid(col)
                 if (m := _val(b, "movementLabel")) and not agg[q]["movement"]:
                     agg[q]["movement"] = m
+                if (nb := _val(b, "nb")):
+                    try:
+                        agg[q]["nb"] = max(agg[q]["nb"], int(nb))
+                    except ValueError:
+                        pass
         except Exception as e:  # greedy: keep what we have, skip this window
             print(f"  works batch failed ({e}); skipping {len(batch)} qids")
         for q, a in agg.items():
             dsorted = sorted(a["depicts"])
             out[q] = {
-                "artist_qid": sorted(a["creators"])[0] if a["creators"] else None,
+                # numerically-lowest QID = the most-established creator entity, not the
+                # lexicographically-first (Q100 should beat Q99999).
+                "artist_qid": (min(a["creators"], key=lambda c: int(c[1:])) if a["creators"] else None),
                 "depicts_qids": " ".join(dsorted) or None,
                 # labels index-aligned with depicts_qids (display-only; pills).
                 "depicts_labels": json.dumps([a["dlabels"].get(dq, dq) for dq in dsorted],
                                              ensure_ascii=False) if dsorted else None,
                 "collection_qid": a["collection"],
                 "movement": a["movement"],
+                "nb_sitelinks": a["nb"] or None,
             }
         json.dump(out, open(_CKPT, "w"))  # checkpoint after every batch
     return out
@@ -228,7 +245,9 @@ def harvest_artists(client: httpx.Client, qids: list[str], work_counts: dict[str
             e["nationality"] = e["nationality"] or _val(b, "natLabel")
             e["ulanId"] = e["ulanId"] or _val(b, "ulan")
             if (img := _val(b, "img")):
-                e["imageCommons"] = e["imageCommons"] or _qid(img)  # Commons filename
+                # Decode %20→space etc. so the runtime's Special:FilePath URL doesn't
+                # double-encode ("%2520") and 404 the artist portrait.
+                e["imageCommons"] = e["imageCommons"] or urllib.parse.unquote(_qid(img))
             if (mv := _val(b, "movementLabel")):
                 e["movementLabels"].add(mv)
     # finalize sets → lists, drop empties
@@ -256,7 +275,7 @@ def harvest_subjects(client: httpx.Client, qids: list[str], counts: dict[str, in
             out[q] = {
                 "qid": q, "labelEn": _val(b, "sLabel") or q,
                 "description": _val(b, "sDescription"),
-                "imageCommons": _qid(img) if img else None,
+                "imageCommons": urllib.parse.unquote(_qid(img)) if img else None,
                 "workCount": counts.get(q, 0),
             }
     return out
@@ -324,17 +343,17 @@ def enrich(repo: str = "NullSense/harpe-art", out: str | None = None) -> None:
 
     print("Patching works Parquet…")
     rows = [(q, e.get("artist_qid"), e.get("depicts_qids"), e.get("depicts_labels"),
-             e.get("collection_qid"), e.get("movement")) for q, e in work_ent.items()]
+             e.get("collection_qid"), e.get("movement"), e.get("nb_sitelinks")) for q, e in work_ent.items()]
     con.execute("CREATE TABLE enr (wikidata_qid VARCHAR, artist_qid VARCHAR, depicts_qids VARCHAR, "
-                "depicts_labels VARCHAR, collection_qid VARCHAR, movement VARCHAR)")
-    con.executemany("INSERT INTO enr VALUES (?,?,?,?,?,?)", rows)
-    enr_cols = ["artist_qid", "depicts_qids", "depicts_labels", "collection_qid", "movement"]
+                "depicts_labels VARCHAR, collection_qid VARCHAR, movement VARCHAR, nb_sitelinks INTEGER)")
+    con.executemany("INSERT INTO enr VALUES (?,?,?,?,?,?,?)", rows)
+    enr_cols = ["artist_qid", "depicts_qids", "depicts_labels", "collection_qid", "movement", "nb_sitelinks"]
     present = [c for c in enr_cols if c in cols]
     excl = f"EXCLUDE ({', '.join(present)})" if present else ""
     oq = out.replace("'", "''")
     con.execute(
         f"COPY (SELECT w.* {excl}, e.artist_qid, e.depicts_qids, e.depicts_labels, "
-        f"e.collection_qid, e.movement "
+        f"e.collection_qid, e.movement, e.nb_sitelinks "
         f"FROM read_parquet('{tq}') w LEFT JOIN enr e USING (wikidata_qid)) "
         f"TO '{oq}' (FORMAT parquet, COMPRESSION zstd)"
     )
