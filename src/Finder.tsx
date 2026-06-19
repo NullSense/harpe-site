@@ -1584,6 +1584,13 @@ const Finder = forwardRef<FinderHandle>(function Finder(_props, ref) {
       const term = mode === 'scan' ? pageUrl : query;
       const params = new URLSearchParams();
       if (term) params.set('q', term);
+      // On a knowledge-graph entity page, encode the QID so the link reopens the
+      // SAME artist/subject page (works depicting X / works by X) — not a plain
+      // text search for its label, which returns different results. `q` stays for
+      // display + the social card. This makes work↔subject links bidirectional.
+      if (mode === 'art' && entity) {
+        params.set(entity.kind === 'artist' ? 'artist' : 'subject', entity.data.qid);
+      }
       if (viewId) {
         params.set('v', viewId);
         if (rich) {
@@ -1600,7 +1607,7 @@ const Finder = forwardRef<FinderHandle>(function Finder(_props, ref) {
       }
       return `${window.location.origin}${window.location.pathname}?${params.toString()}`;
     },
-    [mode, pageUrl, query, detailItems],
+    [mode, pageUrl, query, detailItems, entity],
   );
 
   const copyShare = useCallback(
@@ -1623,8 +1630,14 @@ const Finder = forwardRef<FinderHandle>(function Finder(_props, ref) {
     const params = new URLSearchParams(window.location.search);
     const q = params.get('q');
     const v = params.get('v');
-    if (q) { setInput(q); run(q); }
-    if (v) setDetailId(v); // AFTER run() — run() clears detailId, so set it last
+    const artist = params.get('artist');
+    const subject = params.get('subject');
+    // A KG entity deep link reopens the entity page (loadArtist/loadSubject clear
+    // detailId, like run()), so ?v= is still applied last. q carries the display label.
+    if (artist) { setInput(q || artist); loadArtist(artist, q || ''); }
+    else if (subject) { setInput(q || subject); loadSubject(subject, q || ''); }
+    else if (q) { setInput(q); run(q); }
+    if (v) setDetailId(v); // AFTER run/load — they clear detailId, so set it last
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

@@ -12,6 +12,16 @@ test('search renders the grid and a card opens the detail viewer', async ({ page
   await expect(dialog.getByText('Plain Image Demo')).toBeVisible();
 });
 
+test('a ?artist= deep link reopens the entity page (not a text search)', async ({ page }) => {
+  // Regression: artist/subject navigation must be a stable, shareable deep link —
+  // reloading ?artist=Q… must reopen the KG artist page (loadArtist → /api/artist),
+  // not run a plain text search for the label. Pairs with the work→subject link fix.
+  await page.goto('/?artist=Q5582&q=Vincent%20van%20Gogh');
+  // The artist entity banner (label from /api/artist) proves the entity page loaded.
+  await expect(page.getByText('Vincent van Gogh').first()).toBeVisible();
+  await expect(page.locator('img[alt*="Plain Image Demo"]').first()).toBeVisible(); // its works
+});
+
 test('an enriched card surfaces the knowledge graph: artist link + depicts pill', async ({ page }) => {
   // The plain-image item carries KG fields (artistId / depicts) — the detail viewer
   // must render the artist as a clickable entity link and the depicts subject pill.

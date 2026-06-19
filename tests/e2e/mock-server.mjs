@@ -105,6 +105,15 @@ const server = http.createServer(async (req, res) => {
         ] }],
     });
     if (u.pathname === '/api/scan') return json(res, { images: [], deepzoom: null, sauceEnabled: false });
+    // KG entity pages — exercised by the "?artist=" deep-link e2e test.
+    if (u.pathname === '/api/artist') return json(res, {
+      entity: { qid: 'Q5582', labelEn: 'Vincent van Gogh', description: 'Dutch painter', workCount: 1 },
+      works: ITEMS,
+    });
+    if (u.pathname === '/api/depicts') return json(res, {
+      entity: { qid: 'Q7569', labelEn: 'child', workCount: 1 },
+      works: ITEMS,
+    });
     if (u.pathname === '/api/tile' || u.pathname === '/api/fetch') {
       res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'public, max-age=60' });
       return res.end(await tile());
