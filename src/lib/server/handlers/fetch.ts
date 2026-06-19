@@ -35,7 +35,11 @@ const UA =
   'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 const MAX_BYTES = 80 * 1024 * 1024; // 80 MB — fits lossless TIFF originals
 const TIMEOUT_MS = 20_000;
-const MAX_REDIRECTS = 3;
+// Wikimedia Commons `http://…/Special:FilePath/…` is a 4-hop chain
+// (http→https upgrade, then FilePath→thumb→upload), so 3 was too low and
+// produced spurious 502s. Each hop is independently SSRF-re-guarded below, so a
+// higher cap costs nothing in safety; 6 leaves headroom for thumb redirects.
+export const MAX_REDIRECTS = 6;
 
 // The underlying Vercel response IS a Node ServerResponse; our minimal
 // VercelResponse type omits the streaming methods, so we narrow to them here.
@@ -48,7 +52,7 @@ interface NodeWritable {
 
 // ─── Fetch with redirect guard (returns the un-read upstream response) ─────────
 
-async function safeFetchImage(
+export async function safeFetchImage(
   startUrl: string,
   controller: AbortController,
   referer?: string,

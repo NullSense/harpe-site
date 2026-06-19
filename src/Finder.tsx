@@ -1494,24 +1494,28 @@ const Finder = forwardRef<FinderHandle>(function Finder(_props, ref) {
   // so it costs exactly what a normal search does — nothing extra.
   const [shareMsg, setShareMsg] = useState('');
 
+  // Canonical, human-readable URL: just ?q=<term> (+ &v=<id> when a work is open).
+  // `rich` adds the t/img/d preview embed used ONLY by the Share button so social
+  // crawlers get a zero-refetch card. The address bar always uses the clean form;
+  // middleware.ts falls back to /api/preview?q=&v= for clean links, so cards still
+  // render — the embed is a refetch-saving optimization, not a requirement.
   const buildShareUrl = useCallback(
-    (viewId?: string): string => {
+    (viewId?: string, rich = false): string => {
       const term = mode === 'scan' ? pageUrl : query;
       const params = new URLSearchParams();
       if (term) params.set('q', term);
       if (viewId) {
         params.set('v', viewId);
-        // Embed preview data so social crawlers get a rich card with no refetch
-        // (read by middleware.ts). Only on the shared link, not the address bar.
-        const it = detailItems.find((i) => i.id === viewId);
-        if (it) {
-          params.set('t', it.title);
-          // Embed the larger preview as the card image; middleware caps it to a
-          // ~1200px JPEG via the proxy, so bigger source = sharper card, no risk.
-          const previewSrc = it.previewUrl || it.thumbUrl;
-          if (previewSrc) params.set('img', previewSrc);
-          const d = [it.artist, it.date, it.medium].filter(Boolean).join(' · ');
-          if (d) params.set('d', d);
+        if (rich) {
+          const it = detailItems.find((i) => i.id === viewId);
+          if (it) {
+            params.set('t', it.title);
+            // Bigger source = sharper card; middleware caps it to a ~1200px JPEG.
+            const previewSrc = it.previewUrl || it.thumbUrl;
+            if (previewSrc) params.set('img', previewSrc);
+            const d = [it.artist, it.date, it.medium].filter(Boolean).join(' · ');
+            if (d) params.set('d', d);
+          }
         }
       }
       return `${window.location.origin}${window.location.pathname}?${params.toString()}`;
@@ -1521,7 +1525,7 @@ const Finder = forwardRef<FinderHandle>(function Finder(_props, ref) {
 
   const copyShare = useCallback(
     async (viewId?: string) => {
-      const url = buildShareUrl(viewId);
+      const url = buildShareUrl(viewId, true); // rich embed → zero-refetch social card
       try {
         await navigator.clipboard.writeText(url);
         setShareMsg('Link copied ✓');
@@ -1545,10 +1549,9 @@ const Finder = forwardRef<FinderHandle>(function Finder(_props, ref) {
   }, []);
 
   // Keep the address bar in sync (replaceState → no history spam during streaming).
-  // When a work is open, embed its preview data (t/img/d via buildShareUrl) so a
-  // copied address-bar link gets a rich link preview with NO server-side refetch
-  // — Vercel edge middleware can't reliably fetch its own /api/art, so relying on
-  // that left address-bar shares imageless. Embedding makes every copy work.
+  // Clean canonical form only (?q=&v=) — no t/img/d clutter. A copied address-bar
+  // link still gets a social card: middleware.ts resolves it via /api/preview. The
+  // Share button uses the rich embed (buildShareUrl(id, true)) to skip that refetch.
   useEffect(() => {
     if (mode !== 'art' && mode !== 'scan') return;
     const term = mode === 'scan' ? pageUrl : query;

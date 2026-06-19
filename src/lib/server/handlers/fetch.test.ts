@@ -1,5 +1,68 @@
-import { describe, it, expect } from 'vitest';
-import { deriveFilename, parseConvertParams, needsConversion } from './fetch.js';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+// Mock the network + SSRF guard so the redirect-following loop is deterministic.
+// GuardError stays the real class (instanceof checks in the loop) via importActual.
+vi.mock('undici', () => ({ fetch: vi.fn() }));
+vi.mock('../guard.js', async (orig) => {
+  const actual = await orig<typeof import('../guard.js')>();
+  return {
+    ...actual,
+    guardUrl: vi.fn(async (u: string) => ({ url: u, ip: '203.0.113.7', family: 4 as const })),
+    pinnedAgent: vi.fn(() => undefined),
+  };
+});
+
+import { fetch } from 'undici';
+import { deriveFilename, parseConvertParams, needsConversion, safeFetchImage, MAX_REDIRECTS } from './fetch.js';
+
+const mockFetch = fetch as unknown as ReturnType<typeof vi.fn>;
+beforeEach(() => mockFetch.mockReset());
+
+// Minimal undici-Response stand-ins for the redirect loop.
+const redirectTo = (location: string) => ({
+  status: 301,
+  ok: false,
+  headers: { get: (k: string) => (k.toLowerCase() === 'location' ? location : null) },
+  body: { cancel: async () => {} },
+});
+const imageOk = () => ({
+  status: 200,
+  ok: true,
+  headers: {
+    get: (k: string) =>
+      k.toLowerCase() === 'content-type' ? 'image/jpeg' : k.toLowerCase() === 'content-length' ? '1024' : null,
+  },
+  body: {},
+});
+
+// ─── safeFetchImage redirect handling (regression: Commons FilePath 502) ───────
+
+describe('safeFetchImage redirect following', () => {
+  // The exact chain a `http://commons.wikimedia.org/.../Special:FilePath/...`
+  // URL produces: http→https, then FilePath→thumb→upload = 4 redirects. The old
+  // MAX_REDIRECTS=3 threw "Too many redirects" → 502. This must now resolve.
+  it('follows the 4-hop Wikimedia Commons FilePath chain to the image', async () => {
+    mockFetch
+      .mockResolvedValueOnce(redirectTo('https://commons.wikimedia.org/wiki/Special:FilePath/x.jpg'))
+      .mockResolvedValueOnce(redirectTo('https://commons.wikimedia.org/redir/2'))
+      .mockResolvedValueOnce(redirectTo('https://commons.wikimedia.org/redir/3'))
+      .mockResolvedValueOnce(redirectTo('https://upload.wikimedia.org/wikipedia/commons/5/5b/x.jpg'))
+      .mockResolvedValueOnce(imageOk());
+    const r = await safeFetchImage(
+      'http://commons.wikimedia.org/wiki/Special:FilePath/x.jpg',
+      new AbortController(),
+    );
+    expect(r.contentType).toBe('image/jpeg');
+    expect(mockFetch).toHaveBeenCalledTimes(5); // 4 redirects + final 200
+  });
+
+  it('still rejects an over-long redirect chain (SSRF redirect-loop guard intact)', async () => {
+    for (let i = 0; i <= MAX_REDIRECTS + 1; i++) mockFetch.mockResolvedValueOnce(redirectTo(`https://x/${i}`));
+    await expect(
+      safeFetchImage('https://x/start', new AbortController()),
+    ).rejects.toThrow(/Too many redirects/);
+  });
+});
 
 // ─── deriveFilename ───────────────────────────────────────────────────────────
 
