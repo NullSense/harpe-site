@@ -1,5 +1,20 @@
 import { describe, it, expect } from 'vitest';
-import { buildNameIndex, resolveArtistQid } from './adapters.js';
+import { buildNameIndex, resolveArtistQid, cleanDate } from './adapters.js';
+
+describe('cleanDate (strip leaked Wikidata QuickStatements qualifiers)', () => {
+  it('drops a "date QS:…" qualifier dump, keeping the readable date', () => {
+    expect(cleanDate('between 1503 and 1505date QS:P571,+1503-00-00T00:00:00Z/8,P1319,+1503-00-00T00:00:00Z/9,P1326,+1505-00-00T00:00:00Z/9'))
+      .toBe('between 1503 and 1505');
+  });
+  it('drops a bare "QS:…" tail', () => {
+    expect(cleanDate('1889 QS:P571,+1889-00-00T00:00:00Z/9')).toBe('1889');
+  });
+  it('leaves a clean date untouched, and empties to undefined', () => {
+    expect(cleanDate('c. 1665')).toBe('c. 1665');
+    expect(cleanDate('')).toBeUndefined();
+    expect(cleanDate('  QS:P571,+1900')).toBeUndefined();
+  });
+});
 
 // The artist name→QID matching is the single source of truth (ingest emits only
 // raw {name: QID}; ALL normalization/suffix/collision logic lives here).

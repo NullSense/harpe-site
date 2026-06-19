@@ -1640,7 +1640,7 @@ async function fetchDumpSearchUncached(q: string, dataset: string): Promise<ArtI
         downloads: [{ label: 'Full image', url: full, format: fmtFromUrl(full), lossless: false }],
         source,
         isPublicDomain: row.is_public_domain === true,
-        date: str(row.date),
+        date: cleanDate(str(row.date)),
         medium: str(row.medium),
         culture: str(row.culture),
         creditLine: str(row.credit_line),
@@ -1737,6 +1737,17 @@ export function resolveArtistQid(index: Record<string, string>, name: string): s
   if (!name) return undefined;
   const q = index[normalize(name)] ?? index[`raw:${name.toLowerCase()}`];
   return q && /^Q\d+$/.test(q) ? q : undefined;
+}
+
+/** Strip Wikidata QuickStatements qualifier dumps that leak into some dump `date`
+ *  values, e.g. "between 1503 and 1505date QS:P571,+1503-00-00T00:00:00Z/8,P1319,…"
+ *  → "between 1503 and 1505". Returns undefined when nothing readable remains. */
+export function cleanDate(s: string): string | undefined {
+  const d = s
+    .replace(/\s*date\s+QS:.*$/is, '') // "…1505date QS:P571,…" → "…1505"
+    .replace(/\s*QS:.*$/is, '')        // any other QuickStatements tail
+    .trim();
+  return d || undefined;
 }
 
 /** Parse a JSON-array string column (e.g. depicts_labels) → string[] | undefined. */
