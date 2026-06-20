@@ -386,7 +386,7 @@ function SourceBadge({ source }: { source: ArtItem['source'] }) {
 }
 
 function ArtCard({
-  item, onOpen, selected, onToggleSelect, dlStatus, onImgLoad, onImgError,
+  item, onOpen, selected, onToggleSelect, dlStatus, onImgLoad, onImgError, attributed,
 }: {
   item: ArtItem;
   onOpen: () => void;
@@ -395,6 +395,7 @@ function ArtCard({
   dlStatus?: DlStatus;
   onImgLoad?: (w: number, h: number) => void;
   onImgError?: () => void;
+  attributed?: boolean;           // on an artist page: exactly attributed to that QID
 }) {
   // SMK-style tile: image-dominant, natural aspect (no crop), minimal label. The
   // whole tile opens the detail view (full-size zoom + all metadata + actions).
@@ -420,6 +421,9 @@ function ArtCard({
           onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; onImgError?.(); }}
         />
         <PreviewBadge />
+        {attributed && (
+          <span title="Attributed to this artist (exact Wikidata match)" className="absolute left-2 top-2 z-10 rounded-sm bg-[rgba(10,8,6,.82)] px-1.5 py-0.5 font-mono text-[.58rem] text-bronze-bright">✓ attributed</span>
+        )}
         {item.video && (
           <span aria-hidden className="pointer-events-none absolute inset-0 flex items-center justify-center">
             <span className="flex h-12 w-12 items-center justify-center rounded-full bg-[rgba(10,8,6,.6)] text-xl text-ink/90 backdrop-blur-sm transition group-hover:bg-bronze/30">▶</span>
@@ -2083,15 +2087,36 @@ const Finder = forwardRef<FinderHandle>(function Finder(_props, ref) {
                     </p>
                   ) : (
                     <>
-                      <div className="columns-2 gap-4 sm:columns-3 lg:columns-4 2xl:columns-5">
-                        {visibleArt.slice(0, shown).map((item, i) => (
-                          <ArtCard
-                            key={item.id}
-                            item={item}
-                            onOpen={() => openDetailAt(i)}
-                          />
-                        ))}
-                      </div>
+                      {(() => {
+                        const shownItems = visibleArt.slice(0, shown);
+                        const gridCls = 'columns-2 gap-4 sm:columns-3 lg:columns-4 2xl:columns-5';
+                        const artistQid = entity?.kind === 'artist' ? entity.data.qid : null;
+                        const artistName = entity?.kind === 'artist' ? entity.data.labelEn : '';
+                        const card = (item: ArtItem, i: number) => (
+                          <ArtCard key={item.id} item={item} onOpen={() => openDetailAt(i)}
+                            attributed={!!artistQid && item.artistId === artistQid} />
+                        );
+                        // On an artist page, split into "Works by X" (exact QID) and "More
+                        // matching X" (broader name hits). Keep the global index i so the
+                        // detail viewer opens the right item. Plain search/subject: one grid.
+                        if (!artistQid) return <div className={gridCls}>{shownItems.map((item, i) => card(item, i))}</div>;
+                        const attributed: Array<[ArtItem, number]> = [];
+                        const more: Array<[ArtItem, number]> = [];
+                        shownItems.forEach((item, i) => { (item.artistId === artistQid ? attributed : more).push([item, i]); });
+                        const head = 'mb-3 mt-2 font-mono text-[.8rem] uppercase tracking-wide text-muted/70';
+                        return (
+                          <>
+                            {attributed.length > 0 && (<>
+                              <h3 className={head}>Works by {artistName}</h3>
+                              <div className={gridCls}>{attributed.map(([item, i]) => card(item, i))}</div>
+                            </>)}
+                            {more.length > 0 && (<>
+                              <h3 className={head + ' mt-8'}>More matching “{artistName}”</h3>
+                              <div className={gridCls}>{more.map(([item, i]) => card(item, i))}</div>
+                            </>)}
+                          </>
+                        );
+                      })()}
                       {/* Sentinel: visible whenever there are more cards to show (locally
                           or from the dump index). The IntersectionObserver above handles
                           both: advancing `shown` while the local pool has cards, then
