@@ -493,9 +493,12 @@ def build_suggest(artists: dict[str, dict], subjects: dict[str, dict],
     return out
 
 
-def enrich(repo: str = "NullSense/harpe-art", out: str | None = None) -> None:
+def enrich(repo: str = "NullSense/harpe-art", out: str | None = None,
+           build_search_index: bool = True) -> None:
     """Build + publish the knowledge-graph entity layer from the published works.
-    Callable as a final phase of ingest.py (--enrich) or standalone (this script)."""
+    Callable as a final phase of ingest.py (--enrich) or standalone (this script).
+    When build_search_index is set, also builds + uploads the FTS5 search index
+    (data/art.sqlite) for browser-side range-read search — see docs/perf-rank4-fts.md."""
     out = out or os.path.join(tempfile.gettempdir(), "harpe-train-enriched.parquet")
     os.environ.setdefault("HF_XET_HIGH_PERFORMANCE", "1")
     from huggingface_hub import HfApi, hf_hub_download
@@ -739,15 +742,100 @@ def enrich(repo: str = "NullSense/harpe-art", out: str | None = None) -> None:
           f"{sum(len(v) for v in work_ids_by_artist.values()):,} artist↔work links, "
           f"{wi_entries:,} work_index entries "
           f"across {len(artist_buckets)} shards.")
+
+    # Build + publish the FTS5 search index from the freshly-enriched parquet (`out`),
+    # which carries depicts_labels/_qids + artist_qid. Last so a failure here can't
+    # block the entity-file publish above.
+    if build_search_index:
+        build_fts(out, repo, api=api)
+
     print("Patched works + entity files are live on the HF CDN — redeploy Vercel to serve them.")
+
+
+def build_fts(parquet_path: str, repo: str = "NullSense/harpe-art", *,
+              api=None, upload: bool = True, out: str | None = None) -> str:
+    """Build a SQLite FTS5 search index from the works parquet and (optionally) upload it
+    to HF as data/art.sqlite, for browser-side sql.js-httpvfs range-read queries — the
+    durable replacement for the slow HF datasets-server /filter on cold queries.
+
+    FTS5 over title/artist/depicts_labels (the same columns the live /filter ILIKEs);
+    display columns are stored alongside so the client renders results with no second
+    fetch. Built with a fixed page_size so the client's requestChunkSize matches and a
+    query pulls only the B-tree/posting pages it touches. Returns the local .sqlite path.
+    See docs/perf-rank4-fts.md."""
+    import sqlite3
+    out = out or os.path.join(tempfile.gettempdir(), "art.sqlite")
+    if os.path.exists(out):
+        os.remove(out)
+
+    con = duckdb.connect()
+    con.execute(f"SET temp_directory='{tempfile.gettempdir()}';")
+    pq = parquet_path.replace("'", "''")
+    have = {r[0] for r in con.execute(f"DESCRIBE SELECT * FROM read_parquet('{pq}')").fetchall()}
+    # COALESCE columns absent from a partial dump (e.g. the single-source local test
+    # subset) so the same builder works on the full set and on fixtures.
+    def col(name: str, default: str = "''") -> str:
+        return f'"{name}"' if name in have else f"{default} AS {name}"
+    select = (
+        "SELECT id, source, title, artist, "
+        f"{col('date')}, {col('medium')}, image_thumb, image_full, "
+        f"{col('width', 'NULL')}, {col('height', 'NULL')}, source_url, "
+        "CAST(is_public_domain AS INTEGER) AS is_public_domain, "
+        f"{col('wikidata_qid')}, {col('artist_qid')}, {col('depicts_qids')}, "
+        f"{col('depicts_labels')}, {col('movement')} "
+        f"FROM read_parquet('{pq}')"
+    )
+    cur = con.execute(select)
+
+    s = sqlite3.connect(out)
+    s.execute("PRAGMA page_size=4096")   # MUST precede table creation; matches client requestChunkSize
+    s.execute("PRAGMA journal_mode=OFF")
+    s.execute("PRAGMA synchronous=OFF")
+    s.execute(
+        "CREATE TABLE art(id TEXT, source TEXT, title TEXT, artist TEXT, date TEXT, "
+        "medium TEXT, image_thumb TEXT, image_full TEXT, width INTEGER, height INTEGER, "
+        "source_url TEXT, is_public_domain INTEGER, wikidata_qid TEXT, artist_qid TEXT, "
+        "depicts_qids TEXT, depicts_labels TEXT, movement TEXT)"
+    )
+    n = 0
+    placeholders = ",".join("?" * 17)
+    while True:
+        batch = cur.fetchmany(50_000)
+        if not batch:
+            break
+        s.executemany(f"INSERT INTO art VALUES ({placeholders})", batch)
+        n += len(batch)
+    s.execute("CREATE VIRTUAL TABLE art_fts USING fts5(title, artist, depicts_labels, "
+              "content='art', content_rowid='rowid')")
+    s.execute("INSERT INTO art_fts(rowid, title, artist, depicts_labels) "
+              "SELECT rowid, title, artist, depicts_labels FROM art")
+    s.execute("INSERT INTO art_fts(art_fts) VALUES('optimize')")
+    s.commit()
+    s.execute("VACUUM")
+    s.commit()
+    s.close()
+
+    mb = os.path.getsize(out) / 1e6
+    print(f"Built FTS index: {n:,} rows → {out} ({mb:.1f} MB)")
+    if upload:
+        from huggingface_hub import HfApi
+        (api or HfApi()).upload_file(
+            path_or_fileobj=out, path_in_repo="data/art.sqlite",
+            repo_id=repo, repo_type="dataset",
+            commit_message=f"FTS search index ({n:,} rows, {mb:.0f} MB)",
+        )
+        print("Uploaded data/art.sqlite — redeploy with HARPE_FTS_INDEX set to serve it.")
+    return out
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Build the Harpe knowledge-graph entity layer from the published works.")
     ap.add_argument("--repo", default="NullSense/harpe-art", help="HF dataset repo")
     ap.add_argument("--out", default=None, help="local patched-Parquet path (default: a temp file)")
+    ap.add_argument("--no-search-index", action="store_true",
+                    help="skip building + uploading the FTS5 search index (data/art.sqlite)")
     args = ap.parse_args()
-    enrich(args.repo, args.out)
+    enrich(args.repo, args.out, build_search_index=not args.no_search_index)
 
 
 if __name__ == "__main__":

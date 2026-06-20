@@ -206,5 +206,63 @@ def test_wd_query_400_is_fatal_not_retried():
         E._wd_query(client, "BROKEN")
 
 
+# ── build_fts (Rank 4 FTS5 search index) ────────────────────────────────────────
+
+def _fixture_parquet(tmp_path, *, full_schema=True):
+    """Write a tiny works parquet. full_schema mirrors the published dataset; the
+    partial variant drops depicts_*/artist_qid like the single-source local subset."""
+    import duckdb
+    pq = os.path.join(tmp_path, "works.parquet")
+    if full_schema:
+        cols = ("source,id,title,artist,image_thumb,image_full,source_url,"
+                "is_public_domain,wikidata_qid,artist_qid,depicts_qids,depicts_labels")
+        rows = ("('nga','a1','Water Lilies','Claude Monet','t1','f1','u1',true,'Q1','Q296','Q12511','stairs;water'),"
+                "('met','m9','Bridge over a Pond','Claude Monet','t2','f2','u2',true,'Q2','Q296','Q12511','stairs;bridge')")
+    else:
+        cols = "source,id,title,artist,image_thumb,image_full,source_url,is_public_domain,wikidata_qid"
+        rows = ("('nga','a1','Water Lilies','Claude Monet','t1','f1','u1',true,'Q1'),"
+                "('met','m9','Bridge over a Pond','Claude Monet','t2','f2','u2',true,'Q2')")
+    duckdb.connect().execute(
+        f"COPY (SELECT * FROM (VALUES {rows}) AS t({cols})) TO '{pq}' (FORMAT PARQUET)"
+    )
+    return pq
+
+
+def _query_fts(db, q):
+    import sqlite3
+    s = sqlite3.connect(db)
+    try:
+        return s.execute(
+            "SELECT a.id FROM art_fts JOIN art a ON a.rowid = art_fts.rowid "
+            "WHERE art_fts MATCH ? ORDER BY rank",
+            (" ".join(t + "*" for t in q.split()),),
+        ).fetchall()
+    finally:
+        s.close()
+
+
+def test_build_fts_indexes_title_artist_and_depicts(tmp_path):
+    import sqlite3
+    pq = _fixture_parquet(tmp_path)
+    db = E.build_fts(pq, upload=False, out=os.path.join(tmp_path, "art.sqlite"))
+    assert os.path.exists(db)
+    assert [r[0] for r in _query_fts(db, "water lilies")] == ["a1"]          # title
+    assert sorted(r[0] for r in _query_fts(db, "monet")) == ["a1", "m9"]      # artist → both
+    assert sorted(r[0] for r in _query_fts(db, "stairs")) == ["a1", "m9"]     # depicts_labels indexed
+    # display columns carried for client rendering (no second fetch)
+    row = sqlite3.connect(db).execute(
+        "SELECT source, image_thumb, wikidata_qid FROM art WHERE id='a1'").fetchone()
+    assert row == ("nga", "t1", "Q1")
+
+
+def test_build_fts_tolerates_a_partial_schema_subset(tmp_path):
+    # The single-source local subset lacks depicts_*/artist_qid — the builder must
+    # COALESCE them and still produce a queryable index.
+    pq = _fixture_parquet(tmp_path, full_schema=False)
+    db = E.build_fts(pq, upload=False, out=os.path.join(tmp_path, "art.sqlite"))
+    assert sorted(r[0] for r in _query_fts(db, "monet")) == ["a1", "m9"]
+    assert _query_fts(db, "stairs") == []  # no depicts in the subset → no hit, no crash
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([os.path.abspath(__file__), "-q"]))

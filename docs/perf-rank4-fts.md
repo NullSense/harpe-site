@@ -84,14 +84,16 @@ s.execute("VACUUM"); s.commit()
   local subset) — index `depicts_labels` into the FTS too; keep `depicts_qids` as an
   auxiliary column for the subject-page exact-match.
 
-## Implementation plan (one focused pass)
+## Implementation plan
 
-1. **Build step** — add `build_fts()` to `scripts/ingest-art-dumps/enrich_entities.py` (it
-   already has DuckDB + the parquet): read the full `train.parquet`, build the FTS5 SQLite
-   (FTS over `title, artist, depicts_labels`; auxiliary `source, depicts_qids` + display
-   cols), `optimize` + `VACUUM`, tune `page_size` (4–8 KB) for range efficiency, upload to
-   HF as `data/art.sqlite`. Gate behind a flag so it ships via `--enrich-only --push`.
-   **Measure the real file size here — it decides shard-vs-single-file.**
+1. **Build step — DONE** (`enrich_entities.build_fts`, called from `enrich()`, opt-out via
+   `--no-search-index`; tested in `test_enrich_entities.py`). Reads the enriched parquet,
+   builds an external-content FTS5 SQLite (FTS over `title, artist, depicts_labels`;
+   `source, depicts_qids` + display cols stored alongside), `optimize` + `VACUUM`,
+   `page_size=4096` (match the client `requestChunkSize`), uploads to HF as `data/art.sqlite`.
+   Ships with `--enrich-only --push`. **Verified on the real local 63k subset: 27.4 MB,
+   0.3 s → extrapolates to ~930 MB / ~10 s at the full 2.15M rows.** (~1 GB confirms the
+   browser-side range-read query path below; whole-file function load is out.)
 2. **Query adapter** — query the remote `.sqlite` over HTTP range. At ~1 GB (see sizing
    above) whole-file load is out, so:
    - **Browser-side `sql.js-httpvfs` (recommended):** the client queries the HF-hosted
