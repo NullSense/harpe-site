@@ -16,6 +16,7 @@
     "check:api": "node scripts/check-api-bundles.mjs",
     "test:e2e": "playwright test",
     "monitor": "node tests/live/monitor.mjs",
+    "keep-warm": "node tests/live/keep-warm.mjs",
     "verify": "pnpm run typecheck && pnpm test && pnpm run build && pnpm run check:api && pnpm --filter @harpe/extension build && pnpm --filter @harpe/extension test",
     "postinstall": "pnpm --filter @harpe/core build && pnpm --filter @harpe/sources build"
   },

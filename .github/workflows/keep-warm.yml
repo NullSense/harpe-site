@@ -1,0 +1,34 @@
+name: Keep warm
+
+# Pre-warms the most popular searches so real users land on a warm Upstash KV /
+# CDN result instead of paying the HF /filter cold-index wait. Runs every 4h —
+# under the 6h KV TTL — so a warm ping (not a user) is what repopulates an expired
+# key. Cheap: a few dozen GETs against the live site, no secrets needed.
+on:
+  schedule:
+    - cron: '37 */4 * * *' # every 4h (offset off the hour, < the 6h KV TTL)
+  workflow_dispatch:
+    inputs:
+      count:
+        description: 'How many top queries to warm'
+        required: false
+        default: '24'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: keep-warm
+  cancel-in-progress: false
+
+jobs:
+  keep-warm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node tests/live/keep-warm.mjs
+        env:
+          WARM_COUNT: ${{ github.event.inputs.count || '24' }}
