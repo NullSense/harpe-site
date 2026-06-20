@@ -19,7 +19,9 @@ import {
 } from './adapters.js';
 
 const ok = (body: unknown) => ({ ok: true, status: 200, json: async () => body });
-beforeEach(() => { timedFetchMock.mockReset(); _resetEntityBucketCache(); });
+// Reset every memoised index so a prior test's mock can't leak (resolveQueryEntity
+// now consults BOTH the subject and the name index).
+beforeEach(() => { timedFetchMock.mockReset(); _resetEntityBucketCache(); _resetNameIndex(); _resetSubjectIndex(); });
 
 describe('entityBucket (MUST match enrich_entities.py `_bucket`: int(digits) % 256)', () => {
   it('shards QIDs by numeric remainder', () => {
@@ -105,6 +107,31 @@ describe('resolveQueryEntity (search → KG subject page)', () => {
     _resetSubjectIndex();
     timedFetchMock.mockResolvedValue({ ok: false, status: 404, json: async () => ({}) });
     expect(await resolveQueryEntity('Joan of Arc')).toBeNull();
+  });
+
+  it('resolves a full-name ARTIST via the name index, but NOT a single token', async () => {
+    _resetSubjectIndex(); _resetNameIndex();
+    // route by URL: not a subject, but a known artist in the name index
+    timedFetchMock.mockImplementation((url: unknown) => {
+      const u = String(url);
+      if (u.includes('subject_to_qid')) return Promise.resolve(ok({}));
+      if (u.includes('name_to_qid')) return Promise.resolve(ok({ 'Jan Matejko': 'Q189117' }));
+      return Promise.resolve(ok({}));
+    });
+    expect(await resolveQueryEntity('Jan Matejko')).toEqual({ kind: 'artist', qid: 'Q189117' });
+    // single token → no artist auto-nav (surnames collide with common words)
+    expect(await resolveQueryEntity('matejko')).toBeNull();
+  });
+
+  it('prefers a SUBJECT match over an artist match', async () => {
+    _resetSubjectIndex(); _resetNameIndex();
+    timedFetchMock.mockImplementation((url: unknown) => {
+      const u = String(url);
+      if (u.includes('subject_to_qid')) return Promise.resolve(ok({ 'Saint George': 'Q48438' }));
+      if (u.includes('name_to_qid')) return Promise.resolve(ok({ 'Saint George': 'Q9999999' }));
+      return Promise.resolve(ok({}));
+    });
+    expect(await resolveQueryEntity('Saint George')).toEqual({ kind: 'subject', qid: 'Q48438' });
   });
 });
 

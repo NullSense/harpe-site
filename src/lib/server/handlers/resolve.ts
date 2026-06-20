@@ -1,11 +1,11 @@
 /**
  * GET /api/resolve?q=<query> — knowledge-graph entity detection for the search box.
  *
- * Returns { entity: { kind:'subject', qid } | null }. When a query matches a KG
- * subject ("Joan of Arc"), the client opens its subject page (works depicting it +
- * the enriched card) instead of a literal text search. Cheap: a memoised static-JSON
- * lookup on the HF CDN. Artist queries deliberately return null so they keep the
- * tuned federated text-search ranking (famous-works-first).
+ * Returns { entity: { kind:'subject'|'artist', qid } | null }. When a query matches a
+ * KG subject ("Joan of Arc") or a full-name artist ("Jan Matejko"), the client opens
+ * its enriched page (the card + works) instead of a literal text search. Cheap: a
+ * memoised static-JSON lookup on the HF CDN. Single-token queries stay a normal search
+ * (the name index has surnames that are also common words — too ambiguous to auto-nav).
  */
 import type { VercelRequest, VercelResponse } from '../vercel.js';
 import { resolveQueryEntity } from '@harpe/sources';

@@ -1369,10 +1369,10 @@ const Finder = forwardRef<FinderHandle>(function Finder(_props, ref) {
     }
   }, [run]);
 
-  // Entity-aware search: if the query resolves to a KG SUBJECT ("Joan of Arc"),
-  // surface its enriched page (works depicting it + the subject card) instead of a
-  // literal text search. Artists deliberately keep the federated text search (its
-  // famous-works-first ranking is tuned). A resolver miss/error → normal search.
+  // Entity-aware search: if the query resolves to a KG SUBJECT ("Joan of Arc") or a
+  // full-name ARTIST ("Jan Matejko"), surface its enriched page (the card + works)
+  // instead of a literal text search — the works come back notability-ranked, so
+  // famous pieces still lead. A resolver miss/error → normal federated search.
   const navOrSearch = useCallback(async (q: string) => {
     const t = q.trim();
     if (!t) return;
@@ -1381,14 +1381,14 @@ const Finder = forwardRef<FinderHandle>(function Finder(_props, ref) {
       const r = await fetch(`/api/resolve?q=${encodeURIComponent(t)}`);
       if (r.ok) {
         const { entity } = await r.json() as { entity?: { kind: string; qid: string } };
-        if (entity?.kind === 'subject' && /^Q\d+$/.test(entity.qid)) {
-          loadSubject(entity.qid, t);
-          return;
+        if (entity && /^Q\d+$/.test(entity.qid)) {
+          if (entity.kind === 'subject') { loadSubject(entity.qid, t); return; }
+          if (entity.kind === 'artist') { loadArtist(entity.qid, t); return; }
         }
       }
     } catch { /* resolver unavailable → fall through to a normal search */ }
     run(t);
-  }, [loadSubject, run]);
+  }, [loadSubject, loadArtist, run]);
 
   // Run a search from a picked suggestion / discovery chip (entity-aware too).
   const runQuery = navOrSearch;

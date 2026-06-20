@@ -114,6 +114,12 @@ const ARTIST_DATA: ReadonlyArray<readonly [name: string, hint: string]> = [
   ['Joaquín Sorolla', 'Spanish · luminism'],
   ['Tamara de Lempicka', 'Polish · Art Deco'],
   ['Amedeo Modigliani', 'Italian Modernism'],
+  ['John Martin', 'English · Romanticism'],
+  ['Jan Matejko', 'Polish · history painting'],
+  ['Caspar David Friedrich', 'German · Romanticism'],
+  ['Hieronymus Bosch', 'Early Netherlandish'],
+  ['Pieter Bruegel the Elder', 'Flemish Renaissance'],
+  ['Gustave Doré', 'French · illustration'],
 ];
 
 const MOVEMENT_DATA: ReadonlyArray<readonly [name: string, hint: string]> = [

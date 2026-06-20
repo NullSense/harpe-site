@@ -2135,11 +2135,22 @@ async function loadSubjectToQid(): Promise<Record<string, string>> {
  *  by the works-depicting-it page than a literal text match, whereas artist queries
  *  keep the tuned federated text-search ranking (famous-works-first). null = no
  *  confident entity match → caller does a normal search. Absent index → null. */
-export async function resolveQueryEntity(q: string): Promise<{ kind: 'subject'; qid: string } | null> {
+export async function resolveQueryEntity(q: string): Promise<{ kind: 'artist' | 'subject'; qid: string } | null> {
   const t = (q || '').trim();
   if (t.length < 3) return null;
-  const qid = resolveArtistQid(await loadSubjectToQid(), t);
-  return qid ? { kind: 'subject', qid } : null;
+  // Subjects first — the curated index (~4k) makes a hit high-confidence.
+  const subject = resolveArtistQid(await loadSubjectToQid(), t);
+  if (subject) return { kind: 'subject', qid: subject };
+  // Then artists, but ONLY for multi-token queries (full names like "Jan Matejko").
+  // The name index has 200k+ entries incl. bare surnames that are also common words
+  // ("rose", "young", "martin"), so a single-token query would false-positive into an
+  // artist card; those keep the normal federated search (which still finds the works,
+  // and a result's artist link still opens the full page).
+  if (t.split(/\s+/).filter(Boolean).length >= 2) {
+    const artist = resolveArtistQid(await loadNameToQid(), t);
+    if (artist) return { kind: 'artist', qid: artist };
+  }
+  return null;
 }
 
 /** Strip Wikidata QuickStatements qualifier dumps that leak into some dump `date`
