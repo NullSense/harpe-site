@@ -137,6 +137,25 @@ describe('loadSubjectPage', () => {
     expect(page?.works.map((w) => w.id)).toEqual(['aic-1']);
   });
 
+  it('full QID search: dedupes depicting works so the institutional copy wins (not Wikidata)', async () => {
+    m.fetchSubjectEntity.mockResolvedValue({ qid: 'Q7569', labelEn: 'child', workCount: 1 });
+    m.fetchDumpSearch.mockResolvedValue([
+      item('wd-1', 'Madonna', { depicts: ['Q7569'], wikidataId: 'Q500', width: 0, height: 0 }),
+      item('aic-2', 'Madonna', { depicts: ['Q7569'], wikidataId: 'Q500', width: 4000, height: 3000 }),
+    ]);
+    const page = await loadSubjectPage('Q7569', 'ds');
+    expect(page?.works).toHaveLength(1);        // the two copies fold
+    expect(page?.works[0].source).toBe('aic');  // institutional rep wins on area
+  });
+
+  it('keeps a depicting work whose title does not textually match the label', async () => {
+    // attribution is by depicts QID, not text — dedupe must not relevance-filter it out
+    m.fetchSubjectEntity.mockResolvedValue({ qid: 'Q7569', labelEn: 'child', workCount: 1 });
+    m.fetchDumpSearch.mockResolvedValue([item('aic-1', 'The Madonna of the Rocks', { depicts: ['Q7569'] })]);
+    const page = await loadSubjectPage('Q7569', 'ds');
+    expect(page?.works.map((w) => w.id)).toEqual(['aic-1']);
+  });
+
   it('is null for an unknown subject', async () => {
     m.fetchSubjectEntity.mockResolvedValue(null);
     expect(await loadSubjectPage('Q999', 'ds')).toBeNull();

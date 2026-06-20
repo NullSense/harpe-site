@@ -5,7 +5,7 @@
  * server, so ranking/dedup/entity-page logic never forks.
  */
 import {
-  rankResults, qualityScore,
+  rankResults, qualityScore, dedupe,
   type ArtItem, type ArtistEntity, type SubjectEntity,
 } from '@harpe/core';
 import { gatherSources } from './registry.js';
@@ -112,7 +112,11 @@ export async function loadSubjectPage(
   let works: ArtItem[] = [];
   if (dataset) {
     const all = await withDeadline(deadlineMs, fetchDumpSearch(dataset, qid).catch(() => []), []);
-    works = all.filter((it) => it.depicts?.includes(qid)).slice(0, WORKS_CAP);
+    // Attribution is by depicts QID (semantic), so DON'T relevance-filter by label —
+    // just dedupe, which folds duplicate copies and lets the institutional scan win the
+    // representative (museum badge, not Wikidata), keeping every depicting work.
+    const depicting = all.filter((it) => it.depicts?.includes(qid));
+    works = dedupe(depicting).slice(0, WORKS_CAP);
   }
   return { entity, works };
 }
