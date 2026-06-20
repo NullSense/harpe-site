@@ -79,13 +79,32 @@ describe('searchArt', () => {
 });
 
 describe('loadArtistPage', () => {
-  it('returns the entity + only its known works from the dump', async () => {
+  it('full QID search: attributed works first, then broader name matches (attributedCount boundary)', async () => {
     m.fetchArtistEntity.mockResolvedValue({ qid: 'Q41406', labelEn: 'Claude Monet', workCount: 2 });
-    m.fetchArtistWorkIds.mockResolvedValue(['aic-1', 'met-9']);
-    m.fetchDumpSearch.mockResolvedValue([item('aic-1', 'Water Lilies'), item('zzz-2', 'Unrelated')]);
+    m.fetchArtistWorkIds.mockResolvedValue(['wd-1']);
+    m.fetchDumpSearch.mockResolvedValue([
+      item('aic-9', 'Houses of Parliament', { artistId: 'Q41406' }), // attributed via artistId
+      item('wd-1', 'Water Lilies', { artistId: 'Q41406' }),          // attributed via idSet + artistId
+      item('met-5', 'Some other Monet study', { artistId: 'Q999' }), // name match, NOT attributed
+    ]);
     const page = await loadArtistPage('Q41406', 'ds');
-    expect(page?.entity.labelEn).toBe('Claude Monet');
-    expect(page?.works.map((w) => w.id)).toEqual(['aic-1']); // zzz-2 not in the work-id set
+    expect(page?.attributedCount).toBe(2);
+    const ids = page?.works.map((w) => w.id) ?? [];
+    expect(ids.slice(0, 2).sort()).toEqual(['aic-9', 'wd-1']); // attributed section
+    expect(ids.slice(2)).toEqual(['met-5']);                   // broader section
+  });
+
+  it('full QID search: folds an attributed Wikidata work into its institutional copy (institutional badge, still attributed)', async () => {
+    m.fetchArtistEntity.mockResolvedValue({ qid: 'Q41406', labelEn: 'Claude Monet', workCount: 1 });
+    m.fetchArtistWorkIds.mockResolvedValue(['wd-1']);
+    m.fetchDumpSearch.mockResolvedValue([
+      item('wd-1', 'Water Lilies', { artistId: 'Q41406', wikidataId: 'Q111', width: 0, height: 0 }),
+      item('aic-2', 'Water Lilies', { artistId: 'Q41406', wikidataId: 'Q111', width: 4000, height: 3000 }),
+    ]);
+    const page = await loadArtistPage('Q41406', 'ds');
+    expect(page?.works).toHaveLength(1);       // the two copies fold into one
+    expect(page?.works[0].source).toBe('aic'); // institutional rep wins on area (fixes "everything Wikidata")
+    expect(page?.attributedCount).toBe(1);     // still attributed (folded id ∈ KG work set)
   });
 
   it('is null when the QID is not in the index (and never hits the dump)', async () => {
