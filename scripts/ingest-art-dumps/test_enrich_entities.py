@@ -68,6 +68,36 @@ def test_generic_titles_are_excluded_from_work_index():
         assert E._work_title_key(t) in E._GENERIC_TITLES
 
 
+# ── KG-derived autocomplete pool (build_suggest) ──────────────────────────────
+
+def test_build_suggest_ranks_shapes_and_drops_unlabeled():
+    artists = {
+        "Q1": {"qid": "Q1", "labelEn": "Famous", "workCount": 100, "nationality": "French", "movementLabels": ["Impressionism"]},
+        "Q2": {"qid": "Q2", "labelEn": "Minor", "workCount": 2, "nationality": None, "movementLabels": []},
+        "Q3": {"qid": "Q3", "labelEn": None, "workCount": 50},  # no label → excluded
+    }
+    subjects = {"Q9": {"qid": "Q9", "labelEn": "cat", "workCount": 30, "description": "feline"}}
+    out = E.build_suggest(artists, subjects)
+
+    arts = [s for s in out if s["kind"] == "artist"]
+    assert [s["label"] for s in arts] == ["Famous", "Minor"]  # workCount desc; Q3 dropped
+    assert arts[0] == {"label": "Famous", "qid": "Q1", "kind": "artist", "hint": "French · Impressionism", "n": 100}
+
+    subs = [s for s in out if s["kind"] == "subject"]
+    assert subs[0]["label"] == "cat" and subs[0]["qid"] == "Q9"
+
+    movs = [s for s in out if s["kind"] == "movement"]
+    assert any(m["label"] == "Impressionism" and m.get("query") == "Impressionism" for m in movs)
+
+
+def test_build_suggest_respects_caps():
+    artists = {f"Q{i}": {"qid": f"Q{i}", "labelEn": f"A{i}", "workCount": i} for i in range(1, 20)}
+    out = E.build_suggest(artists, {}, max_artists=5, max_subjects=0)
+    arts = [s for s in out if s["kind"] == "artist"]
+    assert len(arts) == 5
+    assert arts[0]["label"] == "A19"  # highest workCount first
+
+
 # ── R3 same-as clustering ─────────────────────────────────────────────────────
 
 def test_cluster_sameas_collapses_a_chain_to_highest_nb():

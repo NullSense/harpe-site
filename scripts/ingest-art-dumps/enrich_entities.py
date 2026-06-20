@@ -37,7 +37,7 @@ import re
 import tempfile
 import unicodedata
 import urllib.parse
-from collections import defaultdict
+from collections import defaultdict, Counter
 
 import duckdb
 import httpx
@@ -465,6 +465,34 @@ def build_name_to_qid(artists: dict[str, dict]) -> dict[str, str]:
     return out
 
 
+def build_suggest(artists: dict[str, dict], subjects: dict[str, dict],
+                  max_artists: int = 4000, max_subjects: int = 1500) -> list[dict]:
+    """KG-derived autocomplete pool — REPLACES the hand-curated static lists in the
+    frontend (discover.ts). Fame-ranked by workCount so the dropdown leads with the
+    artists/subjects users actually search; each entry carries its QID so a pick can
+    jump straight to the enriched page. Movements are aggregated from artist P135."""
+    out: list[dict] = []
+    top_a = sorted((e for e in artists.values() if e.get("labelEn")),
+                   key=lambda e: e.get("workCount") or 0, reverse=True)[:max_artists]
+    for e in top_a:
+        hint = " · ".join(x for x in (e.get("nationality"),
+                          (e.get("movementLabels") or [None])[0]) if x)
+        out.append({"label": e["labelEn"], "qid": e["qid"], "kind": "artist",
+                    "hint": hint or None, "n": e.get("workCount") or 0})
+    top_s = sorted((e for e in subjects.values() if e.get("labelEn")),
+                   key=lambda e: e.get("workCount") or 0, reverse=True)[:max_subjects]
+    for e in top_s:
+        out.append({"label": e["labelEn"], "qid": e["qid"], "kind": "subject",
+                    "hint": e.get("description") or None, "n": e.get("workCount") or 0})
+    mv: Counter = Counter()
+    for e in artists.values():
+        for m in (e.get("movementLabels") or []):
+            mv[m] += 1
+    for label, n in mv.most_common(80):
+        out.append({"label": label, "kind": "movement", "query": label, "n": n})
+    return out
+
+
 def enrich(repo: str = "NullSense/harpe-art", out: str | None = None) -> None:
     """Build + publish the knowledge-graph entity layer from the published works.
     Callable as a final phase of ingest.py (--enrich) or standalone (this script)."""
@@ -610,6 +638,12 @@ def enrich(repo: str = "NullSense/harpe-art", out: str | None = None) -> None:
     subject_to_qid = {e["labelEn"]: q for q, e in subjects.items() if e.get("labelEn")}
     print(f"{len(subject_to_qid):,} subject→QID entries")
 
+    # suggest.json → the KG-derived autocomplete pool (artists+subjects+movements,
+    # fame-ranked). Replaces the frontend's hand-curated static lists; the client
+    # lazy-loads it once via /api/suggest. Carries QIDs so a pick opens the card.
+    suggest = build_suggest(artists, subjects)
+    print(f"{len(suggest):,} suggestions (artists+subjects+movements)")
+
     # Entity files are SHARDED into bucket bundles ({QID: entity} per file): one file
     # per QID hits HF's 10,000-files-per-directory cap (~90k artists). bucket(QID) =
     # int(digits) % _SHARDS — the runtime (adapters.ts) reads the same scheme.
@@ -677,6 +711,9 @@ def enrich(repo: str = "NullSense/harpe-art", out: str | None = None) -> None:
     ), CommitOperationAdd(
         path_in_repo="data/subject_to_qid.json",
         path_or_fileobj=json.dumps(subject_to_qid, ensure_ascii=False, separators=(",", ":")).encode(),
+    ), CommitOperationAdd(
+        path_in_repo="data/suggest.json",
+        path_or_fileobj=json.dumps(suggest, ensure_ascii=False, separators=(",", ":")).encode(),
     )]
     _J = dict(ensure_ascii=False, separators=(",", ":"))
     for b, m in artist_buckets.items():

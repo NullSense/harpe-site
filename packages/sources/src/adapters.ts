@@ -10,7 +10,7 @@
 import { fetch, Agent } from 'undici';
 import { WBK, simplifyClaims } from 'wikibase-sdk';
 import { normalize, isQid } from '@harpe/core';
-import type { ArtItem, Download, ArtistEntity, SubjectEntity } from '@harpe/core';
+import type { ArtItem, Download, ArtistEntity, SubjectEntity, SuggestItem } from '@harpe/core';
 import {
   str, num, fmtFromMime, fmtFromUrl, first, timedFetch, iiifImage, IIIF,
   LOSSLESS_FORMATS, mapPool, UA, deadline,
@@ -2128,6 +2128,23 @@ async function loadSubjectToQid(): Promise<Record<string, string>> {
     _subjectIndex = raw ? buildNameIndex(raw) : null;
   } catch { _subjectIndex = null; } finally { dl.clear(); }
   return _subjectIndex ?? {};
+}
+
+// KG-derived autocomplete pool (data/suggest.json) — fame-ranked artists + subjects
+// + movements that REPLACE the frontend's hand-curated static lists. Memoised per
+// warm instance; [] on any miss (the client then falls back to its tiny static pool).
+let _suggestCache: SuggestItem[] | null | undefined;
+/** Test-only: drop the memoised suggestions pool. */
+export function _resetSuggestCache(): void { _suggestCache = undefined; }
+
+export async function fetchSuggestions(): Promise<SuggestItem[]> {
+  if (_suggestCache !== undefined) return _suggestCache ?? [];
+  const dl = deadline(undefined);
+  try {
+    const res = await timedFetch(`${HF_ENTITY_CDN}/suggest.json`, dl.signal);
+    _suggestCache = res.ok ? (await res.json() as SuggestItem[]) : null;
+  } catch { _suggestCache = null; } finally { dl.clear(); }
+  return _suggestCache ?? [];
 }
 
 /** Resolve a free-text query to a KG entity so search can surface its enriched page.

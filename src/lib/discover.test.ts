@@ -1,6 +1,6 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import {
-  suggest, ALL_SUGGESTIONS, ARTISTS, MOVEMENTS, THEMES,
+  suggest, loadSuggestions, _resetSuggestions, ALL_SUGGESTIONS, ARTISTS, MOVEMENTS, THEMES,
   FEATURED_ARTISTS, FEATURED_MOVEMENTS, FEATURED_THEMES,
 } from './discover';
 import { normalize } from '@harpe/core';
@@ -84,5 +84,36 @@ describe('curated data integrity', () => {
       expect(list.length).toBeGreaterThan(0);
       expect(list.every(Boolean)).toBe(true);
     }
+  });
+});
+
+describe('loadSuggestions() — KG-derived pool', () => {
+  afterEach(() => _resetSuggestions());
+
+  const fakeFetch = (suggestions: unknown) =>
+    (async () => ({ ok: true, json: async () => ({ suggestions }) })) as unknown as typeof fetch;
+
+  it('replaces the static pool, surfaces KG artists/subjects, and carries qids', async () => {
+    await loadSuggestions(fakeFetch([
+      { label: 'Jan Matejko', kind: 'artist', qid: 'Q189117', hint: 'Polish', n: 186 },
+      { label: 'shipwreck', kind: 'subject', qid: 'Q888', n: 5 },
+    ]));
+    const m = suggest('matejko').find((s) => s.label === 'Jan Matejko');
+    expect(m).toMatchObject({ qid: 'Q189117', kind: 'artist' });
+    // partial query (an exact-label query is intentionally excluded as "already typed")
+    const s = suggest('shipwr').find((x) => x.label === 'shipwreck');
+    expect(s).toMatchObject({ qid: 'Q888', kind: 'subject' });
+  });
+
+  it('keeps the editorial THEMES alongside the KG pool', async () => {
+    await loadSuggestions(fakeFetch([{ label: 'Jan Matejko', kind: 'artist', qid: 'Q189117' }]));
+    // a curated theme query still resolves (themes are not derivable from the KG)
+    expect(suggest('wave').map((s) => s.query)).toContain('the great wave');
+  });
+
+  it('falls back to the static pool on a failed/empty load', async () => {
+    const bad = (async () => ({ ok: false, json: async () => ({}) })) as unknown as typeof fetch;
+    await loadSuggestions(bad);
+    expect(suggest('monet').some((s) => s.label === 'Claude Monet')).toBe(true); // static pool intact
   });
 });

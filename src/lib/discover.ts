@@ -16,8 +16,9 @@
  * exactly like the result ranker — no extra fuzzy-search dependency.
  */
 import { normalize, jaroWinkler, tokenize } from '@harpe/core';
+import type { SuggestItem } from '@harpe/core';
 
-export type SuggestKind = 'artist' | 'movement' | 'theme';
+export type SuggestKind = 'artist' | 'movement' | 'theme' | 'subject';
 
 export interface Suggestion {
   /** Display text. */
@@ -27,6 +28,8 @@ export interface Suggestion {
   /** Short context line: era / nationality / medium, or a movement blurb. */
   hint: string;
   kind: SuggestKind;
+  /** Wikidata QID for KG-backed artist/subject picks → open the entity card directly. */
+  qid?: string;
 }
 
 // ─── Curated data ────────────────────────────────────────────────────────────
@@ -182,6 +185,46 @@ export const ARTISTS: Suggestion[] = dedup(build('artist', ARTIST_DATA));
 export const MOVEMENTS: Suggestion[] = dedup(build('movement', MOVEMENT_DATA));
 export const THEMES: Suggestion[] = dedup(build('theme', THEME_DATA));
 
+// ─── KG-derived pool (replaces the curated artist/movement lists at runtime) ──────
+// The static lists above are now just the OFFLINE FALLBACK: on first use the client
+// loads data/suggest.json (via /api/suggest) — thousands of fame-ranked artists +
+// subjects + movements, each with its QID so a pick opens the enriched card. The
+// editorial THEMES (free-text iconography seeds, not derivable) are always kept.
+let _remotePool: Suggestion[] | null = null;
+let _remoteLoad: Promise<void> | null = null;
+
+function remoteToSuggestion(s: SuggestItem): Suggestion | null {
+  if (!s || typeof s.label !== 'string' || !s.label) return null;
+  const kind: SuggestKind = s.kind === 'subject' || s.kind === 'movement' || s.kind === 'artist'
+    ? s.kind : 'theme';
+  return { label: s.label, query: s.query || s.label, hint: s.hint || '', kind, qid: s.qid };
+}
+
+/** Load the KG suggestion pool once (idempotent). Falls back silently to the static
+ *  lists on any failure. `fetchImpl` is injectable for tests. */
+export function loadSuggestions(fetchImpl: typeof fetch = fetch): Promise<void> {
+  if (_remoteLoad) return _remoteLoad;
+  _remoteLoad = (async () => {
+    try {
+      const res = await fetchImpl('/api/suggest');
+      if (!res.ok) return;
+      const { suggestions } = await res.json() as { suggestions?: SuggestItem[] };
+      if (Array.isArray(suggestions) && suggestions.length) {
+        const mapped = suggestions.map(remoteToSuggestion).filter((s): s is Suggestion => s !== null);
+        // KG artists/subjects/movements + the editorial themes the KG can't derive.
+        if (mapped.length) _remotePool = dedup([...mapped, ...THEMES]);
+      }
+    } catch { /* keep the static fallback */ }
+  })();
+  return _remoteLoad;
+}
+
+/** Test-only: drop the loaded KG pool. */
+export function _resetSuggestions(): void { _remotePool = null; _remoteLoad = null; }
+
+/** The active pool: KG-derived once loaded, else the curated static fallback. */
+function activePool(): Suggestion[] { return _remotePool ?? ALL_SUGGESTIONS; }
+
 /** The full searchable pool (artists first — most-searched intent). */
 export const ALL_SUGGESTIONS: Suggestion[] = [...ARTISTS, ...MOVEMENTS, ...THEMES];
 
@@ -248,7 +291,7 @@ export function suggest(query: string, limit = 8): Suggestion[] {
   if (!nq) return [];
   const qTokens = tokenize(query);
   const scored: Array<{ s: Suggestion; score: number }> = [];
-  for (const s of ALL_SUGGESTIONS) {
+  for (const s of activePool()) {
     if (normalize(s.query) === nq) continue; // already typed exactly — nothing to add
     const score = scoreSuggestion(s, nq, qTokens);
     if (score > 0) scored.push({ s, score });

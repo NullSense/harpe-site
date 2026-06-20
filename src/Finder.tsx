@@ -17,6 +17,7 @@ import { createPortal } from 'react-dom';
 import DownloadMenu from './components/DownloadMenu';
 import SearchSuggest from './components/SearchSuggest';
 import Discover from './components/Discover';
+import type { Suggestion } from './lib/discover';
 import { streamArt } from './lib/useArtStream';
 import { fetchArtPage } from './lib/artPage';
 import { SOURCE_LABELS, SOURCE_ORDER, type DisplaySource } from './lib/source-meta';
@@ -1393,6 +1394,17 @@ const Finder = forwardRef<FinderHandle>(function Finder(_props, ref) {
   // Run a search from a picked suggestion / discovery chip (entity-aware too).
   const runQuery = navOrSearch;
 
+  // A picked autocomplete suggestion: KG-backed ones carry a QID, so open the entity
+  // card directly (no /api/resolve round-trip, and it works for single-token names the
+  // resolver intentionally skips). Everything else falls back to a normal search.
+  const pickSuggestion = useCallback((q: string, picked?: Suggestion) => {
+    if (picked?.qid && /^Q\d+$/.test(picked.qid)) {
+      if (picked.kind === 'artist') { void loadArtist(picked.qid, picked.label); return; }
+      if (picked.kind === 'subject') { void loadSubject(picked.qid, picked.label); return; }
+    }
+    void navOrSearch(q);
+  }, [loadArtist, loadSubject, navOrSearch]);
+
   // Return to the pristine home / discovery state. Used by the search box's clear
   // (✕) button and by clicking the page logo — otherwise a user lands on results
   // with no way back. Cancels any in-flight stream and wipes the address-bar query
@@ -1818,7 +1830,7 @@ const Finder = forwardRef<FinderHandle>(function Finder(_props, ref) {
         <SearchSuggest
           value={input}
           onChange={setInput}
-          onPick={runQuery}
+          onPick={pickSuggestion}
           onClear={reset}
           enabled={!isURL(input)}
           inputId={inputId}

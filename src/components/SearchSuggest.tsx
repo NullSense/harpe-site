@@ -13,16 +13,18 @@
  * active option falls through to the form's normal submit.
  */
 import { useEffect, useId, useMemo, useState } from 'react';
-import { suggest, type Suggestion, type SuggestKind } from '../lib/discover';
+import { suggest, loadSuggestions, type Suggestion, type SuggestKind } from '../lib/discover';
 
-const KIND_ICON: Record<SuggestKind, string> = { artist: '◔', movement: '❖', theme: '✦' };
-const KIND_LABEL: Record<SuggestKind, string> = { artist: 'Artist', movement: 'Movement', theme: 'Theme' };
+const KIND_ICON: Record<SuggestKind, string> = { artist: '◔', movement: '❖', theme: '✦', subject: '◇' };
+const KIND_LABEL: Record<SuggestKind, string> = { artist: 'Artist', movement: 'Movement', theme: 'Theme', subject: 'Subject' };
 
 interface Props {
   value: string;
   onChange: (v: string) => void;
-  /** Run a search for this query (suggestion picked, or a name confirmed). */
-  onPick: (query: string) => void;
+  /** Run a search for this query (suggestion picked, or a name confirmed). The picked
+   *  Suggestion is passed when one was chosen, so a KG-backed pick (with a qid) can
+   *  open the entity card directly instead of round-tripping through /api/resolve. */
+  onPick: (query: string, picked?: Suggestion) => void;
   /** Off for URL-looking input — we don't autocomplete links. */
   enabled: boolean;
   /** Clear the box and return to the home/discovery state (shows a ✕ when set). */
@@ -52,6 +54,9 @@ export default function SearchSuggest({
   // Reset the highlight whenever the suggestion set changes (new keystroke).
   useEffect(() => { setActive(-1); }, [value, enabled]);
 
+  // Upgrade the static fallback pool to the KG-derived one (once, lazily).
+  useEffect(() => { void loadSuggestions(); }, []);
+
   // Keep the active option scrolled into view (aria-activedescendant doesn't do
   // this for us — APG note 3 on the combobox examples).
   useEffect(() => {
@@ -63,7 +68,7 @@ export default function SearchSuggest({
     onChange(s.query);
     setOpen(false);
     setActive(-1);
-    onPick(s.query);
+    onPick(s.query, s);
   };
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {

@@ -22,6 +22,7 @@ import resolve from './resolve.js';
 import sauce from './sauce.js';
 import scan from './scan.js';
 import stats from './stats.js';
+import suggest from './suggest.js';
 import tile from './tile.js';
 import x from './x.js';
 
@@ -44,6 +45,7 @@ export const handlers: Record<string, Handler> = {
   sauce,
   scan,
   stats,
+  suggest,
   tile,
   x,
 };

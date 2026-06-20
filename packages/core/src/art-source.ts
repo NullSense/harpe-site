@@ -139,6 +139,19 @@ export interface SubjectEntity {
   workCount: number;
 }
 
+/** One autocomplete suggestion, served KG-derived + fame-ranked from the HF CDN
+ *  (data/suggest.json). Replaces the frontend's hand-curated static pool. artist /
+ *  subject entries carry a `qid` so a pick opens the enriched entity page directly;
+ *  movement entries carry a `query` (free-text search seed). */
+export interface SuggestItem {
+  label: string;
+  kind: 'artist' | 'subject' | 'movement';
+  qid?: string;
+  hint?: string | null;
+  query?: string;
+  n?: number;
+}
+
 /** A single source's catalogue record, retained on a merged ArtItem.variants.
  *  Carries that copy's own image + key facts so the UI can show every folded
  *  copy (ranked by quality) and let the user switch the viewer to any of them. */

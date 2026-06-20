@@ -22,4 +22,5 @@ export {
   fetchDumpSource, fetchDumpSearch, fetchDumpPage, fetchNypl, dumpDatasetEnv, dumpDatasetFor, h2Agent,
   fetchItemById, fetchDumpItemById, fetchCommonsItemById,
   fetchArtistEntity, fetchArtistWorkIds, fetchSubjectEntity, resolveQueryEntity,
+  fetchSuggestions,
 } from './adapters.js';

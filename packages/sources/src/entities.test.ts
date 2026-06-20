@@ -16,6 +16,7 @@ import {
   entityBucket, ENTITY_SHARDS, _resetEntityBucketCache,
   workTitleKey, enrichWorkIds, enrichArtistIds, _resetNameIndex,
   resolveQueryEntity, _resetSubjectIndex,
+  fetchSuggestions, _resetSuggestCache,
 } from './adapters.js';
 
 const ok = (body: unknown) => ({ ok: true, status: 200, json: async () => body });
@@ -132,6 +133,23 @@ describe('resolveQueryEntity (search → KG subject page)', () => {
       return Promise.resolve(ok({}));
     });
     expect(await resolveQueryEntity('Saint George')).toEqual({ kind: 'subject', qid: 'Q48438' });
+  });
+});
+
+describe('fetchSuggestions (KG autocomplete pool)', () => {
+  it('returns the suggest.json array and memoises it', async () => {
+    _resetSuggestCache();
+    const pool = [{ label: 'Jan Matejko', kind: 'artist', qid: 'Q189117', n: 186 }];
+    timedFetchMock.mockResolvedValue(ok(pool));
+    expect(await fetchSuggestions()).toEqual(pool);
+    expect(await fetchSuggestions()).toEqual(pool); // cached
+    expect(timedFetchMock).toHaveBeenCalledTimes(1);
+    expect(String(timedFetchMock.mock.calls[0][0])).toContain('/data/suggest.json');
+  });
+  it('returns [] when the pool is absent (404)', async () => {
+    _resetSuggestCache();
+    timedFetchMock.mockResolvedValue({ ok: false, status: 404, json: async () => ({}) });
+    expect(await fetchSuggestions()).toEqual([]);
   });
 });
 
