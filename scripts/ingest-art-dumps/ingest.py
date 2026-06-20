@@ -589,13 +589,17 @@ def harvest_met_dump() -> str:
     try:
         with open(tmp, "w", encoding="utf-8") as fh:
             for i, shard in enumerate(shard_urls, 1):
-                rows = con.execute(f"""
+                # Per-shard retry with backoff: HF rate-limits rapid parquet reads, and a
+                # single 429 on ONE shard used to abort the whole 52-shard harvest (losing
+                # every prior shard — observed at shard 16/52). _retry backs off on 429/503;
+                # a small inter-shard pause keeps us under the limit in the first place.
+                rows = _retry(f"Met shard {i}/{len(shard_urls)}", lambda s=shard: con.execute(f"""
                     SELECT objectID, title, artistDisplayName, objectDate, medium,
                            dimensions, culture, creditLine, primaryImage, primaryImageSmall, objectURL,
                            objectWikidata_URL, artistWikidata_URL
-                    FROM read_parquet('{shard.replace(chr(39), chr(39) * 2)}')
+                    FROM read_parquet('{s.replace(chr(39), chr(39) * 2)}')
                     WHERE isPublicDomain = TRUE AND primaryImage IS NOT NULL AND primaryImage <> ''
-                """).fetchall()
+                """).fetchall())
                 for (oid, title, artist, date, medium, dims, culture, credit, full, small, url, obj_wd, artist_wd) in rows:
                     fh.write(json.dumps({
                         "source": "met", "id": f"met-{oid}",
@@ -621,6 +625,7 @@ def harvest_met_dump() -> str:
                     }, ensure_ascii=False) + "\n")
                     written += 1
                 print(f"  Met shard {i}/{len(shard_urls)} → {written:,} rows")
+                time.sleep(0.25)  # courtesy gap so HF doesn't rate-limit the shard burst
     except Exception:
         con.close()
         if os.path.exists(tmp):

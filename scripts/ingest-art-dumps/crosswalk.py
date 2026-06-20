@@ -9,7 +9,8 @@ Why this matters (the "insane loop" fix): the crosswalk reads the PUBLISHED parq
 and patches it in place, so QID coverage improves on a plain `--crosswalk --push`
 with NO re-harvest of any source. The query is identical every run → cacheable and
 incremental. It's the only exact QID source for museums whose own data carries no
-wikidata field at all (AIC, Smithsonian, Harvard, Cleveland, MoMA).
+wikidata field at all (AIC, Harvard, MoMA). (Cleveland/Smithsonian are excluded —
+their Wikidata id is in a different namespace than the dump id; see CROSSWALK_PROPS.)
 
 Match counts are LOGGED per source: a museum whose native id doesn't line up with the
 property's value format shows up as a low/zero count (never a silent no-op).
@@ -23,18 +24,25 @@ from paths import cache_path
 QLEVER = "https://qlever.dev/api/wikidata"
 
 # dump `source` (== the id prefix `<source>-<native_id>`) → Wikidata external-id
-# property whose VALUE is that same native id. Verified present + populated on
-# Wikidata (2026-06; counts: nga 128k, met 72k, si 16.5k, harvard 5.9k, moma 5.2k,
-# aic 3.2k, cleveland 211). Met/NGA also expose their QID first-party, so for them
-# the crosswalk is a supplement; for the rest it's the only exact link.
+# property whose VALUE is that SAME native id, so `<source>-<pvalue>` joins the dump
+# row's id exactly. Only sources where that identity holds belong here — verified by
+# the live fill counts (met 49,269, harvard 4,464, moma 3,419, aic 3,023; nga 8
+# because NGA's own `wikidataid` field already covers ~99%, leaving the crosswalk
+# almost nothing — both correct).
+#
+# DELIBERATELY EXCLUDED — their Wikidata property is in a DIFFERENT id namespace than
+# the dump row id, so an exact id-join can't match (both confirmed: filled 0 rows):
+#   cleveland P11110 → accession numbers ("1923.1340"), not the dump's integer r.id.
+#   si       P4704   → bare SAAM object ids ("9575"), but the dump id is the EDAN
+#                      record_ID ("edanmdm-saam_…"); no conversion exists in the dump.
+# Supporting them would need a per-source accession join key (deferred; low value —
+# cleveland has 211 links total, and P4704 covers only the SAAM subset of `si`).
 CROSSWALK_PROPS = {
     "met": "P3634",        # Met object ID
     "aic": "P4610",        # Art Institute of Chicago (ARTIC) artwork ID
-    "cleveland": "P11110",  # Cleveland Museum of Art ID
     "moma": "P2014",       # Museum of Modern Art work ID
     "nga": "P4683",        # National Gallery of Art artwork ID
     "harvard": "P10121",   # Harvard Art Museums artwork ID
-    "si": "P4704",         # Smithsonian American Art Museum artwork ID
 }
 
 _QID_RE = re.compile(r"^Q\d+$")

@@ -33,6 +33,15 @@ def test_props_are_all_valid_property_ids():
     assert all(v[0] == "P" and v[1:].isdigit() for v in X.CROSSWALK_PROPS.values())
 
 
+def test_namespace_mismatched_sources_are_excluded():
+    # cleveland (P11110 = accession) and si (P4704 = SAAM numeric, dump id = EDAN
+    # record_ID) live in a DIFFERENT id namespace than the dump row id, so an exact
+    # id-join fills 0 rows. They must NOT be in the crosswalk without an accession
+    # join key — re-adding them would just relog a misleading 0-match every run.
+    assert "cleveland" not in X.CROSSWALK_PROPS
+    assert "si" not in X.CROSSWALK_PROPS
+
+
 def test_fetch_property_parses_bindings_and_drops_junk():
     rows = [
         ("42", "http://www.wikidata.org/entity/Q100"),   # good
