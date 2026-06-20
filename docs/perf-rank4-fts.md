@@ -59,14 +59,27 @@ s.execute("VACUUM"); s.commit()
 # query: WHERE art_fts MATCH '<term>*' ORDER BY rank LIMIT 100, join art on rowid
 ```
 
+## Full dataset size (from HF datasets-server)
+
+`NullSense/harpe-art`: **2,145,751 rows · 174 MB parquet** (13 sources). The local
+`harpe-art.parquet` is just the 63k-row NGA slice.
+
 ## What the numbers say
 
 - **Latency is a non-issue.** Sub-ms on 63k; FTS5 stays ms-range into the millions, and
   range reads keep that true regardless of file size.
-- **Size is the only variable.** At ~378 B/row the file scales linearly: 1M rows ≈ 0.4 GB,
-  10M ≈ 4 GB. That's fine for *range-read* querying (only KB fetched per query) but affects
-  build/upload time and the page-size tuning. **Open question: the full dump's row count**
-  (the local file is NGA-only; the full HF `train.parquet` has 13 sources).
+- **Size: the full index ≈ 0.8–1.1 GB.** 2.15M rows × ~378 B/row ≈ 0.8 GB, plus ~20–40%
+  once `depicts_labels` is indexed → ~1 GB. Range-read querying is unaffected (only KB
+  fetched per query), but **this rules out the "whole-file load into a Vercel function"
+  v1** — a ~1 GB download per cold instance is a non-starter. So the query side must be one
+  of:
+  - **Browser-side `sql.js-httpvfs`** (recommended) — pure HTTP range reads from the HF
+    CDN, never loads the whole file; true zero-backend, infinite scale. Changes
+    `Finder.tsx` to query the index directly.
+  - **Per-source sharding** (~13 files) — each small enough for function-side whole-file
+    load; keeps the API shape but adds a fan-out + per-shard cache.
+  - **Slim content table** — store only `id` + searchable text in the index, fetch display
+    fields via the existing `/api/item`; shrinks the file but adds a second round-trip.
 - The full schema also has `depicts_labels` / `depicts_qids` / `artist_qid` (absent from the
   local subset) — index `depicts_labels` into the FTS too; keep `depicts_qids` as an
   auxiliary column for the subject-page exact-match.
@@ -79,16 +92,16 @@ s.execute("VACUUM"); s.commit()
    cols), `optimize` + `VACUUM`, tune `page_size` (4–8 KB) for range efficiency, upload to
    HF as `data/art.sqlite`. Gate behind a flag so it ships via `--enrich-only --push`.
    **Measure the real file size here — it decides shard-vs-single-file.**
-2. **Query adapter** — a `fetchFtsSearch(q)` matching the existing
-   `fetchDumpSearch(dataset, q) → ArtItem[]` contract, querying the remote `.sqlite` over
-   HTTP range. Decision:
-   - **Function-side (recommended first):** drop-in replacement for `fetchDumpSearch`,
-     keeps the API shape; the Vercel function does the range reads. Needs a Node SQLite
-     HTTP-range VFS (`sql.js` with a custom range VFS, or a port of `sql.js-httpvfs`). If
-     the file is small enough (< ~50 MB), whole-file fetch + in-memory `sql.js` cached per
-     warm instance is the simplest viable v1.
-   - **Browser-side (later):** true zero-backend, infinite scale via `sql.js-httpvfs`
-     straight from the client; changes `Finder.tsx` to query the index directly.
+2. **Query adapter** — query the remote `.sqlite` over HTTP range. At ~1 GB (see sizing
+   above) whole-file load is out, so:
+   - **Browser-side `sql.js-httpvfs` (recommended):** the client queries the HF-hosted
+     index directly via range reads — zero backend, infinite scale. Changes `Finder.tsx`
+     (and the result shape mapping) to call the index instead of `/api/art` for the dump
+     tier. Best fit for a ~1 GB file.
+   - **Per-source sharding (if you want to keep the API shape):** a `fetchFtsSearch(q)`
+     matching `fetchDumpSearch(dataset, q) → ArtItem[]`, fanning out over ~13 small
+     per-source shards that ARE small enough for function-side whole-file load (cached per
+     warm instance).
 3. **Wire-in** — register the FTS path as the dump source behind a feature flag
    (`HARPE_FTS_INDEX`), A/B against the HF `/filter` path, then flip.
 4. **Verify** — local fixture tests for the build step + the adapter; live A/B on cold
