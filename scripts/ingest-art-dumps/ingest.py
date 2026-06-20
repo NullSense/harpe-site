@@ -66,6 +66,12 @@ from tqdm import tqdm
 
 logger = logging.getLogger("ingest")
 
+# DuckDB defaults memory_limit to ~80% of RAM (≈48 GB here) before it spills to
+# temp_directory — large enough that a full build can exhaust RAM and thrash swap.
+# Cap it so DuckDB does bounded out-of-core execution (spilling to temp_directory)
+# instead of growing unbounded. Override per-box with INGEST_DUCKDB_MEMORY_LIMIT.
+DUCKDB_MEMORY_LIMIT = os.environ.get("INGEST_DUCKDB_MEMORY_LIMIT", "8GB")
+
 # Cooperative cancellation: set on Ctrl-C so in-flight harvests stop promptly
 # instead of the process hanging on non-daemon worker threads.
 _ABORT = threading.Event()
@@ -584,6 +590,7 @@ def harvest_met_dump() -> str:
     tmp = out_path + ".tmp"
     written = 0
     con = duckdb.connect()
+    con.execute(f"SET memory_limit='{DUCKDB_MEMORY_LIMIT}';")  # bound RAM; spill out-of-core
     con.execute("INSTALL httpfs; LOAD httpfs;")
     con.execute(f"SET temp_directory='{tempfile.gettempdir()}';")
     try:
@@ -1336,6 +1343,7 @@ def _prepare_source_parquet(key: str, workdir: str, pos) -> tuple[str, str, int]
     _tls.pos = pos
     sql = SOURCES[key]()                                  # network harvest/download happens here
     con = duckdb.connect()
+    con.execute(f"SET memory_limit='{DUCKDB_MEMORY_LIMIT}';")  # bound RAM; spill out-of-core
     con.execute("INSTALL httpfs; LOAD httpfs;")
     con.execute(f"SET temp_directory='{workdir}';")      # spill to the run dir, not the repo
     con.execute("SET preserve_insertion_order=false;")   # let DuckDB parallelize the scan
@@ -1414,6 +1422,7 @@ def build_parquet(path: str, keys: list[str], jobs: int | None = None) -> set[st
     # nb_sitelinks is written only by the entity-enrichment pass; guard so a plain
     # build (without --enrich) doesn't fail with "column not found".
     con = duckdb.connect()
+    con.execute(f"SET memory_limit='{DUCKDB_MEMORY_LIMIT}';")  # bound RAM; spill out-of-core
     con.execute(f"SET temp_directory='{workdir}';")
     con.execute("SET preserve_insertion_order=false;")
     paths = "[" + ", ".join("'" + p.replace("'", "''") + "'" for _, p in made) + "]"
@@ -1453,6 +1462,7 @@ def publish(path: str, built_keys: set[str], repo: str) -> None:
     from huggingface_hub import HfApi, hf_hub_download
 
     con = duckdb.connect()
+    con.execute(f"SET memory_limit='{DUCKDB_MEMORY_LIMIT}';")  # bound RAM; spill out-of-core
     con.execute("INSTALL httpfs; LOAD httpfs;")
     con.execute(f"SET temp_directory='{tempfile.gettempdir()}';")
     con.execute("SET preserve_insertion_order=false;")
