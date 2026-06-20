@@ -9,7 +9,7 @@
     "build": "pnpm --filter @harpe/core build && pnpm --filter @harpe/sources build && vite build",
     "preview": "vite preview",
     "clean": "rm -rf dist packages/*/dist apps/*/dist",
-    "typecheck": "pnpm --filter @harpe/core build && pnpm --filter @harpe/sources build && tsc --noEmit -p packages/core/tsconfig.json && tsc --noEmit -p packages/cli/tsconfig.json && tsc --noEmit && tsc --noEmit -p tsconfig.api.json",
+    "typecheck": "pnpm --filter @harpe/core build && pnpm --filter @harpe/sources build && tsc --noEmit -p packages/core/tsconfig.json && tsc --noEmit -p packages/cli/tsconfig.json && tsc --noEmit -p packages/mcp/tsconfig.json && tsc --noEmit && tsc --noEmit -p tsconfig.api.json",
     "test": "vitest run --project default",
     "test:watch": "vitest --project default",
     "test:live": "RUN_LIVE=1 vitest run --project live",

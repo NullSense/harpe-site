@@ -10,6 +10,7 @@
  * Adapters are re-exported for direct use in tests / CLI wrapper.
  */
 export { SOURCES, activeSources, gatherSources } from './registry.js';
+export { searchArt, loadArtistPage, loadSubjectPage, DEFAULT_MAX_ITEMS } from './orchestrate.js';
 export { mapPool } from './helpers.js';
 export { runSource, sourceBreaker } from './resilience.js';
 

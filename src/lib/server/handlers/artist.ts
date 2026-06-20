@@ -7,9 +7,8 @@
  */
 import type { VercelRequest, VercelResponse } from '../vercel.js';
 import { enforceRateLimit } from '../guard.js';
-import { fetchArtistEntity, fetchArtistWorkIds, fetchDumpSearch } from '@harpe/sources';
+import { loadArtistPage } from '@harpe/sources';
 import { isQid } from '@harpe/core';
-import type { ArtItem } from '@harpe/core';
 import { withEntityCache } from './kg-cache.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -28,20 +27,5 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   if (!(await enforceRateLimit(req, res))) return;
 
-  return withEntityCache(res, `entity:artist:${qid}`, 'artist not found', async () => {
-    const [entity, workIds] = await Promise.all([fetchArtistEntity(qid), fetchArtistWorkIds(qid)]);
-    if (!entity) return null;
-
-    // Works: one dump /search on the artist label, kept to the known work-id set.
-    const dataset = process.env.HARPE_DUMP_DATASET || '';
-    let works: ArtItem[] = [];
-    if (dataset && workIds.length > 0) {
-      const idSet = new Set(workIds);
-      try {
-        const all = await fetchDumpSearch(dataset, entity.labelEn);
-        works = all.filter((it) => idSet.has(it.id)).slice(0, 100);
-      } catch { /* dump unavailable → entity still renders, just no work grid */ }
-    }
-    return { entity, works };
-  });
+  return withEntityCache(res, `entity:artist:${qid}`, 'artist not found', () => loadArtistPage(qid));
 }

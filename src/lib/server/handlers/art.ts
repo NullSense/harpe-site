@@ -25,14 +25,11 @@
 
 import type { VercelRequest, VercelResponse } from '../vercel.js';
 import { enforceRateLimit } from '../guard.js';
-import { rankResults, qualityScore, type ArtItem } from '@harpe/core';
-import { SOURCES, activeSources, gatherSources, mapPool } from '@harpe/sources';
+import { SOURCES, activeSources, gatherSources, mapPool, searchArt } from '@harpe/sources';
 
 // Re-export the symbols that art-sources.test.ts and art-stream.ts import
 // directly from this module — keeps those files unchanged during the refactor.
 export { SOURCES, activeSources, gatherSources, mapPool };
-
-const MAX_ITEMS = 40;
 
 // ─── Handler ─────────────────────────────────────────────────────────────────
 
@@ -54,32 +51,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   // Rate limit
   if (!(await enforceRateLimit(req, res))) return;
 
-  // Fetch all sources concurrently; one failing only adds a warning
-  const sources = await gatherSources(q);
-  const settled = await Promise.allSettled(sources.map(([, p]) => p));
+  // Fan out + dedupe + RRF-rank via the shared engine (also used by the MCP server).
+  const { items, warnings, sourceCount } = await searchArt(q);
 
-  const items: ArtItem[] = [];
-  const warnings: string[] = [];
-  settled.forEach((r, i) => {
-    const name = sources[i][0];
-    if (r.status === 'fulfilled') items.push(...r.value);
-    else warnings.push(`${name}: ${r.reason instanceof Error ? r.reason.message : String(r.reason)}`);
-  });
-
-  if (items.length === 0 && warnings.length === sources.length) {
+  if (items.length === 0 && warnings.length === sourceCount) {
     res.setHeader('Cache-Control', 'no-store');
     return res.status(502).json({ error: 'All museum sources failed', warnings });
   }
 
-  // De-dup, gate out non-matching fallback hits, and rank with Reciprocal Rank
-  // Fusion — one shared pipeline (src/lib/search.ts) used identically by the
-  // client. Fixes "Rodin Thinker" → other Rodin works, and "JW Waterhouse" →
-  // unrelated AIC/MoMA fallbacks leaking in.
-  const capped = rankResults(items, q, { qualityOf: (it) => qualityScore(it, q) }).slice(0, MAX_ITEMS);
-
   res.setHeader('Cache-Control', 'public, s-maxage=3600, stale-while-revalidate=86400');
   return res.status(200).json({
-    items: capped, warnings,
+    items, warnings,
     analyzeEnabled: Boolean(process.env.GEMINI_API_KEY || process.env.GROQ_API_KEY || process.env.OPENROUTER_API_KEY || process.env.ANTHROPIC_API_KEY),
   });
 }

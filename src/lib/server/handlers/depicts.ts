@@ -8,9 +8,8 @@
  */
 import type { VercelRequest, VercelResponse } from '../vercel.js';
 import { enforceRateLimit } from '../guard.js';
-import { fetchSubjectEntity, fetchDumpSearch } from '@harpe/sources';
+import { loadSubjectPage } from '@harpe/sources';
 import { isQid } from '@harpe/core';
-import type { ArtItem } from '@harpe/core';
 import { withEntityCache } from './kg-cache.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -29,19 +28,5 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   if (!(await enforceRateLimit(req, res))) return;
 
-  return withEntityCache(res, `entity:depicts:${qid}`, 'subject not found', async () => {
-    const entity = await fetchSubjectEntity(qid);
-    if (!entity) return null;
-
-    const dataset = process.env.HARPE_DUMP_DATASET || '';
-    let works: ArtItem[] = [];
-    if (dataset) {
-      try {
-        const all = await fetchDumpSearch(dataset, qid);
-        // Exact-match guard on the deserialized depicts array (no substring collision).
-        works = all.filter((it) => it.depicts?.includes(qid)).slice(0, 100);
-      } catch { /* dump unavailable → entity still renders, just no work grid */ }
-    }
-    return { entity, works };
-  });
+  return withEntityCache(res, `entity:depicts:${qid}`, 'subject not found', () => loadSubjectPage(qid));
 }

@@ -24,21 +24,20 @@ vi.mock('../guard.js', () => {
   return { GuardError, rateLimit, clientIp, sendGuardError, enforceRateLimit };
 });
 
+// The handlers call the shared page loaders (loadArtistPage / loadSubjectPage); the
+// entity+works COMPOSITION is covered in orchestrate.test.ts, so here we mock at that
+// boundary and test only the handler wiring (404 on null, 200 passthrough).
 vi.mock('@harpe/sources', () => ({
-  fetchArtistEntity: vi.fn(),
-  fetchArtistWorkIds: vi.fn(),
-  fetchSubjectEntity: vi.fn(),
-  fetchDumpSearch: vi.fn(),
+  loadArtistPage: vi.fn(),
+  loadSubjectPage: vi.fn(),
 }));
 
-import { fetchArtistEntity, fetchArtistWorkIds, fetchSubjectEntity, fetchDumpSearch } from '@harpe/sources';
+import { loadArtistPage, loadSubjectPage } from '@harpe/sources';
 import artistHandler from './artist.js';
 import depictsHandler from './depicts.js';
 
-const mArtist = fetchArtistEntity as ReturnType<typeof vi.fn>;
-const mWorkIds = fetchArtistWorkIds as ReturnType<typeof vi.fn>;
-const mSubject = fetchSubjectEntity as ReturnType<typeof vi.fn>;
-const mSearch = fetchDumpSearch as ReturnType<typeof vi.fn>;
+const mArtist = loadArtistPage as ReturnType<typeof vi.fn>;
+const mSubject = loadSubjectPage as ReturnType<typeof vi.fn>;
 
 function makeReq(query: Record<string, string> = {}, method = 'GET') {
   return { method, query, headers: {}, url: '/api/artist' };
@@ -73,22 +72,20 @@ describe('/api/artist', () => {
     expect(res._status()).toBe(400);
   });
   it('404 when the artist is not in the index', async () => {
-    mArtist.mockResolvedValue(null); mWorkIds.mockResolvedValue([]);
+    mArtist.mockResolvedValue(null);
     const res = makeRes();
     await artistHandler(makeReq({ qid: 'Q999' }) as never, res as never);
     expect(res._status()).toBe(404);
   });
-  it('200 with entity + works filtered to the known work-id set', async () => {
-    process.env.HARPE_DUMP_DATASET = 'owner/ds';
-    mArtist.mockResolvedValue({ qid: 'Q41406', labelEn: 'Claude Monet', workCount: 2 });
-    mWorkIds.mockResolvedValue(['wd-Q1', 'wd-Q2']);
-    mSearch.mockResolvedValue([{ id: 'wd-Q1', title: 'A' }, { id: 'wd-Q9', title: 'Other' }]);
+  it('200 passes the loaded artist page through', async () => {
+    mArtist.mockResolvedValue({ entity: { qid: 'Q41406', labelEn: 'Claude Monet', workCount: 2 }, works: [{ id: 'wd-Q1' }] });
     const res = makeRes();
     await artistHandler(makeReq({ qid: 'Q41406' }) as never, res as never);
     expect(res._status()).toBe(200);
     const body = res._body() as { entity: { labelEn: string }; works: unknown[] };
     expect(body.entity.labelEn).toBe('Claude Monet');
-    expect(body.works).toHaveLength(1); // wd-Q9 filtered out (not in work-id set)
+    expect(body.works).toHaveLength(1);
+    expect(mArtist).toHaveBeenCalledWith('Q41406');
   });
 });
 
@@ -104,18 +101,13 @@ describe('/api/depicts', () => {
     await depictsHandler(makeReq({ qid: 'Q999' }) as never, res as never);
     expect(res._status()).toBe(404);
   });
-  it('200 with works exact-matched on the depicts QID (no substring collision)', async () => {
-    process.env.HARPE_DUMP_DATASET = 'owner/ds';
-    mSubject.mockResolvedValue({ qid: 'Q146', labelEn: 'cat', workCount: 1 });
-    mSearch.mockResolvedValue([
-      { id: 'a', depicts: ['Q146'] },
-      { id: 'b', depicts: ['Q1460'] }, // substring-similar but distinct → excluded
-      { id: 'c', depicts: ['Q5'] },
-    ]);
+  it('200 passes the loaded subject page through', async () => {
+    mSubject.mockResolvedValue({ entity: { qid: 'Q146', labelEn: 'cat', workCount: 1 }, works: [{ id: 'a' }] });
     const res = makeRes();
     await depictsHandler(makeReq({ qid: 'Q146' }) as never, res as never);
     expect(res._status()).toBe(200);
     const body = res._body() as { works: { id: string }[] };
     expect(body.works.map((w) => w.id)).toEqual(['a']);
+    expect(mSubject).toHaveBeenCalledWith('Q146');
   });
 });
