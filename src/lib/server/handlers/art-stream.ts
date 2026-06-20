@@ -10,10 +10,13 @@
  *   data: {"source":"Met","error":"HTTP 503"}     — source failed
  *   data: {"done":true,"analyzeEnabled":true}     — all settled; stream ends
  *
- * Security: same rate limiting as art.ts. Hard 9s overall timeout.
+ * Security: same rate limiting as art.ts. The overall deadline is the unified
+ * search budget (OVERALL_TIMEOUT_MS) — derived from the dump worst case so the
+ * stream never ends with the dump-backed sources (the best results) still pending.
  */
 
 import type { VercelRequest, VercelResponse } from '../vercel.js';
+import { OVERALL_TIMEOUT_MS } from '@harpe/sources';
 import { enforceRateLimit } from '../guard.js';
 import { gatherSources } from './art.js';
 
@@ -25,8 +28,6 @@ interface NodeWritable {
 }
 
 // ─── Handler ─────────────────────────────────────────────────────────────────
-
-const OVERALL_TIMEOUT_MS = 9_000;
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'GET') {

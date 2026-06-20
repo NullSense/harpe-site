@@ -12,6 +12,10 @@
 export { SOURCES, activeSources, gatherSources } from './registry.js';
 export { searchArt, loadArtistPage, loadSubjectPage, DEFAULT_MAX_ITEMS } from './orchestrate.js';
 export { mapPool } from './helpers.js';
+// Unified search timing budget (single source of truth; invariant in budget.test.ts).
+export {
+  TIMEOUT_MS, DUMP_TIMEOUT_MS, DUMP_RETRIES, DUMP_BACKOFF_MAX_MS, DUMP_WORST_CASE_MS, OVERALL_TIMEOUT_MS,
+} from './helpers.js';
 export { runSource, sourceBreaker } from './resilience.js';
 
 // Re-export individual adapters so callers (e.g. CLI wrapper) can use them directly.

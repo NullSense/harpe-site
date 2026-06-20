@@ -17,7 +17,7 @@ import {
   retry, timeout, TimeoutStrategy, wrap, isBrokenCircuitError,
 } from 'cockatiel';
 import type { ArtItem, SourceAdapter } from '@harpe/core';
-import { TIMEOUT_MS } from './helpers.js';
+import { TIMEOUT_MS, DUMP_TIMEOUT_MS, DUMP_RETRIES, DUMP_BACKOFF_MAX_MS } from './helpers.js';
 
 export { isBrokenCircuitError };
 
@@ -99,14 +99,17 @@ export function _resetBreakers(): void {
 // (post-retry) operations — retry absorbs transient blips, the breaker only trips
 // on a sustained outage, and when open it short-circuits WITHOUT spending retries.
 //
-// BUDGET MATH (this guards the 60s function limit): the per-ATTEMPT timeout × retry
-// attempts is the worst-case time ONE dump call can take. With page-0 firing all
-// dump sources in a single concurrency wave (see DUMP_CONCURRENCY), the whole dump
-// gather is bounded by ~one source's worst case, NOT the sum. 8s × 2 ≈ 16s + small
-// backoff — comfortably under 60s even when HF /filter is slow, so a slow upstream
-// degrades to partial/empty results instead of a 504 Runtime Timeout. (Was 14s × 3
-// ≈ 44s/source over 3 waves ≈ 130s → the 504s observed in production.)
-const DUMP_TIMEOUT_MS = 8_000;
+// BUDGET MATH (this guards the 60s function limit): the worst-case time ONE dump call
+// can take is (DUMP_RETRIES + 1) total attempts × the per-attempt timeout, plus a max
+// backoff per retry gap. cockatiel's `maxAttempts` is the RETRY count, so DUMP_RETRIES=2
+// means 3 total attempts: 8s × 3 ≈ 24s + backoff. With page-0 firing all dump sources
+// in a single concurrency wave (see DUMP_CONCURRENCY), the whole dump gather is bounded
+// by ~one source's worst case, NOT the sum — comfortably under 60s even when HF /filter
+// is slow, so a slow upstream degrades to partial/empty results instead of a 504 Runtime
+// Timeout. (Was 14s × 3 ≈ 44s/source over 3 waves ≈ 130s → the 504s observed in prod.)
+// DUMP_TIMEOUT_MS / DUMP_RETRIES / DUMP_BACKOFF_MAX_MS live in helpers.ts (the unified
+// budget) so the overall stream/batch deadline (OVERALL_TIMEOUT_MS) is derived from —
+// and can never undercut — this worst case. See budget.test.ts + resilience.test.ts.
 
 export function makeDumpHttpPolicy() {
   return wrap(
@@ -114,7 +117,7 @@ export function makeDumpHttpPolicy() {
       halfOpenAfter: new ExponentialBackoff({ initialDelay: 5_000, maxDelay: 30_000 }),
       breaker: new ConsecutiveBreaker(5),
     }),
-    retry(handleAll, { maxAttempts: 2, backoff: new ExponentialBackoff({ initialDelay: 200, maxDelay: 1_000 }) }),
+    retry(handleAll, { maxAttempts: DUMP_RETRIES, backoff: new ExponentialBackoff({ initialDelay: 200, maxDelay: DUMP_BACKOFF_MAX_MS }) }),
     timeout(DUMP_TIMEOUT_MS, TimeoutStrategy.Cooperative),
   );
 }

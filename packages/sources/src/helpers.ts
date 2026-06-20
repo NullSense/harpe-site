@@ -7,7 +7,39 @@ import { fetch } from 'undici';
 export const UA =
   'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
-export const TIMEOUT_MS = 12_000;
+// ─── Unified search timing budget ──────────────────────────────────────────────
+// One source of truth for every deadline in the search hot path, shared by the
+// live per-source timeout (resilience.sourcePolicy), the dump HF /filter policy
+// (resilience.makeDumpHttpPolicy) and the streaming/batch overall deadline
+// (art-stream OVERALL_TIMEOUT_MS). The invariant — LIVE < DUMP_WORST_CASE ≤
+// OVERALL — is asserted in budget.test.ts so the overall deadline can never again
+// be set BELOW the dump worst case (the shipped defect: a 9s stream cap killed the
+// ~16s cold dump call, so the user saw only weak live sources, never the
+// dump-backed bulk that holds the best results).
+
+/** Per live-API source deadline. Live sources are SUPPLEMENTARY now (the dump is
+ *  the spine), so they get a tight budget and can't dominate the response. Also
+ *  the default for helpers.deadline(). */
+export const TIMEOUT_MS = 6_000;
+
+/** Per-attempt deadline for the shared HF /filter call (all dump sources ride it). */
+export const DUMP_TIMEOUT_MS = 8_000;
+/** Cockatiel retry count for the dump call — the number of RETRIES, NOT total
+ *  invocations: total attempts = DUMP_RETRIES + 1. (cockatiel's RetryPolicy loops
+ *  while `retries < maxAttempts`, so maxAttempts=2 runs 3 times.) Two retries ride
+ *  out a transient HF blip; pinned to the real library behavior in resilience.test.ts. */
+export const DUMP_RETRIES = 2;
+/** Max exponential-backoff delay per retry gap — mirrors the maxDelay in
+ *  resilience.makeDumpHttpPolicy. There are DUMP_RETRIES such gaps in the worst case. */
+export const DUMP_BACKOFF_MAX_MS = 1_000;
+/** Worst-case wall time for the dump call: every attempt times out AND every retry
+ *  waits the max backoff. Total attempts = DUMP_RETRIES + 1, backoff gaps = DUMP_RETRIES. */
+export const DUMP_WORST_CASE_MS =
+  DUMP_TIMEOUT_MS * (DUMP_RETRIES + 1) + DUMP_RETRIES * DUMP_BACKOFF_MAX_MS;
+/** Overall deadline for a search (stream hard cap / batch budget). Must cover the
+ *  dump worst case so the response never ends with the best results still pending. */
+export const OVERALL_TIMEOUT_MS = DUMP_WORST_CASE_MS + 2_500;
+
 export const MAX_ITEMS = 50;
 
 // Lossless raster formats — JPEG/WEBP(lossy) are NOT here.

@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import type { ArtItem, SourceAdapter } from '@harpe/core';
 import { runSource, _resetBreakers, makeDumpHttpPolicy, isBrokenCircuitError } from './resilience.js';
+import { DUMP_RETRIES } from './helpers.js';
 
 function adapter(key: string, fetch: SourceAdapter['fetch'], dumpBacked = false): SourceAdapter {
   return { key, label: key, fetch, dumpBacked } as unknown as SourceAdapter;
@@ -66,9 +67,23 @@ describe('dump HTTP policy — retry + breaker', () => {
   it('retries a transient failure, then succeeds', async () => {
     const p = makeDumpHttpPolicy();
     let n = 0;
-    const out = await p.execute(async () => { if (++n < 3) throw new Error('blip'); return 'ok'; });
+    const out = await p.execute(async () => { if (n++ < DUMP_RETRIES) throw new Error('blip'); return 'ok'; });
     expect(out).toBe('ok');
-    expect(n).toBe(3); // two transient failures absorbed by retry
+    expect(n).toBe(DUMP_RETRIES + 1); // DUMP_RETRIES transient failures absorbed by retry
+  }, 20_000);
+
+  it('exhausts exactly DUMP_RETRIES+1 total attempts before giving up (pins cockatiel maxAttempts = retry count)', async () => {
+    // Cockatiel's `maxAttempts` is the RETRY count, not total invocations, so the
+    // worst case is (DUMP_RETRIES + 1) attempts. This couples the budget math in
+    // helpers.ts to the library's real behavior — if cockatiel's semantics or
+    // DUMP_RETRIES drift, DUMP_WORST_CASE_MS / OVERALL_TIMEOUT_MS go stale and the
+    // overall deadline could again undercut the dump. That defect must fail here.
+    const p = makeDumpHttpPolicy();
+    let calls = 0;
+    await expect(
+      p.execute(async () => { calls++; throw new Error('cold'); }),
+    ).rejects.toThrow('cold');
+    expect(calls).toBe(DUMP_RETRIES + 1);
   }, 20_000);
 
   it('opens after sustained failure, then short-circuits without calling through', async () => {
