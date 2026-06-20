@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('./art.js', () => ({ gatherSources: vi.fn() }));
+vi.mock('@harpe/sources', () => ({ loadArtistPage: vi.fn() }));
 vi.mock('../guard.js', () => ({
   GuardError: class GuardError extends Error {
     constructor(public readonly status: number, message: string) { super(message); this.name = 'GuardError'; }
@@ -11,6 +12,7 @@ vi.mock('../guard.js', () => ({
 
 import preview from './preview.js';
 import { gatherSources } from './art.js';
+import { loadArtistPage } from '@harpe/sources';
 import { rateLimit, GuardError } from '../guard.js';
 
 function res() {
@@ -28,10 +30,35 @@ const item = (over: Record<string, unknown> = {}) => ({
 
 beforeEach(() => {
   vi.mocked(gatherSources).mockReset();
+  vi.mocked(loadArtistPage).mockReset();
   vi.mocked(rateLimit).mockResolvedValue(undefined);
 });
 
 describe('preview resolver', () => {
+  it('previews an artist entity from ?artist=<QID> (title/img/desc from the KG node)', async () => {
+    vi.mocked(loadArtistPage).mockResolvedValue({
+      entity: { qid: 'Q189117', labelEn: 'Jan Matejko', description: 'Polish painter (1838–1893)', imageCommons: 'Matejko Self-portrait.jpg', workCount: 186 },
+      works: [],
+    } as never);
+    const r = res();
+    await preview({ query: { q: 'Jan Matejko', artist: 'Q189117' }, headers: {} } as never, r as never);
+    expect(r.body.title).toBe('Jan Matejko');
+    expect(r.body.desc).toContain('Polish painter');
+    expect(r.body.img).toContain('Special:FilePath/Matejko');
+    expect(r.body.img).toContain('width=');
+    expect(gatherSources).not.toHaveBeenCalled(); // artist branch short-circuits the work search
+  });
+
+  it('falls back to the work search when ?artist= is not a QID', async () => {
+    vi.mocked(gatherSources).mockResolvedValue([
+      ['AIC', Promise.resolve([item({ title: 'A work' })])],
+    ] as never);
+    const r = res();
+    await preview({ query: { q: 'monet', artist: 'not-a-qid' }, headers: {} } as never, r as never);
+    expect(r.body.title).toBe('A work');
+    expect(loadArtistPage).not.toHaveBeenCalled();
+  });
+
   it('resolves the exact item by v and returns title/img/desc', async () => {
     vi.mocked(gatherSources).mockResolvedValue([
       ['AIC', Promise.resolve([item({ id: 'aic-1' }), item({ id: 'aic-2', title: 'Other' })])],

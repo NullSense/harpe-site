@@ -59,9 +59,10 @@ export function previewImage(origin: string, raw: string): { url: string; type: 
 
 export default async function middleware(req: Request): Promise<Response | undefined> {
   const url = new URL(req.url);
-  const q = url.searchParams.get('q');
+  const q = url.searchParams.get('q') || '';
+  const artist = url.searchParams.get('artist') || '';
   const ua = req.headers.get('user-agent') || '';
-  if (!q || !BOT.test(ua)) return; // real users → serve the SPA as normal
+  if ((!q && !artist) || !BOT.test(ua)) return; // real users → serve the SPA as normal
 
   const v = url.searchParams.get('v') || '';
   let title = url.searchParams.get('t') || '';
@@ -79,7 +80,7 @@ export default async function middleware(req: Request): Promise<Response | undef
         : url.origin;
     try {
       const r = await fetch(
-        `${base}/api/preview?q=${encodeURIComponent(q)}&v=${encodeURIComponent(v)}`,
+        `${base}/api/preview?q=${encodeURIComponent(q)}&v=${encodeURIComponent(v)}&artist=${encodeURIComponent(artist)}`,
         { signal: AbortSignal.timeout(6000) },
       );
       const j = (await r.json()) as { title?: string; img?: string; desc?: string };
@@ -89,9 +90,13 @@ export default async function middleware(req: Request): Promise<Response | undef
     } catch { /* fall back to defaults */ }
   }
 
-  title = title || `${q} — Harpe`;
+  title = title || `${q || 'Artist'} — Harpe`;
   desc = desc || `Search "${q}" across open museum & archive collections worldwide — free public-domain art & image search.`;
-  const canonical = `${url.origin}/?q=${encodeURIComponent(q)}${v ? `&v=${encodeURIComponent(v)}` : ''}`;
+  const canonical = `${url.origin}/?` + [
+    q ? `q=${encodeURIComponent(q)}` : '',
+    artist ? `artist=${encodeURIComponent(artist)}` : '',
+    v ? `v=${encodeURIComponent(v)}` : '',
+  ].filter(Boolean).join('&');
   const og = previewImage(url.origin, img);
 
   const html =

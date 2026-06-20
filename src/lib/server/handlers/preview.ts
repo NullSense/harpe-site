@@ -22,7 +22,8 @@
  * never hurt in practice because the CDN shields them.
  */
 import type { VercelRequest, VercelResponse } from '../vercel.js';
-import { type ArtItem } from '@harpe/core';
+import { type ArtItem, isQid } from '@harpe/core';
+import { loadArtistPage } from '@harpe/sources';
 import { GuardError, rateLimit, clientIp } from '../guard.js';
 import { gatherSources } from './art.js';
 
@@ -30,7 +31,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   res.setHeader('Cache-Control', 'public, s-maxage=3600, stale-while-revalidate=86400');
   const q = (typeof req.query.q === 'string' ? req.query.q : '').trim();
   const v = typeof req.query.v === 'string' ? req.query.v : '';
-  if (!q) return res.status(200).json({});
+  const artist = (typeof req.query.artist === 'string' ? req.query.artist : '').trim();
+  if (!q && !artist) return res.status(200).json({});
 
   // Rate limit — degrade gracefully: a throttle returns {} (200) instead of
   // 429 so the social card always renders (empty card > broken page).
@@ -40,6 +42,24 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (e instanceof GuardError) return res.status(200).json({});
     throw e;
   }
+
+  // A ?artist=<QID> link previews the ARTIST entity (name/portrait/bio), not a
+  // single work — resolve it from the KG node. Falls through to the work search on
+  // any miss so the card still renders.
+  if (isQid(artist)) {
+    try {
+      const page = await loadArtistPage(artist);
+      const e = page?.entity;
+      if (e) {
+        const img = e.imageCommons
+          ? `https://commons.wikimedia.org/wiki/Special:FilePath/${encodeURIComponent(e.imageCommons)}?width=1200`
+          : '';
+        const desc = [e.description, e.workCount ? `${e.workCount} works` : ''].filter(Boolean).join(' · ');
+        return res.status(200).json({ title: e.labelEn || artist, img, desc });
+      }
+    } catch { /* fall through to the work search */ }
+  }
+  if (!q) return res.status(200).json({}); // artist miss + no query → nothing to show
 
   try {
     const named = await gatherSources(q);
