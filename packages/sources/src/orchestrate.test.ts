@@ -54,6 +54,28 @@ describe('searchArt', () => {
     const { items } = await searchArt('water lilies', { max: 3 });
     expect(items.length).toBe(3);
   });
+
+  it('returns partial results at the overall deadline instead of waiting on a hanging source', async () => {
+    m.gatherSources.mockResolvedValue([
+      ['aic', Promise.resolve([item('aic-1', 'Water Lilies')])],
+      ['slow', new Promise(() => {})], // never resolves — must not hold the response
+    ]);
+    const t0 = Date.now();
+    const { items, warnings } = await searchArt('water lilies', { deadlineMs: 50 });
+    expect(Date.now() - t0).toBeLessThan(2_000); // bounded, did not hang
+    expect(items.map((i) => i.id)).toContain('aic-1'); // the fast source still made it
+    expect(warnings.some((w) => /slow.*(deadline|timed out)/i.test(w))).toBe(true);
+  });
+
+  it('flags every source as timed out when all miss the deadline (so art.ts can still 502)', async () => {
+    m.gatherSources.mockResolvedValue([
+      ['aic', new Promise(() => {})],
+      ['met', new Promise(() => {})],
+    ]);
+    const { items, warnings, sourceCount } = await searchArt('x', { deadlineMs: 30 });
+    expect(items).toEqual([]);
+    expect(warnings.length).toBe(sourceCount); // total timeout reads as total failure
+  });
 });
 
 describe('loadArtistPage', () => {

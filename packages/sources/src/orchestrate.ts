@@ -10,25 +10,47 @@ import {
 } from '@harpe/core';
 import { gatherSources } from './registry.js';
 import { fetchArtistEntity, fetchArtistWorkIds, fetchSubjectEntity, fetchDumpSearch } from './adapters.js';
+import { OVERALL_TIMEOUT_MS } from './helpers.js';
 
 export const DEFAULT_MAX_ITEMS = 40;
 const WORKS_CAP = 100;
 
 /** Federated + dump search: fan out to every active source, collect, then dedupe +
- *  RRF-rank via the shared pipeline. A failing source becomes a warning, not an error. */
+ *  RRF-rank via the shared pipeline. A failing source becomes a warning, not an error.
+ *
+ *  Bounded by an OVERALL deadline (OVERALL_TIMEOUT_MS): unlike the SSE handler — which
+ *  has its own timer — this batch path also backs /api/art, the MCP server and the
+ *  keep-warm cron, none of which had a cap, so a single hung upstream could ride to
+ *  Vercel's 60s function limit. At the deadline we return whatever resolved and flag the
+ *  stragglers (the underlying fetches already self-abort via their per-source/dump
+ *  policies; the platform reaps anything still pending once the function returns). */
 export async function searchArt(
   query: string,
-  opts: { max?: number } = {},
+  opts: { max?: number; deadlineMs?: number } = {},
 ): Promise<{ items: ArtItem[]; warnings: string[]; sourceCount: number }> {
   const sources = await gatherSources(query);
-  const settled = await Promise.allSettled(sources.map(([, p]) => p));
   const items: ArtItem[] = [];
   const warnings: string[] = [];
-  settled.forEach((r, i) => {
-    const name = sources[i][0];
-    if (r.status === 'fulfilled') items.push(...r.value);
-    else warnings.push(`${name}: ${r.reason instanceof Error ? r.reason.message : String(r.reason)}`);
-  });
+  const settled = new Set<string>();
+  const per = sources.map(([name, p]) =>
+    p.then(
+      (v) => { items.push(...v); settled.add(name); },
+      (e) => { warnings.push(`${name}: ${e instanceof Error ? e.message : String(e)}`); settled.add(name); },
+    ),
+  );
+
+  const deadlineMs = opts.deadlineMs ?? OVERALL_TIMEOUT_MS;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<void>((resolve) => { timer = setTimeout(resolve, deadlineMs); });
+  await Promise.race([Promise.allSettled(per), deadline]);
+  if (timer) clearTimeout(timer);
+
+  // Any source not settled by the deadline → a per-source warning, so a TOTAL timeout
+  // still reads as a total failure (warnings.length === sourceCount) for art.ts's 502.
+  for (const [name] of sources) {
+    if (!settled.has(name)) warnings.push(`${name}: timed out at ${deadlineMs}ms deadline`);
+  }
+
   const ranked = rankResults(items, query, { qualityOf: (it) => qualityScore(it, query) })
     .slice(0, opts.max ?? DEFAULT_MAX_ITEMS);
   // sourceCount lets a caller tell "all sources errored" (→ 502) from "no matches" (→ empty).
