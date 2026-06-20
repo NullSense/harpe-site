@@ -43,6 +43,31 @@ export function pickWarmQueries(payload, n) {
   return out;
 }
 
+/**
+ * Parse + clamp an integer env value to [1, max], falling back to `def` for
+ * missing/non-numeric input. Keeps a fat-fingered WARM_COUNT from firing
+ * thousands of requests at the origin.
+ * @returns {number}
+ */
+export function clampCount(raw, max, def) {
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return def;
+  return Math.max(1, Math.min(max, Math.trunc(n)));
+}
+
+/**
+ * Summarize warm results into a pass/fail by success ratio. A green run must
+ * mean "the origin is actually warm", so we require a meaningful fraction to
+ * succeed — not just one — and an empty set never passes.
+ * @returns {{ok:number,total:number,ratio:number,pass:boolean}}
+ */
+export function summarizeWarm(results, threshold) {
+  const total = results.length;
+  const ok = results.filter((r) => r && r.ok).length;
+  const ratio = total ? ok / total : 0;
+  return { ok, total, ratio, pass: total > 0 && ratio >= threshold };
+}
+
 // Curated fallback so warming works even when data/suggest.json isn't published
 // yet (the KG pool ships out-of-band of the code). Mirrors discover.ts's own
 // "static list is the offline fallback" philosophy — famous, high-traffic queries.
@@ -56,8 +81,16 @@ const FALLBACK_QUERIES = [
 ];
 
 const BASE = (process.env.WARM_BASE || 'https://harpe-site.vercel.app').replace(/\/$/, '');
-const COUNT = Number(process.env.WARM_COUNT) || 24;
-const CONCURRENCY = Number(process.env.WARM_CONCURRENCY) || 4;
+const COUNT = clampCount(process.env.WARM_COUNT, 100, 24);
+const CONCURRENCY = clampCount(process.env.WARM_CONCURRENCY, 16, 4);
+// Require this fraction of warms to succeed before the run is considered green
+// (default 0.8). A lone success no longer masks a broad origin failure.
+const THRESHOLD = Number.isFinite(Number(process.env.WARM_THRESHOLD)) ? Number(process.env.WARM_THRESHOLD) : 0.8;
+// CDN stale-while-revalidate can serve a fast STALE response without the function
+// ever running — so a "fast" warm wouldn't actually refresh KV/origin. A per-run
+// cache-bust param forces the function to execute (and repopulate an expired KV key).
+const CACHE_BUST = process.env.WARM_CACHE_BUST !== '0';
+const RUN_TOKEN = String(Date.now());
 const enc = encodeURIComponent;
 
 async function getJson(url, timeout = 30_000) {
@@ -72,8 +105,9 @@ async function getJson(url, timeout = 30_000) {
 
 async function warmOne(q) {
   const t0 = Date.now();
+  const bust = CACHE_BUST ? `&_w=${RUN_TOKEN}` : '';
   try {
-    const data = await getJson(`${BASE}/api/art?q=${enc(q)}`, 40_000);
+    const data = await getJson(`${BASE}/api/art?q=${enc(q)}${bust}`, 40_000);
     const n = Array.isArray(data.items) ? data.items.length : 0;
     return { q, ok: true, ms: Date.now() - t0, items: n };
   } catch (e) {
@@ -112,17 +146,22 @@ async function main() {
     console.error('keep-warm: no queries to warm');
     process.exit(1);
   }
-  console.log(`keep-warm: warming ${queries.length} queries against ${BASE} (concurrency ${CONCURRENCY})`);
+  console.log(`keep-warm: warming ${queries.length} queries against ${BASE} (concurrency ${CONCURRENCY}, threshold ${THRESHOLD}, cache-bust ${CACHE_BUST})`);
   const results = await warmAll(queries, CONCURRENCY);
-  const ok = results.filter((r) => r.ok);
-  const slow = ok.filter((r) => r.ms > 5_000).length;
+  const okResults = results.filter((r) => r.ok);
+  const slow = okResults.filter((r) => r.ms > 5_000).length;
   for (const r of results) {
     console.log(`  ${r.ok ? '✅' : '❌'} ${String(r.ms).padStart(6)}ms  ${r.q}${r.ok ? ` (${r.items})` : ` — ${r.err}`}`);
   }
-  const med = ok.length ? ok.map((r) => r.ms).sort((a, b) => a - b)[Math.floor(ok.length / 2)] : 0;
-  console.log(`keep-warm: ${ok.length}/${results.length} ok · median ${med}ms · ${slow} over 5s`);
-  // Non-zero only if EVERY warm failed — a few slow/failed sources shouldn't fail CI.
-  if (ok.length === 0) process.exit(1);
+  const med = okResults.length ? okResults.map((r) => r.ms).sort((a, b) => a - b)[Math.floor(okResults.length / 2)] : 0;
+  const summary = summarizeWarm(results, THRESHOLD);
+  console.log(`keep-warm: ${summary.ok}/${summary.total} ok (${(summary.ratio * 100).toFixed(0)}%) · median ${med}ms · ${slow} over 5s`);
+  // Fail the run when the success ratio is below threshold — a broad origin
+  // outage must be visible, not masked by a couple of lucky warms.
+  if (!summary.pass) {
+    console.error(`keep-warm: success ratio ${(summary.ratio * 100).toFixed(0)}% below threshold ${(THRESHOLD * 100).toFixed(0)}%`);
+    process.exit(1);
+  }
 }
 
 // Run only when invoked directly (`node tests/live/keep-warm.mjs`), not on import.

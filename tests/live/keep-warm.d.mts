@@ -4,3 +4,10 @@ export function pickWarmQueries(
   payload: unknown,
   n: number,
 ): string[];
+
+export function clampCount(raw: unknown, max: number, def: number): number;
+
+export function summarizeWarm(
+  results: ReadonlyArray<{ ok?: boolean }>,
+  threshold: number,
+): { ok: number; total: number; ratio: number; pass: boolean };

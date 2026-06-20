@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 // The keep-warm runner is a dependency-free Node script (like tests/live/monitor.mjs)
 // so CI can `node` it directly. Its one pure, testable piece — choosing which
 // queries to warm — is exported and unit-tested here.
-import { pickWarmQueries } from '../../tests/live/keep-warm.mjs';
+import { pickWarmQueries, summarizeWarm, clampCount } from '../../tests/live/keep-warm.mjs';
 
 describe('pickWarmQueries', () => {
   const sugg = (rows: Array<Partial<{ query: string; label: string; kind: string }>>) =>
@@ -38,5 +38,34 @@ describe('pickWarmQueries', () => {
     expect(pickWarmQueries(null, 10)).toEqual([]);
     expect(pickWarmQueries({}, 10)).toEqual([]);
     expect(pickWarmQueries({ suggestions: [] }, 10)).toEqual([]);
+  });
+});
+
+describe('clampCount', () => {
+  it('parses and clamps to [1, max]', () => {
+    expect(clampCount('5', 100, 24)).toBe(5);
+    expect(clampCount('0', 100, 24)).toBe(1);
+    expect(clampCount('999', 100, 24)).toBe(100);
+  });
+  it('falls back to the default for non-numeric/missing input', () => {
+    expect(clampCount('abc', 100, 24)).toBe(24);
+    expect(clampCount(undefined, 100, 24)).toBe(24);
+  });
+});
+
+describe('summarizeWarm', () => {
+  const rs = (oks: boolean[]) => oks.map((ok) => ({ ok }));
+  it('passes only when the success ratio meets the threshold', () => {
+    expect(summarizeWarm(rs([true, true, true, true, false]), 0.8).pass).toBe(true); // 4/5
+    expect(summarizeWarm(rs([true, true, true, false, false]), 0.8).pass).toBe(false); // 3/5
+  });
+  it('fails on an empty result set (not a vacuous pass)', () => {
+    expect(summarizeWarm([], 0.8).pass).toBe(false);
+  });
+  it('reports ok/total/ratio', () => {
+    const s = summarizeWarm(rs([true, false]), 0.5);
+    expect(s.ok).toBe(1);
+    expect(s.total).toBe(2);
+    expect(s.ratio).toBe(0.5);
   });
 });
