@@ -500,7 +500,8 @@ def enrich(repo: str = "NullSense/harpe-art", out: str | None = None,
     When build_search_index is set, also builds + uploads the FTS5 search index
     (data/art.sqlite) for browser-side range-read search — see docs/perf-rank4-fts.md."""
     out = out or os.path.join(tempfile.gettempdir(), "harpe-train-enriched.parquet")
-    os.environ.setdefault("HF_XET_HIGH_PERFORMANCE", "1")
+    import paths
+    paths.configure_hf_xet()  # high-perf xet is opt-in — it OOM'd the desktop forced-on
     from huggingface_hub import HfApi, hf_hub_download
     from huggingface_hub import CommitOperationAdd
 

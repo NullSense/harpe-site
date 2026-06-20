@@ -1455,10 +1455,12 @@ def publish(path: str, built_keys: set[str], repo: str) -> None:
     just `--sources <key> --push`; it adds to what's live.
 
     Transfers ride hf_xet (the Hub's default accelerated, chunk-deduped transport —
-    hf_transfer/HF_HUB_ENABLE_HF_TRANSFER is deprecated and ignored). We opt into
-    its high-performance mode so the upload/merge-download saturate the link.
+    hf_transfer/HF_HUB_ENABLE_HF_TRANSFER is deprecated and ignored). Its
+    high-performance mode is OPT-IN (INGEST_HF_XET_HIGH_PERF=1): forced on, it
+    saturates every core + buffers chunks in RAM and OOM-killed the desktop.
     """
-    os.environ.setdefault("HF_XET_HIGH_PERFORMANCE", "1")
+    import paths
+    paths.configure_hf_xet()
     from huggingface_hub import HfApi, hf_hub_download
 
     con = duckdb.connect()
