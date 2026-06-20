@@ -10,7 +10,7 @@ import {
 } from '@harpe/core';
 import { gatherSources } from './registry.js';
 import { fetchArtistEntity, fetchArtistWorkIds, fetchSubjectEntity, fetchDumpSearch } from './adapters.js';
-import { OVERALL_TIMEOUT_MS } from './helpers.js';
+import { OVERALL_TIMEOUT_MS, withDeadline } from './helpers.js';
 
 export const DEFAULT_MAX_ITEMS = 40;
 const WORKS_CAP = 100;
@@ -58,38 +58,49 @@ export async function searchArt(
 }
 
 /** Knowledge-graph artist page: the artist node + a grid of their works from the dump
- *  deep-index (kept to the known work-id set). null when the QID isn't in the index. */
+ *  deep-index (kept to the known work-id set). null when the QID isn't in the index.
+ *
+ *  Bounded like searchArt: the entity lookup and the dump-search both ride the HF policy
+ *  (≤ ~26s each) and previously had NO outer cap, so /api/artist could reach Vercel's 60s
+ *  limit on a cold index. The works fetch now degrades to [] at the deadline (the entity
+ *  still renders), and a hung entity lookup yields null (rendered as 404, NOT cached — see
+ *  withEntityCache — so a transient timeout self-heals on the next request). */
 export async function loadArtistPage(
   qid: string,
   dataset: string = process.env.HARPE_DUMP_DATASET || '',
+  opts: { deadlineMs?: number } = {},
 ): Promise<{ entity: ArtistEntity; works: ArtItem[] } | null> {
-  const [entity, workIds] = await Promise.all([fetchArtistEntity(qid), fetchArtistWorkIds(qid)]);
+  const deadlineMs = opts.deadlineMs ?? OVERALL_TIMEOUT_MS;
+  const [entity, workIds] = await withDeadline(
+    deadlineMs,
+    Promise.all([fetchArtistEntity(qid), fetchArtistWorkIds(qid)]),
+    [null, []] as [ArtistEntity | null, string[]],
+  );
   if (!entity) return null;
   let works: ArtItem[] = [];
   if (dataset && workIds.length > 0) {
     const idSet = new Set(workIds);
-    try {
-      const all = await fetchDumpSearch(dataset, entity.labelEn);
-      works = all.filter((it) => idSet.has(it.id)).slice(0, WORKS_CAP);
-    } catch { /* dump unavailable → entity still renders, just no work grid */ }
+    const all = await withDeadline(deadlineMs, fetchDumpSearch(dataset, entity.labelEn).catch(() => []), []);
+    works = all.filter((it) => idSet.has(it.id)).slice(0, WORKS_CAP);
   }
   return { entity, works };
 }
 
 /** Knowledge-graph subject ("depicts") page: the subject node + works whose P180
- *  depicts includes this QID (exact-matched on the deserialized array). null = unknown. */
+ *  depicts includes this QID (exact-matched on the deserialized array). null = unknown.
+ *  Bounded identically to loadArtistPage (see its note). */
 export async function loadSubjectPage(
   qid: string,
   dataset: string = process.env.HARPE_DUMP_DATASET || '',
+  opts: { deadlineMs?: number } = {},
 ): Promise<{ entity: SubjectEntity; works: ArtItem[] } | null> {
-  const entity = await fetchSubjectEntity(qid);
+  const deadlineMs = opts.deadlineMs ?? OVERALL_TIMEOUT_MS;
+  const entity = await withDeadline(deadlineMs, fetchSubjectEntity(qid), null);
   if (!entity) return null;
   let works: ArtItem[] = [];
   if (dataset) {
-    try {
-      const all = await fetchDumpSearch(dataset, qid);
-      works = all.filter((it) => it.depicts?.includes(qid)).slice(0, WORKS_CAP);
-    } catch { /* dump unavailable → entity still renders, just no work grid */ }
+    const all = await withDeadline(deadlineMs, fetchDumpSearch(dataset, qid).catch(() => []), []);
+    works = all.filter((it) => it.depicts?.includes(qid)).slice(0, WORKS_CAP);
   }
   return { entity, works };
 }

@@ -94,6 +94,17 @@ describe('loadArtistPage', () => {
     expect(await loadArtistPage('Q999', 'ds')).toBeNull();
     expect(m.fetchDumpSearch).not.toHaveBeenCalled();
   });
+
+  it('still renders the entity (works: []) when the dump hangs past the deadline', async () => {
+    m.fetchArtistEntity.mockResolvedValue({ qid: 'Q41406', labelEn: 'Claude Monet', workCount: 2 });
+    m.fetchArtistWorkIds.mockResolvedValue(['aic-1']);
+    m.fetchDumpSearch.mockReturnValue(new Promise(() => {})); // never resolves
+    const t0 = Date.now();
+    const page = await loadArtistPage('Q41406', 'ds', { deadlineMs: 50 });
+    expect(Date.now() - t0).toBeLessThan(2_000);
+    expect(page?.entity.labelEn).toBe('Claude Monet');
+    expect(page?.works).toEqual([]);
+  });
 });
 
 describe('loadSubjectPage', () => {
@@ -110,5 +121,15 @@ describe('loadSubjectPage', () => {
   it('is null for an unknown subject', async () => {
     m.fetchSubjectEntity.mockResolvedValue(null);
     expect(await loadSubjectPage('Q999', 'ds')).toBeNull();
+  });
+
+  it('still renders the entity (works: []) when the dump hangs past the deadline', async () => {
+    m.fetchSubjectEntity.mockResolvedValue({ qid: 'Q7569', labelEn: 'child', workCount: 1 });
+    m.fetchDumpSearch.mockReturnValue(new Promise(() => {})); // never resolves
+    const t0 = Date.now();
+    const page = await loadSubjectPage('Q7569', 'ds', { deadlineMs: 50 });
+    expect(Date.now() - t0).toBeLessThan(2_000);
+    expect(page?.entity.labelEn).toBe('child');
+    expect(page?.works).toEqual([]);
   });
 });

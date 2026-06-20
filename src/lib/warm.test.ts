@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 // The keep-warm runner is a dependency-free Node script (like tests/live/monitor.mjs)
 // so CI can `node` it directly. Its one pure, testable piece — choosing which
 // queries to warm — is exported and unit-tested here.
-import { pickWarmQueries, summarizeWarm, clampCount } from '../../tests/live/keep-warm.mjs';
+import { pickWarmQueries, summarizeWarm, clampCount, clampThreshold } from '../../tests/live/keep-warm.mjs';
 
 describe('pickWarmQueries', () => {
   const sugg = (rows: Array<Partial<{ query: string; label: string; kind: string }>>) =>
@@ -50,6 +50,20 @@ describe('clampCount', () => {
   it('falls back to the default for non-numeric/missing input', () => {
     expect(clampCount('abc', 100, 24)).toBe(24);
     expect(clampCount(undefined, 100, 24)).toBe(24);
+  });
+});
+
+describe('clampThreshold', () => {
+  it('accepts a valid fraction in (0, 1]', () => {
+    expect(clampThreshold('0.9', 0.8)).toBe(0.9);
+    expect(clampThreshold('1', 0.8)).toBe(1);
+  });
+  it('rejects values that would silently disable or break the gate', () => {
+    expect(clampThreshold('', 0.8)).toBe(0.8);     // Number('') === 0 → must NOT pass through
+    expect(clampThreshold('0', 0.8)).toBe(0.8);    // 0 disables the gate
+    expect(clampThreshold('1.5', 0.8)).toBe(0.8);  // >1 is never achievable
+    expect(clampThreshold(undefined, 0.8)).toBe(0.8);
+    expect(clampThreshold('abc', 0.8)).toBe(0.8);
   });
 });
 

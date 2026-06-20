@@ -7,6 +7,8 @@ export function pickWarmQueries(
 
 export function clampCount(raw: unknown, max: number, def: number): number;
 
+export function clampThreshold(raw: unknown, def: number): number;
+
 export function summarizeWarm(
   results: ReadonlyArray<{ ok?: boolean }>,
   threshold: number,

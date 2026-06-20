@@ -56,6 +56,18 @@ export function clampCount(raw, max, def) {
 }
 
 /**
+ * Parse the success-ratio threshold, accepting only a real fraction in (0, 1].
+ * Guards the silent-disable traps: Number('') and Number('0') are both 0 (and
+ * Number.isFinite(0) is true), which would set threshold 0 → every run "passes";
+ * and a value > 1 is never achievable → the cron would always fail.
+ * @returns {number}
+ */
+export function clampThreshold(raw, def) {
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 && n <= 1 ? n : def;
+}
+
+/**
  * Summarize warm results into a pass/fail by success ratio. A green run must
  * mean "the origin is actually warm", so we require a meaningful fraction to
  * succeed — not just one — and an empty set never passes.
@@ -85,7 +97,7 @@ const COUNT = clampCount(process.env.WARM_COUNT, 100, 24);
 const CONCURRENCY = clampCount(process.env.WARM_CONCURRENCY, 16, 4);
 // Require this fraction of warms to succeed before the run is considered green
 // (default 0.8). A lone success no longer masks a broad origin failure.
-const THRESHOLD = Number.isFinite(Number(process.env.WARM_THRESHOLD)) ? Number(process.env.WARM_THRESHOLD) : 0.8;
+const THRESHOLD = clampThreshold(process.env.WARM_THRESHOLD, 0.8);
 // CDN stale-while-revalidate can serve a fast STALE response without the function
 // ever running — so a "fast" warm wouldn't actually refresh KV/origin. A per-run
 // cache-bust param forces the function to execute (and repopulate an expired KV key).

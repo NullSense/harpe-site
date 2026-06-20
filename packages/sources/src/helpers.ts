@@ -82,6 +82,21 @@ export async function raceBudget(ms: number, p: Promise<unknown>): Promise<void>
   }
 }
 
+/** Resolve `p`'s value, or `fallback` if it hasn't settled within `ms`. A rejection
+ *  from `p` still propagates (race semantics) — wrap the input in `.catch()` first if a
+ *  failure should also yield the fallback. Used to bound the entity-page loads
+ *  (loadArtistPage/loadSubjectPage) whose direct fetchDumpSearch calls would otherwise
+ *  ride to the function limit on a cold HF index. The background promise keeps running. */
+export async function withDeadline<T>(ms: number, p: Promise<T>, fallback: T): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<T>((resolve) => { timer = setTimeout(() => resolve(fallback), ms); });
+  try {
+    return await Promise.race([p, deadline]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 export function fmtFromMime(mime: string): string {
   const m = mime.toLowerCase();
   if (m.includes('png')) return 'png';
