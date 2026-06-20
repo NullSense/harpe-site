@@ -5,7 +5,9 @@ import {
   DUMP_RETRIES,
   DUMP_BACKOFF_MAX_MS,
   DUMP_WORST_CASE_MS,
+  ENRICH_BUDGET_MS,
   OVERALL_TIMEOUT_MS,
+  raceBudget,
 } from './helpers.js';
 
 // The unified search timing budget. These constants are the single source of
@@ -30,10 +32,11 @@ describe('search timing budget invariants', () => {
     );
   });
 
-  it('never lets the overall deadline cut off the dump mid-flight', () => {
-    // THE regression: the overall budget must cover the dump's worst case so the
-    // stream/batch never ends with the best results still pending.
-    expect(OVERALL_TIMEOUT_MS).toBeGreaterThanOrEqual(DUMP_WORST_CASE_MS);
+  it('never lets the overall deadline cut off the dump critical path (search + enrichment)', () => {
+    // THE regression: the overall budget must cover the dump's worst case AND its
+    // post-resolve enrichment budget, so the stream/batch never ends with the best
+    // results still pending.
+    expect(OVERALL_TIMEOUT_MS).toBeGreaterThanOrEqual(DUMP_WORST_CASE_MS + ENRICH_BUDGET_MS);
   });
 
   it('gives live sources a tighter deadline than the dump (live is supplementary)', () => {
@@ -42,5 +45,25 @@ describe('search timing budget invariants', () => {
 
   it('stays well under the Vercel function maxDuration (60s)', () => {
     expect(OVERALL_TIMEOUT_MS).toBeLessThan(60_000);
+  });
+});
+
+describe('raceBudget — best-effort cap for in-place enrichment', () => {
+  it('resolves as soon as the task finishes (well under the budget)', async () => {
+    const t0 = Date.now();
+    await raceBudget(1_000, Promise.resolve('done'));
+    expect(Date.now() - t0).toBeLessThan(200);
+  });
+
+  it('gives up at the budget when the task hangs (does not block delivery)', async () => {
+    const t0 = Date.now();
+    await raceBudget(40, new Promise(() => {})); // never settles
+    const dt = Date.now() - t0;
+    expect(dt).toBeGreaterThanOrEqual(30);
+    expect(dt).toBeLessThan(500);
+  });
+
+  it('swallows a rejection (a failed enrichment must not throw)', async () => {
+    await expect(raceBudget(50, Promise.reject(new Error('boom')))).resolves.toBeUndefined();
   });
 });

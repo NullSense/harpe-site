@@ -14,7 +14,8 @@ export { searchArt, loadArtistPage, loadSubjectPage, DEFAULT_MAX_ITEMS } from '.
 export { mapPool } from './helpers.js';
 // Unified search timing budget (single source of truth; invariant in budget.test.ts).
 export {
-  TIMEOUT_MS, DUMP_TIMEOUT_MS, DUMP_RETRIES, DUMP_BACKOFF_MAX_MS, DUMP_WORST_CASE_MS, OVERALL_TIMEOUT_MS,
+  TIMEOUT_MS, DUMP_TIMEOUT_MS, DUMP_RETRIES, DUMP_BACKOFF_MAX_MS, DUMP_WORST_CASE_MS,
+  ENRICH_BUDGET_MS, OVERALL_TIMEOUT_MS,
 } from './helpers.js';
 export { runSource, sourceBreaker } from './resilience.js';
 

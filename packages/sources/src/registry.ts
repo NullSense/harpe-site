@@ -10,6 +10,7 @@ import {
   fetchDumpSource, fetchNypl, dumpDatasetEnv, enrichArtistIds, enrichWorkIds,
 } from './adapters.js';
 import { runSource } from './resilience.js';
+import { raceBudget, ENRICH_BUDGET_MS } from './helpers.js';
 export { mapPool } from './helpers.js';
 
 // A source whose full open-data dump has been ingested into the HF dataset
@@ -71,15 +72,25 @@ export async function gatherSources(q: string): Promise<Array<[string, Promise<A
   // their own shared HF policy) — a degraded upstream fails fast instead of
   // taxing every query. See resilience.ts.
   //
-  // Every source's items pass through the KG passes BEFORE they're streamed or
+  // Every source's items pass through the KG passes before they're streamed or
   // de-duplicated, so linking reaches the whole pool: enrichArtistIds resolves the
   // artist entity link (live sources don't), then enrichWorkIds resolves the work's
   // Wikidata QID from its title (work_index) so cross-title/-language copies fold.
+  //
+  // BUT enrichment (work_index shard fetches + the one-time name_to_qid load) is the
+  // only otherwise-unbounded stage — fetches are capped by their per-source/dump
+  // policies, enrichment was not. So it runs under a best-effort budget: we DELIVER the
+  // source's results when enrichment finishes OR ENRICH_BUDGET_MS elapses, whichever is
+  // first. enrichment mutates `items` in place, so an overrun yields un-/partially-
+  // enriched results (still fully displayable) instead of holding the whole source — and
+  // the slow load keeps running + memoises in the background for the next query.
   return activeSources().map((s) => [
     s.label,
     runSource(s, q).then(async (items) => {
-      await enrichArtistIds(items);
-      await enrichWorkIds(items);
+      await raceBudget(ENRICH_BUDGET_MS, (async () => {
+        await enrichArtistIds(items);
+        await enrichWorkIds(items);
+      })());
       return items;
     }),
   ] as [string, Promise<ArtItem[]>]);

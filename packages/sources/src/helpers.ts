@@ -36,9 +36,17 @@ export const DUMP_BACKOFF_MAX_MS = 1_000;
  *  waits the max backoff. Total attempts = DUMP_RETRIES + 1, backoff gaps = DUMP_RETRIES. */
 export const DUMP_WORST_CASE_MS =
   DUMP_TIMEOUT_MS * (DUMP_RETRIES + 1) + DUMP_RETRIES * DUMP_BACKOFF_MAX_MS;
-/** Overall deadline for a search (stream hard cap / batch budget). Must cover the
- *  dump worst case so the response never ends with the best results still pending. */
-export const OVERALL_TIMEOUT_MS = DUMP_WORST_CASE_MS + 2_500;
+/** Best-effort budget for the per-source KG enrichment that runs AFTER a source
+ *  resolves (enrichArtistIds + enrichWorkIds — the work_index shard fetches, and the
+ *  one-time name_to_qid load on a cold instance). Enrichment is additive metadata, so
+ *  if it overruns we deliver the source's results un-/partially-enriched rather than
+ *  hold them — and the slow load still completes + memoises in the background for the
+ *  next query. This is what decouples DELIVERY from enrichment. See registry.gatherSources. */
+export const ENRICH_BUDGET_MS = 2_500;
+/** Overall deadline for a search (stream hard cap / batch budget). Must cover the full
+ *  dump critical path — the dump worst case PLUS its enrichment budget — so the response
+ *  never ends with the best results still pending. */
+export const OVERALL_TIMEOUT_MS = DUMP_WORST_CASE_MS + ENRICH_BUDGET_MS + 2_000;
 
 export const MAX_ITEMS = 50;
 
@@ -57,6 +65,21 @@ export function str(v: unknown): string {
 export function num(v: unknown): number | undefined {
   const n = typeof v === 'number' ? v : typeof v === 'string' && v.trim() ? Number(v) : NaN;
   return Number.isFinite(n) && n > 0 ? n : undefined;
+}
+
+/** Best-effort budget: settle when `p` resolves/rejects OR after `ms`, whichever is
+ *  first. Never rejects and never returns a value — it exists to cap a side-effecting,
+ *  in-place task (e.g. KG enrichment that mutates the items array) so a slow/failed run
+ *  can't hold up delivery. The underlying promise keeps running in the background (any
+ *  memoised load it performs still completes for the next caller). */
+export async function raceBudget(ms: number, p: Promise<unknown>): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const budget = new Promise<void>((resolve) => { timer = setTimeout(resolve, ms); });
+  try {
+    await Promise.race([p.then(() => {}, () => {}), budget]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 export function fmtFromMime(mime: string): string {
