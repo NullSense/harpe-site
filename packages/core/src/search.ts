@@ -433,6 +433,12 @@ const MERGE_FILL_FIELDS = [
 ] as const;
 const MERGE_UNION_FIELDS = ['tags', 'downloads', 'depicts'] as const;
 
+// Numeric fields where the best copy's value wins outright (not merely fills a blank):
+// notability is the MAX sitelink count across every copy of the work, not whichever
+// copy happened to win the representative slot. width/height are deliberately NOT here —
+// they must stay a matched pair from one scan, never maxed independently.
+const MERGE_MAX_FIELDS = ['nbSitelinks'] as const;
+
 // Per-source fields retained on `variants` (feeds the AI analysis AND the
 // "other copies" strip — hence each copy's own image + dimensions).
 const VARIANT_FIELDS = [
@@ -472,6 +478,10 @@ function mergeGroup<T extends Fusable>(members: T[]): T {
     const md = m as Record<string, unknown>;
     for (const f of MERGE_FILL_FIELDS) {
       if ((r[f] === undefined || r[f] === '') && md[f] !== undefined && md[f] !== '') r[f] = md[f];
+    }
+    for (const f of MERGE_MAX_FIELDS) {
+      const cur = Number(r[f]); const cand = Number(md[f]);
+      if (Number.isFinite(cand) && (!Number.isFinite(cur) || cand > cur)) r[f] = cand;
     }
     for (const f of MERGE_UNION_FIELDS) {
       const add = md[f];

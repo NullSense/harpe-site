@@ -1827,6 +1827,18 @@ async function dumpFilterRows(
   });
 }
 
+/**
+ * Commons `Special:FilePath` serves the raw original, which for a `.tif`/`.pdf` the
+ * browser cannot decode — so the lightbox preview shows nothing. Appending `?width=`
+ * makes MediaWiki rasterize to a renderable JPEG. Applied to previewUrl only; fullUrl
+ * keeps the raw original for the download affordance. No-op for non-FilePath URLs and
+ * URLs that already carry a width. (Mirrors the live Wikidata adapter's preview sizing.)
+ */
+function commonsRenderablePreview(url: string, width: number): string {
+  if (!/\/Special:FilePath\//i.test(url) || /[?&]width=/i.test(url)) return url;
+  return `${url}${url.includes('?') ? '&' : '?'}width=${width}`;
+}
+
 /** Map one HF Parquet row → ArtItem. Returns null when mandatory image URLs are absent. */
 function rowToItem(
   row: Record<string, unknown>,
@@ -1847,7 +1859,7 @@ function rowToItem(
     artist: str(row.artist),
     dimensions: str(row.dimensions),
     thumbUrl: thumb,
-    previewUrl: full,
+    previewUrl: commonsRenderablePreview(full, 1600),
     fullUrl: full,
     width: num(row.width),
     height: num(row.height),

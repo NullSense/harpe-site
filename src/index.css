@@ -24,6 +24,20 @@ body {
   overflow-x: hidden;
 }
 
+/* Tailwind v4's Preflight no longer sets cursor:pointer on buttons, so every
+   <button>, link and clickable control showed the default arrow. Restore the
+   expected pointer for interactive elements in one place (skip disabled ones). */
+@layer base {
+  button:not(:disabled),
+  [role="button"]:not([aria-disabled="true"]),
+  a[href],
+  summary,
+  label[for],
+  select:not(:disabled) {
+    cursor: pointer;
+  }
+}
+
 @keyframes rise { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
 @keyframes blink { 50% { opacity: 0; } }
 .animate-rise { animation: rise 0.9s ease both; }

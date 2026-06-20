@@ -388,6 +388,18 @@ describe('dedupe', () => {
     expect(new Set(out[0].mergedIds)).toEqual(new Set(['wd-Q119007077', 'commons-22169893']));
   });
 
+  it('takes the MAX nbSitelinks across copies (notability = best-linked identity)', () => {
+    // The higher-area scan wins the representative slot, but notability should reflect
+    // the best-linked copy — a fill-only merge would keep the representative's lower value.
+    const out = dedupe([
+      mk({ id: 'met-1', source: 'met', title: 'Irises', artist: 'van Gogh', fullUrl: 'https://m/irises.jpg', width: 600, height: 480, wikidataId: 'Q1', nbSitelinks: 5 }),
+      mk({ id: 'wd-1', source: 'wikidata', title: 'Irises', artist: 'Vincent van Gogh', fullUrl: 'https://commons.wikimedia.org/wiki/Special:FilePath/irises.jpg', wikidataId: 'Q1', nbSitelinks: 40 }),
+    ]);
+    expect(out).toHaveLength(1);
+    expect(out[0].id).toBe('met-1');     // higher area wins the representative
+    expect(out[0].nbSitelinks).toBe(40); // notability = max across all copies
+  });
+
   it('leaves mergedIds undefined for a singleton (no merge happened)', () => {
     const out = dedupe([mk({ id: 'solo-1', source: 'met', title: 'Unique Work', artist: 'Nobody', fullUrl: 'https://m/u.jpg' })]);
     expect(out).toHaveLength(1);

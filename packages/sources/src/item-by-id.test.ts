@@ -61,6 +61,24 @@ describe('fetchDumpItemById (exact id → ArtItem from the HF dump)', () => {
     expect(decodeURIComponent(url)).toContain(`"id"='aic-42'`);
     expect(url).toContain('length=1');
   });
+  it('rasterizes a Commons Special:FilePath preview so TIFFs render in the lightbox', async () => {
+    // Wikidata dump rows store image_full as a raw Special:FilePath URL; for a .tif
+    // that the browser cannot decode, the lightbox preview must go through ?width=
+    // (which auto-rasterizes to JPEG). fullUrl stays raw for the download original.
+    const fileBase = 'https://commons.wikimedia.org/wiki/Special:FilePath/Stan.tif';
+    route({ dump: { rows: [{ row: {
+      id: 'wd-Q6609268', source: 'wikidata', title: 'Stańczyk', artist: 'Jan Matejko',
+      image_thumb: `${fileBase}?width=400`, image_full: fileBase, is_public_domain: true,
+    } }] } });
+    const it = await fetchDumpItemById('NullSense/harpe-art', 'wd-Q6609268');
+    expect(it?.previewUrl).toBe(`${fileBase}?width=1600`); // renderable
+    expect(it?.fullUrl).toBe(fileBase);                     // raw original for download
+  });
+  it('leaves a non-FilePath JPEG preview untouched', async () => {
+    route({ dump: DUMP_ROW }); // image_full = http://art.test/f.jpg (https-upgraded, no ?width=)
+    const it = await fetchDumpItemById('NullSense/harpe-art', 'aic-42');
+    expect(it?.previewUrl).toBe('https://art.test/f.jpg');
+  });
   it('returns null on a miss (no rows) or HTTP error', async () => {
     route({ dump: { rows: [] } });
     expect(await fetchDumpItemById('ds', 'aic-999')).toBeNull();
