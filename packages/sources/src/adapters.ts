@@ -11,7 +11,7 @@ import { fetch, Agent } from 'undici';
 import { WBK, simplifyClaims } from 'wikibase-sdk';
 import { normalize, isQid } from '@harpe/core';
 import type { ArtItem, Download, ArtistEntity, SubjectEntity, SuggestItem } from '@harpe/core';
-import { tursoFilterRows, tursoFuzzyRows } from './turso.js';
+import { getTursoClient, tursoFilterRows, tursoFuzzyRows } from './turso.js';
 import {
   str, num, fmtFromMime, fmtFromUrl, first, timedFetch, iiifImage, IIIF,
   LOSSLESS_FORMATS, mapPool, UA, deadline,
@@ -1917,10 +1917,12 @@ async function fetchDumpSearchUncached(q: string, dataset: string): Promise<{ it
   // source values — so this fan-out remains required. All sources fire in ONE wave
   // (DUMP_CONCURRENCY), so wall-clock is one call's worst case, not the sum.
   const sources = Object.keys(DUMP_SOURCE_LABELS) as DumpSourceKey[];
-  // Turso (libSQL) is the always-on FTS backend; when configured it replaces the cold
-  // HF /filter as the per-source row source — SAME per-source fan-out, so the
-  // anti-Wikidata-monopoly invariant above still holds. Falls back to HF when unset.
-  const useTurso = !!process.env.TURSO_DATABASE_URL;
+  // Turso (libSQL) is the always-on FTS backend; when configured AND its driver is
+  // actually reachable it replaces the cold HF /filter as the per-source row source —
+  // SAME per-source fan-out, so the anti-Wikidata-monopoly invariant above still holds.
+  // getTursoClient returns null when the env is unset OR the dep isn't installed/deployed,
+  // so we fall back to HF — a premature TURSO_DATABASE_URL never breaks the dump tier.
+  const useTurso = !!(await getTursoClient());
   // Query every dump source independently in one wave. A source that fails returns
   // []; we track failures so the caller only cross-instance-caches a COMPLETE result
   // (every source answered) — a partial/degraded result must not stick in shared KV.

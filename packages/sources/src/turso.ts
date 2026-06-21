@@ -100,10 +100,17 @@ export async function getTursoClient(): Promise<TursoClient | null> {
   if (_client !== undefined) return _client;
   const url = process.env.TURSO_DATABASE_URL;
   if (!url) return (_client = null);
-  const mod = (await import(/* @vite-ignore */ TURSO_PKG)) as {
-    createClient: (o: { url: string; authToken?: string }) => TursoClient;
-  };
-  return (_client = mod.createClient({ url, authToken: process.env.TURSO_AUTH_TOKEN }));
+  try {
+    const mod = (await import(/* @vite-ignore */ TURSO_PKG)) as {
+      createClient: (o: { url: string; authToken?: string }) => TursoClient;
+    };
+    return (_client = mod.createClient({ url, authToken: process.env.TURSO_AUTH_TOKEN }));
+  } catch {
+    // Driver not installed/deployed yet (or failed to init) → behave as "Turso off"
+    // so the dump tier falls back to HF /filter instead of failing every source. This
+    // makes it safe to set TURSO_DATABASE_URL before the dep ships.
+    return (_client = null);
+  }
 }
 
 /** Per-source FTS rows for the fan-out. [] when Turso is off or the query is degenerate,
