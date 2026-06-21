@@ -57,8 +57,9 @@ export function buildTursoSearch(
   const match = ftsMatch(q);
   if (match) {
     const tail = condSql ? ` AND ${condSql}` : '';
+    // FTS table referenced by name (not aliased) so `art_fts MATCH ?` and `rank` resolve.
     return {
-      sql: `SELECT ${COLS} FROM art_fts f JOIN art a ON a.rowid = f.rowid WHERE art_fts MATCH ?${tail} ORDER BY rank LIMIT ?`,
+      sql: `SELECT ${COLS} FROM art_fts JOIN art a ON a.rowid = art_fts.rowid WHERE art_fts MATCH ?${tail} ORDER BY rank LIMIT ?`,
       args: [match, ...condArgs, limit],
     };
   }

@@ -16,7 +16,7 @@ describe('ftsMatch', () => {
 describe('buildTursoSearch', () => {
   it('builds a parameterized FTS query (MATCH ?, ORDER BY rank, LIMIT ?)', () => {
     const r = buildTursoSearch('Jan Matejko', { limit: 40 })!;
-    expect(r.sql).toContain('FROM art_fts f JOIN art a ON a.rowid = f.rowid');
+    expect(r.sql).toContain('FROM art_fts JOIN art a ON a.rowid = art_fts.rowid');
     expect(r.sql).toContain('WHERE art_fts MATCH ?');
     expect(r.sql).toContain('ORDER BY rank LIMIT ?');
     expect(r.args).toEqual(['"jan"* "matejko"*', 40]);
