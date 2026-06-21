@@ -11,6 +11,7 @@ import { fetch, Agent } from 'undici';
 import { WBK, simplifyClaims } from 'wikibase-sdk';
 import { normalize, isQid } from '@harpe/core';
 import type { ArtItem, Download, ArtistEntity, SubjectEntity, SuggestItem } from '@harpe/core';
+import { tursoFilterRows, tursoFuzzyRows } from './turso.js';
 import {
   str, num, fmtFromMime, fmtFromUrl, first, timedFetch, iiifImage, IIIF,
   LOSSLESS_FORMATS, mapPool, UA, deadline,
@@ -1747,6 +1748,8 @@ export function fetchDumpSearch(dataset: string, q: string): Promise<ArtItem[]> 
 // 100 = HF /filter's max rows-per-request (free, no billing). Going beyond needs
 // offset pagination (the infinite-scroll "load more" feature). Tunable via env.
 const DUMP_PER_SOURCE = Math.min(100, Number(process.env.HARPE_DUMP_PER_SOURCE) || 100);
+// Below this many lexical hits, the Turso path widens with a fuzzy (Jaro-Winkler) pass.
+const TURSO_FUZZY_MIN = 5;
 // Fire every dump source's /filter in ONE concurrency wave (there are ~13). They all
 // hit the same HF endpoint with different WHEREs, so the gather's wall-clock is one
 // call's worst case (~16s under the dump policy), not 3 sequential waves (~48s) that
@@ -1914,6 +1917,10 @@ async function fetchDumpSearchUncached(q: string, dataset: string): Promise<{ it
   // source values — so this fan-out remains required. All sources fire in ONE wave
   // (DUMP_CONCURRENCY), so wall-clock is one call's worst case, not the sum.
   const sources = Object.keys(DUMP_SOURCE_LABELS) as DumpSourceKey[];
+  // Turso (libSQL) is the always-on FTS backend; when configured it replaces the cold
+  // HF /filter as the per-source row source — SAME per-source fan-out, so the
+  // anti-Wikidata-monopoly invariant above still holds. Falls back to HF when unset.
+  const useTurso = !!process.env.TURSO_DATABASE_URL;
   // Query every dump source independently in one wave. A source that fails returns
   // []; we track failures so the caller only cross-instance-caches a COMPLETE result
   // (every source answered) — a partial/degraded result must not stick in shared KV.
@@ -1921,13 +1928,17 @@ async function fetchDumpSearchUncached(q: string, dataset: string): Promise<{ it
   let failed = 0;
   const perSource = await mapPool(sources, DUMP_CONCURRENCY, async (s): Promise<Array<Record<string, unknown>>> => {
     try {
-      const { rows } = await dumpFilterRows(dataset, s, q);
+      const rows = useTurso ? await tursoFilterRows(s, q) : (await dumpFilterRows(dataset, s, q)).rows;
       anyOk = true;
       return rows;
     } catch { failed++; return []; }
   });
-  const rows = perSource.flat().filter((r): r is Record<string, unknown> => !!r);
+  let rows = perSource.flat().filter((r): r is Record<string, unknown> => !!r);
   if (!anyOk && rows.length === 0) throw new Error('all dump sources failed');
+  // Fuzzy fallback (Turso only): when the lexical FTS pass is near-empty (a typo or a
+  // diacritic miss), widen with a Jaro-Winkler scan. Only on sparse results, so the
+  // common case never pays for it; errors degrade to no extra rows.
+  if (useTurso && rows.length < TURSO_FUZZY_MIN) rows = rows.concat(await tursoFuzzyRows(q));
 
   const seen = new Set<string>();
   const items: ArtItem[] = [];
