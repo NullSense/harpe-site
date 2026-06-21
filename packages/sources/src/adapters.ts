@@ -1928,19 +1928,28 @@ async function fetchDumpSearchUncached(q: string, dataset: string): Promise<{ it
   // (every source answered) — a partial/degraded result must not stick in shared KV.
   let anyOk = false;
   let failed = 0;
-  const perSource = await mapPool(sources, DUMP_CONCURRENCY, async (s): Promise<Array<Record<string, unknown>>> => {
+  const fanOut = (viaTurso: boolean) => mapPool(sources, DUMP_CONCURRENCY, async (s): Promise<Array<Record<string, unknown>>> => {
     try {
-      const rows = useTurso ? await tursoFilterRows(s, q) : (await dumpFilterRows(dataset, s, q)).rows;
+      const rows = viaTurso ? await tursoFilterRows(s, q) : (await dumpFilterRows(dataset, s, q)).rows;
       anyOk = true;
       return rows;
     } catch { failed++; return []; }
   });
-  let rows = perSource.flat().filter((r): r is Record<string, unknown> => !!r);
+  let rows = (await fanOut(useTurso)).flat().filter((r): r is Record<string, unknown> => !!r);
+  // Turso configured but EVERY source errored (DB unreachable / misrouted / not yet
+  // queryable — getTursoClient only catches a MISSING driver, not a dead connection) →
+  // fall back to the HF /filter fan-out for this query, so a flaky Turso degrades to HF
+  // instead of failing the whole dump tier.
+  const tursoServed = useTurso && anyOk;
+  if (useTurso && !anyOk) {
+    failed = 0;
+    rows = (await fanOut(false)).flat().filter((r): r is Record<string, unknown> => !!r);
+  }
   if (!anyOk && rows.length === 0) throw new Error('all dump sources failed');
-  // Fuzzy fallback (Turso only): when the lexical FTS pass is near-empty (a typo or a
-  // diacritic miss), widen with a Jaro-Winkler scan. Only on sparse results, so the
-  // common case never pays for it; errors degrade to no extra rows.
-  if (useTurso && rows.length < TURSO_FUZZY_MIN) rows = rows.concat(await tursoFuzzyRows(q));
+  // Fuzzy fallback — only when Turso actually served (it's the Turso-only feature): when
+  // the lexical FTS pass is near-empty (a typo / diacritic miss), widen with a
+  // Jaro-Winkler scan. Only on sparse results, so the common case never pays for it.
+  if (tursoServed && rows.length < TURSO_FUZZY_MIN) rows = rows.concat(await tursoFuzzyRows(q));
 
   const seen = new Set<string>();
   const items: ArtItem[] = [];

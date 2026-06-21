@@ -17,6 +17,9 @@ importers:
       '@harpe/sources':
         specifier: workspace:*
         version: link:packages/sources
+      '@tursodatabase/serverless':
+        specifier: ^1.2.3
+        version: 1.2.3
       '@upstash/ratelimit':
         specifier: ^2.0.8
         version: 2.0.8(@upstash/redis@1.38.0)
@@ -43,7 +46,7 @@ importers:
         version: 6.27.0
     devDependencies:
       '@playwright/test':
-        specifier: ^1.61.0
+        specifier: ^1.60.0
         version: 1.61.0
       '@tailwindcss/vite':
         specifier: ^4.1.14
@@ -76,7 +79,7 @@ importers:
         specifier: ^8.0.16
         version: 8.0.16(@types/node@24.13.2)(esbuild@0.28.1)(jiti@2.7.0)
       vitest:
-        specifier: ^4.1.9
+        specifier: ^4.1.0
         version: 4.1.9(@types/node@24.13.2)(vite@8.0.16(@types/node@24.13.2)(esbuild@0.28.1)(jiti@2.7.0))
 
   apps/extension:
@@ -660,6 +663,9 @@ packages:
     resolution: {integrity: sha512-hItDHuIIlEV61R+faXu66s1K36aTurO/Qw0e45Vskz57gXl9pWOT6eg3zmcEui6CZXddbN7zd41bwmvag4JGwQ==}
     peerDependencies:
       vite: ^5.2.0 || ^6 || ^7 || ^8
+
+  '@tursodatabase/serverless@1.2.3':
+    resolution: {integrity: sha512-87eVBBr2I/CXClKcVzbtgPG5JI+kIs7ZTYa2eqlQEqGPmtCmTowMjP2M8ohJyPxXa5Aciz0+NyZNvDekRyMUZQ==}
 
   '@tybys/wasm-util@0.10.2':
     resolution: {integrity: sha512-RoBvJ2X0wuKlWFIjrwffGw1IqZHKQqzIchKaadZZfnNpsAYp2mM0h36JtPCjNDAHGgYez/15uMBpfGwchhiMgg==}
@@ -1858,6 +1864,8 @@ snapshots:
       '@tailwindcss/oxide': 4.3.1
       tailwindcss: 4.3.1
       vite: 8.0.16(@types/node@24.13.2)(esbuild@0.28.1)(jiti@2.7.0)
+
+  '@tursodatabase/serverless@1.2.3': {}
 
   '@tybys/wasm-util@0.10.2':
     dependencies:
