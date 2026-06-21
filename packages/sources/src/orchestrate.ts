@@ -67,7 +67,7 @@ export async function searchArt(
  *  withEntityCache — so a transient timeout self-heals on the next request). */
 export async function loadArtistPage(
   qid: string,
-  dataset: string = process.env.HARPE_DUMP_DATASET || '',
+  _dataset: string = process.env.HARPE_DUMP_DATASET || '', // vestigial: full search reads the dataset via env (gatherSources)
   opts: { deadlineMs?: number } = {},
 ): Promise<{ entity: ArtistEntity; works: ArtItem[]; attributedCount: number } | null> {
   const deadlineMs = opts.deadlineMs ?? OVERALL_TIMEOUT_MS;
@@ -77,25 +77,18 @@ export async function loadArtistPage(
     [null, []] as [ArtistEntity | null, string[]],
   );
   if (!entity) return null;
-  // Full QID search: a name search surfaces the artist's works across ALL sources,
-  // not just the Wikidata-built KG index. Dedupe so institutional copies win the
-  // representative (the KG ids are wd-*; their institutional scans fold in and badge
-  // the museum, not Wikidata), then split into the works exactly attributed to THIS
-  // artist vs the broader name matches — the UI renders these as two sections.
-  let works: ArtItem[] = [];
-  let attributedCount = 0;
-  if (dataset && workIds.length > 0) {
-    const idSet = new Set(workIds);
-    const all = await withDeadline(deadlineMs, fetchDumpSearch(dataset, entity.labelEn).catch(() => []), []);
-    const ranked = rankResults(all, entity.labelEn, { qualityOf: (it) => qualityScore(it, entity.labelEn) });
-    const isAttributed = (it: ArtItem) =>
-      it.artistId === qid || idSet.has(it.id) || (it.mergedIds ?? []).some((id) => idSet.has(id));
-    const attributed = ranked.filter(isAttributed);
-    const more = ranked.filter((it) => !isAttributed(it));
-    attributedCount = attributed.length;
-    works = [...attributed, ...more].slice(0, WORKS_CAP);
-  }
-  return { entity, works, attributedCount };
+  // Full QID search: federate across ALL sources — dump AND live (Commons, WikiArt, …)
+  // — so the artist's works surface wherever they live (e.g. Polish painters live on
+  // Commons, not the US museum dumps), deduped via the shared pipeline so an institutional
+  // scan wins the representative (museum badge, not Wikidata). Then split into the works
+  // exactly attributed to THIS artist vs broader name matches — the UI's two sections.
+  const idSet = new Set(workIds);
+  const { items: ranked } = await searchArt(entity.labelEn, { max: WORKS_CAP, deadlineMs });
+  const isAttributed = (it: ArtItem) =>
+    it.artistId === qid || idSet.has(it.id) || (it.mergedIds ?? []).some((id) => idSet.has(id));
+  const attributed = ranked.filter(isAttributed);
+  const more = ranked.filter((it) => !isAttributed(it));
+  return { entity, works: [...attributed, ...more], attributedCount: attributed.length };
 }
 
 /** Knowledge-graph subject ("depicts") page: the subject node + works whose P180

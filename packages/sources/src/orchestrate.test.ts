@@ -79,13 +79,15 @@ describe('searchArt', () => {
 });
 
 describe('loadArtistPage', () => {
-  it('full QID search: attributed works first, then broader name matches (attributedCount boundary)', async () => {
+  it('full QID search: federates ALL sources, attributed first, then broader name matches', async () => {
     m.fetchArtistEntity.mockResolvedValue({ qid: 'Q41406', labelEn: 'Claude Monet', workCount: 2 });
     m.fetchArtistWorkIds.mockResolvedValue(['wd-1']);
-    m.fetchDumpSearch.mockResolvedValue([
-      item('aic-9', 'Houses of Parliament', { artistId: 'Q41406' }), // attributed via artistId
-      item('wd-1', 'Water Lilies', { artistId: 'Q41406' }),          // attributed via idSet + artistId
-      item('met-5', 'Some other Monet study', { artistId: 'Q999' }), // name match, NOT attributed
+    m.gatherSources.mockResolvedValue([
+      ['dump', Promise.resolve([
+        item('aic-9', 'Houses of Parliament', { artistId: 'Q41406' }), // attributed via artistId
+        item('wd-1', 'Water Lilies', { artistId: 'Q41406' }),          // attributed via idSet + artistId
+        item('met-5', 'Some other study', { artistId: 'Q999' }),       // name match, NOT attributed
+      ])],
     ]);
     const page = await loadArtistPage('Q41406', 'ds');
     expect(page?.attributedCount).toBe(2);
@@ -94,30 +96,30 @@ describe('loadArtistPage', () => {
     expect(ids.slice(2)).toEqual(['met-5']);                   // broader section
   });
 
-  it('full QID search: folds an attributed Wikidata work into its institutional copy (institutional badge, still attributed)', async () => {
+  it('full QID search: a live Commons copy folds an attributed Wikidata work and wins the badge', async () => {
     m.fetchArtistEntity.mockResolvedValue({ qid: 'Q41406', labelEn: 'Claude Monet', workCount: 1 });
     m.fetchArtistWorkIds.mockResolvedValue(['wd-1']);
-    m.fetchDumpSearch.mockResolvedValue([
-      item('wd-1', 'Water Lilies', { artistId: 'Q41406', wikidataId: 'Q111', width: 0, height: 0 }),
-      item('aic-2', 'Water Lilies', { artistId: 'Q41406', wikidataId: 'Q111', width: 4000, height: 3000 }),
+    m.gatherSources.mockResolvedValue([
+      ['wikidata', Promise.resolve([item('wd-1', 'Water Lilies', { artistId: 'Q41406', wikidataId: 'Q111', width: 0, height: 0 })])],
+      ['commons', Promise.resolve([item('commons-2', 'Water Lilies', { artistId: 'Q41406', wikidataId: 'Q111', width: 4000, height: 3000 })])],
     ]);
     const page = await loadArtistPage('Q41406', 'ds');
-    expect(page?.works).toHaveLength(1);       // the two copies fold into one
-    expect(page?.works[0].source).toBe('aic'); // institutional rep wins on area (fixes "everything Wikidata")
-    expect(page?.attributedCount).toBe(1);     // still attributed (folded id ∈ KG work set)
+    expect(page?.works).toHaveLength(1);           // the two copies fold into one
+    expect(page?.works[0].source).toBe('commons'); // live institutional-ish rep wins on area
+    expect(page?.attributedCount).toBe(1);         // still attributed (folded id ∈ KG work set)
   });
 
-  it('is null when the QID is not in the index (and never hits the dump)', async () => {
+  it('is null when the QID is not in the index (and never searches)', async () => {
     m.fetchArtistEntity.mockResolvedValue(null);
     m.fetchArtistWorkIds.mockResolvedValue([]);
     expect(await loadArtistPage('Q999', 'ds')).toBeNull();
-    expect(m.fetchDumpSearch).not.toHaveBeenCalled();
+    expect(m.gatherSources).not.toHaveBeenCalled();
   });
 
-  it('still renders the entity (works: []) when the dump hangs past the deadline', async () => {
+  it('still renders the entity (works: []) when the search hangs past the deadline', async () => {
     m.fetchArtistEntity.mockResolvedValue({ qid: 'Q41406', labelEn: 'Claude Monet', workCount: 2 });
-    m.fetchArtistWorkIds.mockResolvedValue(['aic-1']);
-    m.fetchDumpSearch.mockReturnValue(new Promise(() => {})); // never resolves
+    m.fetchArtistWorkIds.mockResolvedValue(['wd-1']);
+    m.gatherSources.mockResolvedValue([['slow', new Promise(() => {})]]); // never resolves
     const t0 = Date.now();
     const page = await loadArtistPage('Q41406', 'ds', { deadlineMs: 50 });
     expect(Date.now() - t0).toBeLessThan(2_000);
