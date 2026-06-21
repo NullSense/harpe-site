@@ -1787,11 +1787,25 @@ const _stripWild = (s: string) => s.toLowerCase().replace(/[%_]/g, '');
 // OR the title / depicts label contains the whole phrase (title + theme queries).
 // Returns null when the query has no usable content after stripping ILIKE wildcards
 // (e.g. "%%") — the caller then skips the HF call instead of issuing a match-all.
-export function dumpWhere(source: string, q: string): string | null {
+export interface DumpFacets { artistQid?: string; depictsQid?: string; movement?: string }
+
+export function dumpWhere(source: string, q: string, facets: DumpFacets = {}): string | null {
+  // QID-backed facet narrowing (whole-corpus): each constrains the result set further.
+  // artist_qid is one QID per row → ILIKE w/o wildcards = case-insensitive exact;
+  // depicts_qids is a space-joined list → substring prefilter (the handler exact-checks
+  // it.depicts afterward); movement matches its stored value as a substring.
+  const and: string[] = [];
+  if (facets.artistQid && /^Q\d+$/i.test(facets.artistQid)) and.push(`"artist_qid" ILIKE '${_sqlEsc(facets.artistQid)}'`);
+  if (facets.depictsQid && /^Q\d+$/i.test(facets.depictsQid)) and.push(`"depicts_qids" ILIKE '%${_sqlEsc(facets.depictsQid)}%'`);
+  if (facets.movement) { const m = _stripWild(facets.movement).trim(); if (m) and.push(`"movement" ILIKE '%${_sqlEsc(m)}%'`); }
+  const facet = and.length ? ' AND ' + and.join(' AND ') : '';
+
   const toks = q.toLowerCase().split(/\s+/).map((t) => t.replace(/[%_]/g, '')).filter((t) => t.length >= 2).slice(0, 6);
   const fq = _stripWild(q).trim();
   const effective = toks.length ? toks : (fq.length >= 2 ? [fq] : null);
-  if (!effective) return null;
+  // Facet-only query (no usable text) → narrow the whole source by the facets alone
+  // (e.g. every work depicting a subject). No facets AND no text → no match-all scan.
+  if (!effective) return and.length ? `"source"='${_sqlEsc(source)}'${facet}` : null;
   const artist = effective.map((t) => `"artist" ILIKE '%${_sqlEsc(t)}%'`).join(' AND ');
   // A bare QID query (e.g. /api/depicts?qid=Q7226 "Joan of Arc") must match the
   // depicts_QIDS column — depicts_labels holds human labels, never QIDs, so without
@@ -1799,7 +1813,7 @@ export function dumpWhere(source: string, q: string): string | null {
   // handler exact-matches it.depicts.includes(qid) afterward, so a substring ILIKE
   // false-positive (Q7226 ⊂ Q72260) is filtered out — this is a coarse prefilter.
   const depictsQid = /^Q\d+$/i.test(fq) ? ` OR "depicts_qids" ILIKE '%${_sqlEsc(fq)}%'` : '';
-  return `"source"='${_sqlEsc(source)}' AND ((${artist}) OR "title" ILIKE '%${_sqlEsc(fq)}%' OR "depicts_labels" ILIKE '%${_sqlEsc(fq)}%'${depictsQid})`;
+  return `"source"='${_sqlEsc(source)}' AND ((${artist}) OR "title" ILIKE '%${_sqlEsc(fq)}%' OR "depicts_labels" ILIKE '%${_sqlEsc(fq)}%'${depictsQid})${facet}`;
 }
 
 async function dumpFilterRows(

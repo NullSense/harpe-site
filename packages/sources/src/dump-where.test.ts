@@ -48,3 +48,34 @@ describe('dumpWhere', () => {
     expect(w).toContain(`"artist" ILIKE '%lisa%'`);
   });
 });
+
+describe('dumpWhere — QID-backed facet filters', () => {
+  it('ANDs an artist_qid facet (case-insensitive exact) onto a text query', () => {
+    const w = dumpWhere('aic', 'water lilies', { artistQid: 'Q296' })!;
+    expect(w.startsWith(`"source"='aic' AND (`)).toBe(true);
+    expect(w).toContain(`AND "artist_qid" ILIKE 'Q296'`); // no wildcards → exact, case-insensitive
+  });
+  it('ANDs a depicts_qids facet (substring prefilter on the space-joined column)', () => {
+    const w = dumpWhere('aic', 'landscape', { depictsQid: 'Q7569' })!;
+    expect(w).toContain(`AND "depicts_qids" ILIKE '%Q7569%'`);
+  });
+  it('ANDs a movement facet (substring)', () => {
+    const w = dumpWhere('aic', 'landscape', { movement: 'Impressionism' })!;
+    expect(w).toContain(`AND "movement" ILIKE '%impressionism%'`);
+  });
+  it('supports a facet-only query (no text) — e.g. every work depicting a subject', () => {
+    expect(dumpWhere('aic', '', { depictsQid: 'Q7569' })).toBe(`"source"='aic' AND "depicts_qids" ILIKE '%Q7569%'`);
+  });
+  it('combines multiple facets', () => {
+    const w = dumpWhere('aic', '', { artistQid: 'Q296', movement: 'Impressionism' })!;
+    expect(w).toContain(`"artist_qid" ILIKE 'Q296'`);
+    expect(w).toContain(`"movement" ILIKE '%impressionism%'`);
+  });
+  it('ignores an invalid QID facet (null when no text and no valid facet)', () => {
+    expect(dumpWhere('aic', '', { artistQid: 'not-a-qid' })).toBeNull();
+  });
+  it('escapes quotes in a movement facet', () => {
+    const w = dumpWhere('aic', '', { movement: "art o'clock" })!;
+    expect(w).toContain(`'%art o''clock%'`);
+  });
+});
