@@ -3,7 +3,6 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "packageManager": "pnpm@10.25.0",
   "scripts": {
     "dev": "vite --port=3000 --host=0.0.0.0",
     "build": "pnpm --filter @harpe/core build && pnpm --filter @harpe/sources build && vite build",
