@@ -1,0 +1,25 @@
+# Project tasks — the polyglot / Python side of this repo (uv + the `heavy` cgroup cap).
+#
+# Division of labour (no over-wrapping — each manager owns what's native to it):
+#   • JS/Node commands  → package.json "scripts" (pnpm-native: auto-PATHs node_modules/.bin,
+#                          handles the workspace via --filter). Run with `pnpm <script>`.
+#   • Python / cross-tool → these mise tasks (uv, infisical, the `heavy` OOM cap — none of
+#                          which are pnpm's job). Run with `mise run <task>` (`mise tasks` to list).
+#   • Tool VERSIONS (node/pnpm/python/uv) → the global mise config (~/.config/mise/config.toml).
+#
+# `heavy` caps the job in an isolated cgroup so a runaway ingest can't OOM the desktop
+# (see ~/.local/bin/heavy and the ingest-oom memory note); `infisical run` injects the
+# HF token + secrets from the /Harpe path.
+
+[tasks.enrich]
+description = "Re-enrich KG entities + rebuild the FTS index + push to HF (OOM-safe via `heavy`)"
+run = "heavy infisical run --env dev --path /Harpe -- uv run scripts/ingest-art-dumps/ingest.py --enrich-only --push"
+
+[tasks.ingest]
+description = "Full ingest (all sources) + push to HF (OOM-safe via `heavy`)"
+run = "heavy infisical run --env dev --path /Harpe -- uv run scripts/ingest-art-dumps/ingest.py --push NullSense/harpe-art"
+
+[tasks."ingest:test"]
+description = "Run the ingest pipeline's Python unit tests"
+dir = "scripts/ingest-art-dumps"
+run = "uv run --with pytest python -m pytest -q"
