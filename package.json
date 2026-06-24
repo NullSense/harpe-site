@@ -25,6 +25,7 @@
     "@tursodatabase/serverless": "^1.2.3",
     "@upstash/ratelimit": "^2.0.8",
     "@upstash/redis": "^1.38.0",
+    "@vercel/analytics": "^2.0.1",
     "node-html-parser": "^6.1.13",
     "openseadragon": "^4.1.1",
     "react": "^19.0.1",
